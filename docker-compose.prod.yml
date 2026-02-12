@@ -1,0 +1,37 @@
+# Production Docker Compose for Lore Cloud
+# Create a .env file with POSTGRES_PASSWORD=<secure-random-value>
+services:
+  lore:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    ports:
+      - "8765:8765"
+    environment:
+      DATABASE_URL: postgresql://lore:${POSTGRES_PASSWORD:-lore}@db:5432/lore
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: lore
+      POSTGRES_USER: lore
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lore}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lore"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pgdata:

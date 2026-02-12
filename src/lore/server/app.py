@@ -53,7 +53,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="Lore Cloud",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 

@@ -206,6 +206,52 @@ score = cosine_similarity × confidence × time_decay × vote_factor
 - **Vote factor:** `1.0 + (upvotes - downvotes) × 0.1`, floored at 0.1
 - **Confidence:** Author's self-assessed confidence (0.0–1.0)
 
+## Remote Server (Lore Cloud)
+
+Share lessons across agents, machines, and teams with the Lore Cloud server.
+
+### 5-Line Remote Setup
+
+```python
+from lore import Lore
+
+lore = Lore(store="remote", api_url="http://localhost:8765", api_key="lore_sk_...")
+lore.publish(problem="Docker builds fail on M1", resolution="Use --platform linux/amd64")
+lessons = lore.query("Docker build issues")
+```
+
+### Self-Host with Docker Compose
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+curl -X POST http://localhost:8765/v1/org/init \
+  -H "Content-Type: application/json" -d '{"name": "my-org"}'
+```
+
+→ [Self-Hosted Guide](docs/self-hosted.md) · [API Reference](docs/api-reference.md)
+
+### MCP Integration (Claude Desktop / OpenClaw)
+
+Give Claude direct access to your lesson memory:
+
+```bash
+pip install lore-sdk[mcp]
+```
+
+```json
+{
+  "mcpServers": {
+    "lore": {
+      "command": "python",
+      "args": ["-m", "lore.mcp.server"],
+      "env": { "LORE_PROJECT": "my-project" }
+    }
+  }
+}
+```
+
+→ [MCP Setup Guide](docs/mcp-setup.md)
+
 ## Examples
 
 See [`examples/`](examples/) for runnable scripts:
