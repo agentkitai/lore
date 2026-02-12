@@ -151,3 +151,35 @@ class LessonImportResponse(BaseModel):
     """Response for POST /v1/lessons/import."""
 
     imported: int
+
+
+# ── Search ─────────────────────────────────────────────────────────
+
+
+class LessonSearchRequest(BaseModel):
+    """Request body for POST /v1/lessons/search."""
+
+    embedding: List[float] = Field(..., min_length=1)
+    tags: Optional[List[str]] = None
+    project: Optional[str] = None
+    limit: int = Field(default=5, ge=1, le=50)
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @field_validator("embedding")
+    @classmethod
+    def validate_embedding_dim(cls, v: List[float]) -> List[float]:
+        if len(v) != 384:
+            raise ValueError(f"Embedding must be 384 dimensions, got {len(v)}")
+        return v
+
+
+class LessonSearchResult(LessonResponse):
+    """A lesson with its computed search score."""
+
+    score: float
+
+
+class LessonSearchResponse(BaseModel):
+    """Response for POST /v1/lessons/search."""
+
+    lessons: List[LessonSearchResult]

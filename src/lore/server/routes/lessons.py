@@ -29,6 +29,9 @@ from lore.server.models import (
     LessonImportResponse,
     LessonListResponse,
     LessonResponse,
+    LessonSearchRequest,
+    LessonSearchResponse,
+    LessonSearchResult,
     LessonUpdateRequest,
 )
 
@@ -119,6 +122,94 @@ async def create_lesson(
         )
 
     return LessonCreateResponse(id=lesson_id)
+
+
+# ── Search ─────────────────────────────────────────────────────────
+
+# Decay constant (lambda). Default 0.01 ≈ 69-day half-life.
+_DECAY_LAMBDA = 0.01
+
+
+@router.post("/search", response_model=LessonSearchResponse)
+async def search_lessons(
+    body: LessonSearchRequest,
+    auth: AuthContext = Depends(get_auth_context),
+) -> LessonSearchResponse:
+    """Semantic search with pgvector cosine similarity and decay scoring.
+
+    Score = cosine_similarity × confidence × exp(-λ × days) × vote_factor
+    where vote_factor = max(1.0 + (upvotes - downvotes) × 0.1, 0.1)
+    """
+    # Build WHERE clause
+    where_parts: list[str] = ["org_id = $1"]
+    params: list = [auth.org_id]
+
+    # Project scoping: key scope overrides body
+    project = body.project
+    if auth.project is not None:
+        project = auth.project
+    if project is not None:
+        params.append(project)
+        where_parts.append(f"project = ${len(params)}")
+
+    # Tag filtering (AND logic)
+    if body.tags:
+        params.append(json.dumps(body.tags))
+        where_parts.append(f"tags @> ${len(params)}::jsonb")
+
+    # Exclude expired lessons
+    where_parts.append("(expires_at IS NULL OR expires_at > now())")
+
+    # Embedding must exist
+    where_parts.append("embedding IS NOT NULL")
+
+    where_sql = " AND ".join(where_parts)
+
+    # Embedding parameter for pgvector
+    params.append(json.dumps(body.embedding))
+    emb_idx = len(params)
+
+    # Limit
+    params.append(body.limit)
+    limit_idx = len(params)
+
+    # SQL: compute score in DB for efficiency
+    # cosine_similarity = 1 - (embedding <=> query_vector)
+    # decay = confidence * exp(-lambda * age_days) * vote_factor
+    # vote_factor = GREATEST(1.0 + (upvotes - downvotes) * 0.1, 0.1)
+    query = f"""
+        SELECT id, problem, resolution, context, tags, confidence,
+               source, project, created_at, updated_at, expires_at,
+               upvotes, downvotes, meta,
+               (1 - (embedding <=> ${emb_idx}::vector)) *
+               confidence *
+               exp(-{_DECAY_LAMBDA} * EXTRACT(EPOCH FROM (now() - updated_at)) / 86400.0) *
+               GREATEST(1.0 + (upvotes - downvotes) * 0.1, 0.1)
+               AS score
+        FROM lessons
+        WHERE {where_sql}
+        ORDER BY score DESC
+        LIMIT ${limit_idx}
+    """
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(query, *params)
+
+    # Filter by min_confidence after scoring (decay applied)
+    results = []
+    for r in rows:
+        rd = dict(r)
+        score = float(rd.pop("score", 0.0))
+        if score < body.min_confidence:
+            continue
+        lesson_resp = _row_to_response(rd)
+        results.append(LessonSearchResult(
+            **lesson_resp.model_dump(),
+            score=round(max(score, 0.0), 6),
+        ))
+
+    return LessonSearchResponse(lessons=results)
 
 
 # ── Read ───────────────────────────────────────────────────────────

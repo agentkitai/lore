@@ -466,6 +466,207 @@ async def test_import_empty_list(client):
     assert resp.json()["imported"] == 0
 
 
+# ── Search Tests ───────────────────────────────────────────────────
+
+
+def _search_row(lesson_id: str = "lesson-001", score: float = 0.85, **overrides) -> dict:
+    """Create a mock row that includes the score column."""
+    row = _lesson_row(lesson_id, **overrides)
+    row["score"] = score
+    return row
+
+
+@pytest.mark.asyncio
+async def test_search_basic(client):
+    rows = [_search_row("lesson-001", score=0.85), _search_row("lesson-002", score=0.72)]
+    mock_pool, _ = _make_mock_pool(key_row=KEY_ROW, fetch_return=rows)
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": SAMPLE_EMBEDDING},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["lessons"]) == 2
+    assert data["lessons"][0]["score"] == 0.85
+    assert data["lessons"][1]["score"] == 0.72
+    assert data["lessons"][0]["id"] == "lesson-001"
+
+
+@pytest.mark.asyncio
+async def test_search_empty_results(client):
+    mock_pool, _ = _make_mock_pool(key_row=KEY_ROW, fetch_return=[])
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": SAMPLE_EMBEDDING},
+        )
+
+    assert resp.status_code == 200
+    assert resp.json()["lessons"] == []
+
+
+@pytest.mark.asyncio
+async def test_search_wrong_embedding_dim(client):
+    mock_pool, _ = _make_mock_pool(key_row=KEY_ROW)
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": [0.1] * 100},
+        )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_search_empty_embedding(client):
+    mock_pool, _ = _make_mock_pool(key_row=KEY_ROW)
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": []},
+        )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_search_with_tags(client):
+    rows = [_search_row("lesson-001", score=0.9)]
+    mock_pool, mock_conn = _make_mock_pool(key_row=KEY_ROW, fetch_return=rows)
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": SAMPLE_EMBEDDING, "tags": ["stripe", "api"]},
+        )
+
+    assert resp.status_code == 200
+    assert len(resp.json()["lessons"]) == 1
+    # Verify tags param was passed in the SQL query
+    call_args = mock_conn.fetch.call_args
+    assert json.dumps(["stripe", "api"]) in call_args[0]
+
+
+@pytest.mark.asyncio
+async def test_search_with_project(client):
+    rows = [_search_row("lesson-001", score=0.8)]
+    mock_pool, mock_conn = _make_mock_pool(key_row=KEY_ROW, fetch_return=rows)
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": SAMPLE_EMBEDDING, "project": "backend"},
+        )
+
+    assert resp.status_code == 200
+    # Verify project param was passed
+    call_args = mock_conn.fetch.call_args
+    assert "backend" in call_args[0]
+
+
+@pytest.mark.asyncio
+async def test_search_project_scoped_key_overrides(client):
+    """Project-scoped key should override body project."""
+    rows = [_search_row("lesson-001", score=0.7)]
+    mock_pool, mock_conn = _make_mock_pool(key_row=PROJECT_KEY_ROW, fetch_return=rows)
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": SAMPLE_EMBEDDING, "project": "frontend"},
+        )
+
+    assert resp.status_code == 200
+    # Should use "backend" from key, not "frontend" from body
+    call_args = mock_conn.fetch.call_args
+    assert "backend" in call_args[0]
+
+
+@pytest.mark.asyncio
+async def test_search_limit_default(client):
+    mock_pool, mock_conn = _make_mock_pool(key_row=KEY_ROW, fetch_return=[])
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": SAMPLE_EMBEDDING},
+        )
+
+    assert resp.status_code == 200
+    # Default limit is 5 — verify it was passed
+    call_args = mock_conn.fetch.call_args
+    assert 5 in call_args[0]
+
+
+@pytest.mark.asyncio
+async def test_search_limit_exceeds_max(client):
+    mock_pool, _ = _make_mock_pool(key_row=KEY_ROW)
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": SAMPLE_EMBEDDING, "limit": 100},
+        )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_search_min_confidence_filters(client):
+    """Lessons with score below min_confidence should be filtered out."""
+    rows = [
+        _search_row("lesson-001", score=0.85),
+        _search_row("lesson-002", score=0.1),
+    ]
+    mock_pool, _ = _make_mock_pool(key_row=KEY_ROW, fetch_return=rows)
+
+    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_pool", return_value=mock_pool):
+        resp = await client.post(
+            "/v1/lessons/search",
+            headers=HEADERS,
+            json={"embedding": SAMPLE_EMBEDDING, "min_confidence": 0.5},
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["lessons"]) == 1
+    assert data["lessons"][0]["score"] == 0.85
+
+
+@pytest.mark.asyncio
+async def test_search_requires_auth(client):
+    resp = await client.post(
+        "/v1/lessons/search",
+        json={"embedding": SAMPLE_EMBEDDING},
+    )
+    assert resp.status_code == 401
+
+
 # ── Auth Required ──────────────────────────────────────────────────
 
 
@@ -480,6 +681,7 @@ async def test_endpoints_require_auth(client):
         ("DELETE", "/v1/lessons/some-id"),
         ("POST", "/v1/lessons/export"),
         ("POST", "/v1/lessons/import"),
+        ("POST", "/v1/lessons/search"),
     ]:
         resp = await getattr(client, method.lower())(path)
         assert resp.status_code == 401, f"{method} {path} should require auth"
