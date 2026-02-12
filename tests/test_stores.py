@@ -117,6 +117,21 @@ class TestStore:
         assert got is not None
         assert got.tags == ["a", "b"]
 
+    def test_update_existing(self, store: Store) -> None:
+        lesson = _make_lesson()
+        store.save(lesson)
+        lesson.upvotes = 5
+        lesson.downvotes = 2
+        assert store.update(lesson) is True
+        got = store.get("01")
+        assert got is not None
+        assert got.upvotes == 5
+        assert got.downvotes == 2
+
+    def test_update_nonexistent(self, store: Store) -> None:
+        lesson = _make_lesson(id="nope")
+        assert store.update(lesson) is False
+
     def test_meta_roundtrip(self, store: Store) -> None:
         store.save(_make_lesson(meta={"key": "val"}))
         got = store.get("01")

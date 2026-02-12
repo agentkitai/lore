@@ -35,5 +35,11 @@ class MemoryStore(Store):
             lessons = lessons[:limit]
         return lessons
 
+    def update(self, lesson: Lesson) -> bool:
+        if lesson.id not in self._lessons:
+            return False
+        self._lessons[lesson.id] = lesson
+        return True
+
     def delete(self, lesson_id: str) -> bool:
         return self._lessons.pop(lesson_id, None) is not None

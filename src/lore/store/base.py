@@ -28,5 +28,9 @@ class Store(ABC):
         """List lessons, optionally filtered by project, ordered by created_at desc."""
 
     @abstractmethod
+    def update(self, lesson: Lesson) -> bool:
+        """Update an existing lesson. Returns True if it existed."""
+
+    @abstractmethod
     def delete(self, lesson_id: str) -> bool:
         """Delete a lesson by ID. Returns True if it existed."""

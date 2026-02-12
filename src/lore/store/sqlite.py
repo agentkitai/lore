@@ -96,6 +96,33 @@ class SqliteStore(Store):
         rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_lesson(r) for r in rows]
 
+    def update(self, lesson: Lesson) -> bool:
+        cursor = self._conn.execute(
+            """UPDATE lessons SET
+               problem=?, resolution=?, context=?, tags=?, confidence=?,
+               source=?, project=?, embedding=?, updated_at=?,
+               expires_at=?, upvotes=?, downvotes=?, meta=?
+               WHERE id=?""",
+            (
+                lesson.problem,
+                lesson.resolution,
+                lesson.context,
+                json.dumps(lesson.tags),
+                lesson.confidence,
+                lesson.source,
+                lesson.project,
+                lesson.embedding,
+                lesson.updated_at,
+                lesson.expires_at,
+                lesson.upvotes,
+                lesson.downvotes,
+                json.dumps(lesson.meta) if lesson.meta is not None else None,
+                lesson.id,
+            ),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
     def delete(self, lesson_id: str) -> bool:
         cursor = self._conn.execute(
             "DELETE FROM lessons WHERE id = ?", (lesson_id,)

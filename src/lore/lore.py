@@ -12,6 +12,8 @@ from ulid import ULID
 
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder
+from lore.exceptions import LessonNotFoundError
+from lore.prompt import as_prompt as _as_prompt
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
@@ -24,6 +26,7 @@ EmbeddingFn = Callable[[str], List[float]]
 RedactPattern = Tuple[str, str]
 
 _EMBEDDING_DIM = 384
+_DEFAULT_HALF_LIFE_DAYS = 30
 
 
 def _serialize_embedding(vec: List[float]) -> bytes:
@@ -69,8 +72,10 @@ class Lore:
         embedder: Optional[Embedder] = None,
         redact: bool = True,
         redact_patterns: Optional[List[RedactPattern]] = None,
+        decay_half_life_days: float = _DEFAULT_HALF_LIFE_DAYS,
     ) -> None:
         self.project = project
+        self._half_life_days = decay_half_life_days
 
         # Redaction pipeline
         self._redact_enabled = redact
@@ -165,10 +170,20 @@ class Lore:
     ) -> List[QueryResult]:
         """Query lessons by semantic similarity, optionally filtered by tags.
 
-        Returns a list of QueryResult ordered by descending similarity score.
+        Returns a list of QueryResult ordered by descending score
+        (cosine similarity * decay).
         """
+        now = datetime.now(timezone.utc)
+
         # Get all candidates (scope to project if set)
         all_lessons = self._store.list(project=self.project)
+
+        # Filter expired lessons
+        all_lessons = [
+            l for l in all_lessons
+            if l.expires_at is None
+            or datetime.fromisoformat(l.expires_at) > now
+        ]
 
         # Filter by tags
         if tags:
@@ -205,15 +220,49 @@ class Lore:
         emb_norms = np.clip(emb_norms, 1e-9, None)
         embeddings_normed = embeddings / emb_norms
 
-        scores = embeddings_normed @ query_norm
+        cosine_scores = embeddings_normed @ query_norm
 
-        # Build results sorted by score descending
-        results = [
-            QueryResult(lesson=candidates[i], score=float(scores[i]))
-            for i in range(len(candidates))
-        ]
+        # Apply decay: score *= confidence * time_factor * vote_factor
+        results: List[QueryResult] = []
+        for i, lesson in enumerate(candidates):
+            age_days = (
+                now - datetime.fromisoformat(lesson.created_at)
+            ).total_seconds() / 86400.0
+            time_factor = 0.5 ** (age_days / self._half_life_days)
+            vote_factor = 1.0 + (lesson.upvotes - lesson.downvotes) * 0.1
+            vote_factor = max(vote_factor, 0.1)
+            decay = lesson.confidence * time_factor * vote_factor
+            final_score = float(cosine_scores[i]) * decay
+            results.append(QueryResult(lesson=lesson, score=final_score))
+
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:limit]
+
+    def upvote(self, lesson_id: str) -> None:
+        """Increment upvotes for a lesson."""
+        lesson = self._store.get(lesson_id)
+        if lesson is None:
+            raise LessonNotFoundError(lesson_id)
+        lesson.upvotes += 1
+        lesson.updated_at = _utc_now_iso()
+        self._store.update(lesson)
+
+    def downvote(self, lesson_id: str) -> None:
+        """Increment downvotes for a lesson."""
+        lesson = self._store.get(lesson_id)
+        if lesson is None:
+            raise LessonNotFoundError(lesson_id)
+        lesson.downvotes += 1
+        lesson.updated_at = _utc_now_iso()
+        self._store.update(lesson)
+
+    def as_prompt(
+        self,
+        lessons: List[QueryResult],
+        max_tokens: int = 1000,
+    ) -> str:
+        """Format query results for system prompt injection."""
+        return _as_prompt(lessons, max_tokens=max_tokens)
 
     def get(self, lesson_id: str) -> Optional[Lesson]:
         """Get a lesson by ID."""
