@@ -2,8 +2,8 @@
 
 [![PyPI](https://img.shields.io/pypi/v/lore-sdk)](https://pypi.org/project/lore-sdk/)
 [![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
-[![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz/lore/ci.yml?label=tests)](https://github.com/amitpaz/lore/actions)
-[![License](https://img.shields.io/github/license/amitpaz/lore)](LICENSE)
+[![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz1/lore/ci.yml?label=tests)](https://github.com/amitpaz1/lore/actions)
+[![License](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
 
 **Cross-agent memory.** Agents publish what they learn, other agents query it. PII redacted automatically.
 
