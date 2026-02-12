@@ -5,19 +5,23 @@ from __future__ import annotations
 import os
 import struct
 from datetime import datetime, timezone
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 import numpy as np
 from ulid import ULID
 
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder
+from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
 from lore.types import Lesson, QueryResult
 
 # Type alias for user-provided embedding functions
 EmbeddingFn = Callable[[str], List[float]]
+
+# Type for custom redaction patterns: (regex_string, label)
+RedactPattern = Tuple[str, str]
 
 _EMBEDDING_DIM = 384
 
@@ -63,8 +67,20 @@ class Lore:
         store: Optional[Store] = None,
         embedding_fn: Optional[EmbeddingFn] = None,
         embedder: Optional[Embedder] = None,
+        redact: bool = True,
+        redact_patterns: Optional[List[RedactPattern]] = None,
     ) -> None:
         self.project = project
+
+        # Redaction pipeline
+        self._redact_enabled = redact
+        if redact:
+            self._redactor = RedactionPipeline(
+                custom_patterns=redact_patterns,
+            )
+        else:
+            self._redactor = None
+
         if store is not None:
             self._store = store
         else:
@@ -108,6 +124,13 @@ class Lore:
             raise ValueError(
                 f"confidence must be between 0.0 and 1.0, got {confidence}"
             )
+
+        # Redact sensitive data before storage
+        if self._redactor is not None:
+            problem = self._redactor.run(problem)
+            resolution = self._redactor.run(resolution)
+            if context is not None:
+                context = self._redactor.run(context)
 
         # Build text for embedding
         embed_text = f"{problem} {resolution}"
