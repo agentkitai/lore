@@ -24,7 +24,7 @@ class LessonCreateRequest(BaseModel):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     source: Optional[str] = None
     project: Optional[str] = None
-    embedding: List[float] = Field(..., min_length=384, max_length=384)
+    embedding: Optional[List[float]] = Field(default=None)
     expires_at: Optional[datetime] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
 

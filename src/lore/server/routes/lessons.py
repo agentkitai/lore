@@ -112,7 +112,7 @@ async def create_lesson(
             body.confidence,
             body.source,
             project,
-            json.dumps(body.embedding),
+            json.dumps(body.embedding) if body.embedding else None,
             now,
             now,
             body.expires_at,
@@ -338,6 +338,9 @@ async def delete_lesson(
 @router.get("", response_model=LessonListResponse)
 async def list_lessons(
     project: Optional[str] = Query(None),
+    query: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    min_reputation: Optional[int] = Query(None, alias="minReputation"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
@@ -354,6 +357,22 @@ async def list_lessons(
     elif project is not None:
         params.append(project)
         where_parts.append(f"project = ${len(params)}")
+
+    # Text search (ILIKE on problem + resolution)
+    if query:
+        params.append(f"%{query}%")
+        idx = len(params)
+        where_parts.append(f"(problem ILIKE ${idx} OR resolution ILIKE ${idx})")
+
+    # Category filter (tag in jsonb array)
+    if category:
+        params.append(json.dumps([category]))
+        where_parts.append(f"tags @> ${len(params)}::jsonb")
+
+    # Minimum reputation filter
+    if min_reputation is not None:
+        params.append(min_reputation)
+        where_parts.append(f"reputation_score >= ${len(params)}")
 
     where_sql = " AND ".join(where_parts)
 
@@ -372,7 +391,7 @@ async def list_lessons(
         rows = await conn.fetch(
             f"""SELECT id, problem, resolution, context, tags, confidence,
                        source, project, created_at, updated_at, expires_at,
-                       upvotes, downvotes, meta
+                       upvotes, downvotes, meta, reputation_score, quality_signals
                 FROM lessons WHERE {where_sql}
                 ORDER BY created_at DESC
                 LIMIT ${limit_idx} OFFSET ${offset_idx}""",
