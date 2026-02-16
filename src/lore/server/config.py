@@ -12,9 +12,13 @@ class Settings:
     """Application settings loaded from environment."""
 
     database_url: str = ""
+    redis_url: str = ""
     host: str = "0.0.0.0"
     port: int = 8765
     migrations_dir: str = "migrations"
+
+    # Rate limiting
+    rate_limit_backend: str = "memory"  # "memory" or "redis"
 
     # OIDC / JWT validation
     oidc_issuer: Optional[str] = None
@@ -32,8 +36,14 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
+        # Resolve Docker secrets / AWS Secrets Manager before reading env
+        from lore.server.secrets import apply_secrets_to_env
+        apply_secrets_to_env()
+
         return cls(
             database_url=os.environ.get("DATABASE_URL", ""),
+            redis_url=os.environ.get("REDIS_URL", ""),
+            rate_limit_backend=os.environ.get("RATE_LIMIT_BACKEND", "memory"),
             host=os.environ.get("HOST", "0.0.0.0"),
             port=int(os.environ.get("PORT", "8765")),
             migrations_dir=os.environ.get("MIGRATIONS_DIR", "migrations"),

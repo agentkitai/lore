@@ -5,8 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections import defaultdict
-from typing import Callable, Dict, List, Optional
+from typing import Callable
 
 try:
     from fastapi import FastAPI, Request, Response
@@ -25,62 +24,37 @@ DEFAULT_WINDOW_SECONDS = 60
 
 
 class RateLimiter:
-    """In-memory sliding window rate limiter per API key."""
+    """In-memory sliding window rate limiter per API key.
+
+    Legacy wrapper — delegates to rate_limit.MemoryBackend.
+    Kept for backward compatibility.
+    """
 
     def __init__(
         self,
         max_requests: int = DEFAULT_RATE_LIMIT,
         window_seconds: int = DEFAULT_WINDOW_SECONDS,
     ) -> None:
+        from lore.server.rate_limit import MemoryBackend
+        self._backend = MemoryBackend(max_requests, window_seconds)
         self.max_requests = max_requests
         self.window_seconds = window_seconds
-        # key_identifier -> list of request timestamps (monotonic)
-        self._requests: Dict[str, List[float]] = defaultdict(list)
 
     def is_allowed(self, key: str) -> tuple[bool, int]:
-        """Check if a request is allowed for the given key.
-
-        Returns (allowed, retry_after_seconds).
-        """
-        now = time.monotonic()
-        window_start = now - self.window_seconds
-        timestamps = self._requests[key]
-
-        # Prune old entries
-        while timestamps and timestamps[0] < window_start:
-            timestamps.pop(0)
-
-        if len(timestamps) >= self.max_requests:
-            # Calculate retry-after from oldest request in window
-            retry_after = int(timestamps[0] - window_start) + 1
-            if retry_after < 1:
-                retry_after = 1
-            return False, retry_after
-
-        timestamps.append(now)
-        return True, 0
+        allowed, retry_after, _remaining, _limit = self._backend.is_allowed(key)
+        return allowed, retry_after
 
     def clear(self) -> None:
-        """Clear all rate limit state (for testing)."""
-        self._requests.clear()
-
-
-# Global rate limiter instance
-_rate_limiter: Optional[RateLimiter] = None
-
-
-def get_rate_limiter() -> RateLimiter:
-    """Get or create the global rate limiter."""
-    global _rate_limiter
-    if _rate_limiter is None:
-        _rate_limiter = RateLimiter()
-    return _rate_limiter
+        self._backend.clear()
 
 
 def set_rate_limiter(limiter: RateLimiter) -> None:
-    """Replace the global rate limiter (for testing/config)."""
-    global _rate_limiter
-    _rate_limiter = limiter
+    """Replace the global rate limiter (for testing/config).
+
+    Installs the underlying backend into the rate_limit module.
+    """
+    from lore.server.rate_limit import set_backend
+    set_backend(limiter._backend)
 
 
 # ── Path normalization ─────────────────────────────────────────────
@@ -184,12 +158,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     """Apply rate limiting based on the API key in the Authorization header."""
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        from lore.server.rate_limit import get_backend
+
         # Extract API key for rate limiting
         auth_header = request.headers.get("authorization", "")
         if auth_header.startswith("Bearer "):
             key = auth_header[7:]
-            limiter = get_rate_limiter()
-            allowed, retry_after = limiter.is_allowed(key)
+            backend = get_backend()
+            allowed, retry_after, remaining, limit = backend.is_allowed(key)
             if not allowed:
                 return JSONResponse(
                     status_code=429,
@@ -197,8 +173,19 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                         "error": "rate_limit_exceeded",
                         "message": "Too many requests. Please retry later.",
                     },
-                    headers={"Retry-After": str(retry_after)},
+                    headers={
+                        "Retry-After": str(retry_after),
+                        "X-RateLimit-Limit": str(limit),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": str(int(time.time()) + retry_after),
+                    },
                 )
+
+            response = await call_next(request)
+            response.headers["X-RateLimit-Limit"] = str(limit)
+            response.headers["X-RateLimit-Remaining"] = str(remaining)
+            response.headers["X-RateLimit-Reset"] = str(int(time.time()) + 60)
+            return response
 
         return await call_next(request)
 
