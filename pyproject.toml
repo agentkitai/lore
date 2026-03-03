@@ -9,14 +9,21 @@ description = "Universal AI memory layer. MCP-native. Self-hosted."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Amit Paz", email = "amit.paz@gmail.com" }]
-keywords = ["ai", "memory", "mcp", "lore", "agent", "llm", "embeddings"]
+keywords = ["ai", "memory", "mcp", "lore", "agent", "llm", "embeddings", "pgvector", "semantic-search", "vector-database", "rag"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
 ]
 requires-python = ">=3.9"
 dependencies = [
@@ -65,7 +72,9 @@ lore-mcp = "lore.mcp.server:run_server"
 [project.urls]
 Homepage = "https://github.com/amitpaz1/lore"
 Repository = "https://github.com/amitpaz1/lore"
+Documentation = "https://github.com/amitpaz1/lore#readme"
 Issues = "https://github.com/amitpaz1/lore/issues"
+Changelog = "https://github.com/amitpaz1/lore/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lore"]
