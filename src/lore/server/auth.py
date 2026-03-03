@@ -144,8 +144,8 @@ async def get_auth_context(request: Request) -> AuthContext:
     token = auth_header[7:]
     mode = settings.auth_mode
 
-    # API key path
-    if token.startswith("lore_sk_"):
+    # API key path — accept both ob_sk_ and lore_sk_ prefixes
+    if token.startswith("lore_sk_") or token.startswith("ob_sk_"):
         if mode == "oidc-required":
             raise _auth_error("api_key_not_allowed", 401)
         return await _resolve_api_key(token)

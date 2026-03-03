@@ -52,8 +52,8 @@ async def test_org_init_creates_org(client):
 
     assert resp.status_code == 201
     data = resp.json()
-    assert data["api_key"].startswith("lore_sk_")
-    assert len(data["api_key"]) == 8 + 32  # "lore_sk_" + 32 hex chars
+    assert data["api_key"].startswith("ob_sk_")
+    assert len(data["api_key"]) == 6 + 32  # "ob_sk_" + 32 hex chars
     assert data["key_prefix"] == data["api_key"][:12]
     assert "org_id" in data
     assert mock_conn.execute.call_count == 2
@@ -92,9 +92,9 @@ async def test_org_init_api_key_format(client):
     data = resp.json()
     key = data["api_key"]
 
-    # Key format: lore_sk_ + 32 hex chars
-    assert key.startswith("lore_sk_")
-    hex_part = key[8:]
+    # Key format: ob_sk_ + 32 hex chars
+    assert key.startswith("ob_sk_")
+    hex_part = key[6:]
     assert len(hex_part) == 32
     int(hex_part, 16)  # Should not raise — valid hex
 

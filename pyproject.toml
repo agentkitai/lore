@@ -55,6 +55,7 @@ dev = [
 
 [project.scripts]
 lore = "lore.cli:main"
+openbrain-mcp = "openbrain.mcp.server:run_server"
 
 [project.urls]
 Homepage = "https://github.com/amitpaz1/lore"
@@ -62,7 +63,7 @@ Repository = "https://github.com/amitpaz1/lore"
 Issues = "https://github.com/amitpaz1/lore/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lore"]
+packages = ["src/lore", "src/openbrain"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
