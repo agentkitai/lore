@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import struct
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -15,11 +16,13 @@ from ulid import ULID
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder
 from lore.exceptions import LessonNotFoundError
+from lore.memory_store.base import Store as MemoryStore
+from lore.memory_store.sqlite import SqliteStore as MemorySqliteStore
 from lore.prompt import as_prompt as _as_prompt
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
-from lore.types import Lesson, QueryResult
+from lore.types import Lesson, Memory, QueryResult, SearchResult, StoreStats
 
 # Type alias for user-provided embedding functions
 EmbeddingFn = Callable[[str], List[float]]
@@ -29,6 +32,20 @@ RedactPattern = Tuple[str, str]
 
 _EMBEDDING_DIM = 384
 _DEFAULT_HALF_LIFE_DAYS = 30
+
+
+def _parse_ttl(ttl: Optional[str]) -> Optional[str]:
+    """Parse a TTL string (e.g. '7d', '1h', '30m') into an ISO expires_at."""
+    if not ttl:
+        return None
+    match = re.match(r"^(\d+)([smhdw])$", ttl.strip().lower())
+    if not match:
+        return None
+    value = int(match.group(1))
+    unit = match.group(2)
+    delta_map = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+    expires = datetime.now(timezone.utc) + timedelta(**{delta_map[unit]: value})
+    return expires.isoformat()
 
 
 def _serialize_embedding(vec: List[float]) -> bytes:
@@ -97,8 +114,18 @@ class Lore:
                 )
             from lore.store.remote import RemoteStore
             self._store: Store = RemoteStore(api_url=api_url, api_key=api_key)
+            from lore.memory_store.remote import RemoteStore as MemoryRemoteStore
+            self._memory_store: MemoryStore = MemoryRemoteStore(
+                api_url=api_url, api_key=api_key,
+            )
         elif isinstance(store, Store):
             self._store = store
+            # If user passed a custom lesson store, memory store uses default
+            if db_path is None:
+                db_path = os.path.join(
+                    os.path.expanduser("~"), ".lore", "default.db"
+                )
+            self._memory_store = MemorySqliteStore(db_path)
         elif store is not None:
             raise ValueError(f"store must be a Store instance or 'remote', got {store!r}")
         else:
@@ -107,6 +134,7 @@ class Lore:
                     os.path.expanduser("~"), ".lore", "default.db"
                 )
             self._store = SqliteStore(db_path)
+            self._memory_store = MemorySqliteStore(db_path)
 
         # Resolve embedder: explicit embedder > embedding_fn > default local
         if embedder is not None:
@@ -117,9 +145,11 @@ class Lore:
             self._embedder = LocalEmbedder()
 
     def close(self) -> None:
-        """Close underlying store if it supports closing."""
+        """Close underlying stores if they support closing."""
         if hasattr(self._store, "close"):
             self._store.close()  # type: ignore[attr-defined]
+        if hasattr(self._memory_store, "close"):
+            self._memory_store.close()  # type: ignore[attr-defined]
 
     def __enter__(self) -> "Lore":
         return self
@@ -421,6 +451,107 @@ class Lore:
             imported += 1
 
         return imported
+
+    # ------------------------------------------------------------------
+    # New Memory API (remember / recall / forget / list_memories / stats)
+    # ------------------------------------------------------------------
+
+    def remember(
+        self,
+        content: str,
+        type: str = "note",
+        tags: Optional[List[str]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        project: Optional[str] = None,
+        source: Optional[str] = None,
+        ttl: Optional[str] = None,
+    ) -> str:
+        """Store a memory. Returns the memory ID."""
+        effective_project = project or self.project
+        expires_at = _parse_ttl(ttl)
+
+        embedding_vec = self._embedder.embed(content)
+        embedding_bytes = _serialize_embedding(embedding_vec)
+
+        now = _utc_now_iso()
+        memory = Memory(
+            id=str(ULID()),
+            content=content,
+            type=type,
+            source=source,
+            project=effective_project,
+            tags=tags or [],
+            metadata=metadata or {},
+            embedding=embedding_bytes,
+            created_at=now,
+            updated_at=now,
+            expires_at=expires_at,
+        )
+        self._memory_store.save(memory)
+        return memory.id
+
+    def recall(
+        self,
+        query_text: str,
+        type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        project: Optional[str] = None,
+        limit: int = 5,
+    ) -> List[SearchResult]:
+        """Semantic search over memories. Returns results sorted by score."""
+        effective_project = project or self.project
+        query_vec = self._embedder.embed(query_text)
+        return self._memory_store.search(
+            embedding=query_vec,
+            type=type,
+            tags=tags,
+            project=effective_project,
+            limit=limit,
+        )
+
+    def forget(
+        self,
+        id: Optional[str] = None,
+        type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        project: Optional[str] = None,
+    ) -> int:
+        """Delete memories. By ID (returns 1/0), or by filter (returns count)."""
+        if id:
+            return 1 if self._memory_store.delete(id) else 0
+        return self._memory_store.delete_by_filter(
+            type=type, tags=tags, project=project,
+        )
+
+    def list_memories(
+        self,
+        type: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        project: Optional[str] = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> Tuple[List[Memory], int]:
+        """List memories with optional filters. Returns (memories, total)."""
+        effective_project = project or self.project
+        return self._memory_store.list(
+            type=type,
+            tags=tags,
+            project=effective_project,
+            limit=limit,
+            offset=offset,
+        )
+
+    def memory_stats(
+        self,
+        project: Optional[str] = None,
+    ) -> StoreStats:
+        """Get aggregate statistics for the memory store."""
+        effective_project = project or self.project
+        return self._memory_store.stats(project=effective_project)
+
+    def get_memory(self, memory_id: str) -> Optional[Memory]:
+        """Get a single memory by ID."""
+        return self._memory_store.get(memory_id)
 
 
 def _utc_now_iso() -> str:
