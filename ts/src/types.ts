@@ -1,7 +1,10 @@
 /**
- * A single lesson learned by an agent.
- * Field names use camelCase in TS but map to snake_case in SQLite for cross-compatibility.
+ * Core types for the Lore SDK.
  */
+
+// ── Legacy lesson types (backward compatible) ──────────────────────
+
+/** @deprecated Use Memory instead */
 export interface Lesson {
   id: string;
   problem: string;
@@ -20,7 +23,7 @@ export interface Lesson {
   meta: Record<string, unknown> | null;
 }
 
-/** Options for publishing a new lesson. */
+/** @deprecated Use RememberOptions instead */
 export interface PublishOptions {
   problem: string;
   resolution: string;
@@ -31,23 +34,93 @@ export interface PublishOptions {
   project?: string;
 }
 
-/** Options for listing lessons. */
+/** @deprecated Use ListMemoriesOptions instead */
 export interface ListOptions {
   project?: string;
   limit?: number;
 }
 
-/** A query result containing a lesson and its relevance score. */
+/** @deprecated Use SearchResult instead */
 export interface QueryResult {
   lesson: Lesson;
   score: number;
 }
 
-/** Options for querying lessons. */
+/** @deprecated Use RecallOptions instead */
 export interface QueryOptions {
   tags?: string[];
   limit?: number;
   minConfidence?: number;
+}
+
+// ── General memory types ────────────────────────────────────────────
+
+/** A single memory stored in Lore. */
+export interface Memory {
+  id: string;
+  content: string;
+  type: string;
+  source: string | null;
+  project: string | null;
+  tags: string[];
+  metadata: Record<string, unknown>;
+  embedding: Buffer | null;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string | null;
+}
+
+/** A memory with its relevance score from a search. */
+export interface SearchResult {
+  memory: Memory;
+  score: number;
+}
+
+/** Summary statistics about the memory store. */
+export interface StoreStats {
+  totalCount: number;
+  countByType: Record<string, number>;
+  countByProject: Record<string, number>;
+  oldestMemory: string | null;
+  newestMemory: string | null;
+}
+
+/** Options for storing a memory. */
+export interface RememberOptions {
+  content: string;
+  type?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
+  project?: string;
+  source?: string;
+  ttl?: string;
+}
+
+/** Options for recalling memories. */
+export interface RecallOptions {
+  query: string;
+  type?: string;
+  tags?: string[];
+  project?: string;
+  limit?: number;
+}
+
+/** Options for forgetting memories. */
+export interface ForgetOptions {
+  id?: string;
+  type?: string;
+  tags?: string[];
+  project?: string;
+}
+
+/** Options for listing memories. */
+export interface ListMemoriesOptions {
+  type?: string;
+  tags?: string[];
+  project?: string;
+  limit?: number;
+  offset?: number;
+  includeExpired?: boolean;
 }
 
 /** A user-provided embedding function. */

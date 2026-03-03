@@ -1,10 +1,9 @@
-<![CDATA[# Lore (TypeScript)
+# lore-sdk (TypeScript)
 
 [![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
-[![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz/lore/ci.yml?label=tests)](https://github.com/amitpaz/lore/actions)
-[![License](https://img.shields.io/github/license/amitpaz/lore)](../LICENSE)
+[![License](https://img.shields.io/github/license/amitpaz1/lore)](../LICENSE)
 
-**Cross-agent memory for TypeScript.** Agents publish what they learn, other agents query it. PII redacted automatically.
+**Universal AI memory layer — TypeScript SDK.** Give your AI agents persistent memory across conversations.
 
 > This is the TypeScript SDK. For the Python SDK and project overview, see the [main README](../README.md).
 
@@ -16,106 +15,124 @@ npm install lore-sdk
 
 Requires Node 18+.
 
-## Quickstart
+## Quick Start
+
+### Remote mode (recommended — connects to Lore server)
 
 ```typescript
 import { Lore } from 'lore-sdk';
 
-// You provide the embedding function (any model works)
 const lore = new Lore({
-  embeddingFn: (text) => yourModel.embed(text),
+  store: 'remote',
+  apiUrl: 'http://localhost:8765',
+  apiKey: 'lore_sk_...',
 });
 
-await lore.publish({
-  problem: 'Stripe API returns 429 after 100 req/min',
-  resolution: 'Exponential backoff starting at 1s, cap at 32s',
+// Store a memory
+const id = await lore.remember({
+  content: 'Stripe rate-limits at 100 req/min. Use exponential backoff.',
+  type: 'lesson',
   tags: ['stripe', 'rate-limit'],
-  confidence: 0.9,
 });
 
-const lessons = await lore.query('stripe rate limiting');
-const prompt = lore.asPrompt(lessons);
-// Inject `prompt` into your agent's system message
+// Search memories
+const results = await lore.recall({ query: 'rate limiting', limit: 5 });
+for (const { memory, score } of results) {
+  console.log(`[${score.toFixed(2)}] ${memory.content}`);
+}
+
+// List memories
+const { memories, total } = await lore.listMemories({ type: 'lesson', limit: 10 });
+
+// Get statistics
+const stats = await lore.stats();
+console.log(`Total memories: ${stats.totalCount}`);
+
+// Delete a memory
+await lore.forget({ id });
+
+await lore.close();
 ```
 
-## API Reference
+### Local mode (SQLite, requires embedding function)
 
-### `new Lore(options?)`
+```typescript
+import { Lore } from 'lore-sdk';
+
+const lore = new Lore({
+  project: 'my-project',
+  embeddingFn: async (text) => {
+    // Your embedding function (e.g., OpenAI, local model)
+    return new Array(384).fill(0); // placeholder
+  },
+});
+
+await lore.remember({ content: 'My first memory' });
+await lore.close();
+```
+
+## Memory API
+
+### `lore.remember(opts): Promise<string>`
+
+Store a memory. Returns the memory ID.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `project` | `string` | — | Scope lessons to a project |
-| `dbPath` | `string` | `~/.lore/default.db` | SQLite database path |
-| `store` | `Store` | — | Custom storage backend |
-| `embeddingFn` | `(text: string) => number[] \| Promise<number[]>` | — | Embedding function (**required for `query()`**) |
-| `redact` | `boolean` | `true` | Enable automatic PII redaction |
-| `redactPatterns` | `[RegExp \| string, string][]` | — | Custom redaction patterns |
-| `decayHalfLifeDays` | `number` | `30` | Score decay half-life |
-
-### `lore.publish(options): Promise<string>`
-
-Publish a lesson. Returns the lesson ID.
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `problem` | `string` | *required* | What went wrong |
-| `resolution` | `string` | *required* | How to fix it |
-| `context` | `string` | — | Additional context |
+| `content` | `string` | *required* | Memory content |
+| `type` | `string` | `'note'` | Memory type (note, lesson, snippet, etc.) |
 | `tags` | `string[]` | `[]` | Filterable tags |
-| `confidence` | `number` | `0.5` | Confidence (0–1) |
+| `metadata` | `object` | `{}` | Arbitrary metadata |
+| `project` | `string` | instance default | Project scope |
 | `source` | `string` | — | Source identifier |
-| `project` | `string` | instance default | Override project scope |
+| `ttl` | `string` | — | Time to live (`'7d'`, `'1h'`, `'30m'`) |
 
-### `lore.query(text, options?): Promise<QueryResult[]>`
+### `lore.recall(opts): Promise<SearchResult[]>`
 
-Semantic search over lessons. Requires `embeddingFn`.
+Semantic search over memories.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `query` | `string` | *required* | Search text |
+| `type` | `string` | — | Filter by type |
 | `tags` | `string[]` | — | Filter: must have ALL tags |
+| `project` | `string` | instance default | Filter by project |
 | `limit` | `number` | `5` | Max results |
-| `minConfidence` | `number` | `0.0` | Min confidence threshold |
 
-### `lore.asPrompt(lessons, maxTokens?): string`
+### `lore.forget(opts): Promise<number>`
 
-Format results as markdown for system prompt injection. Default `maxTokens` is 1000.
+Delete memories. Returns count deleted.
 
-### `lore.get(lessonId): Promise<Lesson | null>`
+| Option | Type | Description |
+|--------|------|-------------|
+| `id` | `string` | Delete single memory by ID |
+| `type` | `string` | Bulk delete by type |
+| `tags` | `string[]` | Bulk delete by tags |
+| `project` | `string` | Bulk delete by project |
 
-Get a lesson by ID.
+### `lore.listMemories(opts?): Promise<{ memories, total }>`
 
-### `lore.list(options?): Promise<Lesson[]>`
+List memories with pagination and filters.
 
-List lessons. Options: `{ project?, limit? }`.
+### `lore.stats(project?): Promise<StoreStats>`
 
-### `lore.delete(lessonId): Promise<boolean>`
+Get memory store statistics.
 
-Delete a lesson by ID.
+### `lore.getMemory(id): Promise<Memory | null>`
 
-### `lore.upvote(lessonId): Promise<void>`
-
-Increment upvotes. Throws if not found.
-
-### `lore.downvote(lessonId): Promise<void>`
-
-Increment downvotes. Throws if not found.
-
-### `lore.close(): Promise<void>`
-
-Close the underlying store.
+Get a single memory by ID.
 
 ## Key Difference from Python SDK
 
-The TypeScript SDK **does not ship a built-in embedding model**. You must provide an `embeddingFn` to use `query()`. Publishing works without one (lessons are stored without embeddings), but semantic search requires it.
+In **remote mode** (recommended), the server handles embedding — no local model needed.
 
-Example with OpenAI:
+In **local mode**, the TypeScript SDK does not ship a built-in embedding model. Provide an `embeddingFn` for semantic search. Example with OpenAI:
 
 ```typescript
 import OpenAI from 'openai';
 import { Lore } from 'lore-sdk';
 
 const openai = new OpenAI();
-
 const lore = new Lore({
   embeddingFn: async (text) => {
     const res = await openai.embeddings.create({
@@ -127,25 +144,10 @@ const lore = new Lore({
 });
 ```
 
-## Redaction
+## Legacy API
 
-Same as Python — automatic redaction of API keys, emails, phones, IPs, and credit cards. Add custom patterns:
-
-```typescript
-const lore = new Lore({
-  redactPatterns: [
-    [/ACCT-\d{8}/, 'account_id'],
-  ],
-});
-```
-
-## Examples
-
-See [`examples/`](examples/) for runnable scripts:
-- [`basic-usage.ts`](examples/basic-usage.ts) — publish, query, format
-- [`custom-embeddings.ts`](examples/custom-embeddings.ts) — using OpenAI embeddings
+The `publish()` / `query()` / `upvote()` / `downvote()` methods still work for backward compatibility but are deprecated. Use `remember()` / `recall()` / `forget()` instead.
 
 ## License
 
 MIT
-]]>

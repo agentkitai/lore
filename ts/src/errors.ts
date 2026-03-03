@@ -14,12 +14,22 @@ export class LoreAuthError extends Error {
   }
 }
 
-/** Raised when a lesson is not found. */
+/** Raised when a lesson is not found. @deprecated Use MemoryNotFoundError instead */
 export class LessonNotFoundError extends Error {
   readonly lessonId: string;
   constructor(lessonId: string) {
     super(`Lesson not found: ${lessonId}`);
     this.name = 'LessonNotFoundError';
     this.lessonId = lessonId;
+  }
+}
+
+/** Raised when a memory is not found. */
+export class MemoryNotFoundError extends Error {
+  readonly memoryId: string;
+  constructor(memoryId: string) {
+    super(`Memory not found: ${memoryId}`);
+    this.name = 'MemoryNotFoundError';
+    this.memoryId = memoryId;
   }
 }
