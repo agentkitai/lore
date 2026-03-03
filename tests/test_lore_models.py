@@ -1,4 +1,4 @@
-"""Tests for Open Brain Pydantic API models."""
+"""Tests for Lore Pydantic API models."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from openbrain.server.models import (
+from lore.server.models import (
     BulkDeleteResponse,
     MemoryCreateRequest,
     MemoryListResponse,

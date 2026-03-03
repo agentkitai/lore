@@ -1,4 +1,4 @@
-"""Tests for Open Brain SqliteStore."""
+"""Tests for Lore SqliteStore."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from typing import Generator
 
 import pytest
 
-from openbrain.store.sqlite import SqliteStore
-from openbrain.types import Memory
+from lore.memory_store.sqlite import SqliteStore
+from lore.types import Memory
 
 TS = "2026-01-01T00:00:00+00:00"
 

@@ -1,4 +1,4 @@
-"""Tests for Open Brain MCP tools."""
+"""Tests for Lore MCP tools."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 
 # We test the tool functions directly, not via MCP transport
-from openbrain.mcp import server as mcp_server
+from lore.mcp import server as mcp_server
 
 
 def _stub_embed(text: str) -> List[float]:
@@ -34,8 +34,8 @@ def tmp_db(tmp_path):
     """Provide a temp DB path and configure env for local mode."""
     db_path = str(tmp_path / "test.db")
     with patch.dict(os.environ, {
-        "OPENBRAIN_STORE": "local",
-        "OPENBRAIN_DB_PATH": db_path,
+        "LORE_STORE": "local",
+        "LORE_DB_PATH": db_path,
     }, clear=False):
         yield db_path
 
@@ -75,7 +75,7 @@ class TestRemember:
         assert "Memory saved" in result
 
     def test_remember_uses_default_project(self, tmp_db) -> None:
-        with patch.dict(os.environ, {"OPENBRAIN_PROJECT": "default-proj"}, clear=False):
+        with patch.dict(os.environ, {"LORE_PROJECT": "default-proj"}, clear=False):
             # Reset store so it picks up new env
             mcp_server._store = None
             mcp_server._default_project = None

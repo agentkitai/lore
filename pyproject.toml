@@ -3,13 +3,13 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "openbrain"
-version = "0.3.0"
+name = "lore-sdk"
+version = "0.4.0"
 description = "Universal AI memory layer. MCP-native. Self-hosted."
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Amit Paz", email = "amit.paz@gmail.com" }]
-keywords = ["ai", "memory", "mcp", "openbrain", "agent", "llm", "embeddings"]
+keywords = ["ai", "memory", "mcp", "lore", "agent", "llm", "embeddings"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
@@ -46,17 +46,21 @@ redis = [
 aws = [
     "boto3>=1.26.0",
 ]
+cli = [
+    "click>=8.0.0",
+    "httpx>=0.24.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
     "httpx>=0.24.0",
     "ruff>=0.1.0",
+    "click>=8.0.0",
 ]
 
 [project.scripts]
-openbrain = "lore.cli:main"
-openbrain-mcp = "openbrain.mcp.server:run_server"
 lore = "lore.cli:main"
+lore-mcp = "lore.mcp.server:run_server"
 
 [project.urls]
 Homepage = "https://github.com/amitpaz1/lore"
@@ -64,7 +68,7 @@ Repository = "https://github.com/amitpaz1/lore"
 Issues = "https://github.com/amitpaz1/lore/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/lore", "src/openbrain"]
+packages = ["src/lore"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

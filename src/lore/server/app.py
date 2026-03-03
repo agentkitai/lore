@@ -32,10 +32,10 @@ from lore.server.logging_config import setup_logging
 from lore.server.middleware import install_middleware
 from lore.server.routes.keys import router as keys_router
 from lore.server.routes.lessons import router as lessons_router
+from lore.server.routes.memories import router as memories_router
+from lore.server.routes.memories import stats_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
-from openbrain.server.routes.memories import router as memories_router
-from openbrain.server.routes.memories import stats_router
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -55,7 +55,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Warm up the embedding model for server-side embedding
     try:
-        from openbrain.server.embed import ServerEmbedder
+        from lore.server.embed import ServerEmbedder
         embedder = ServerEmbedder.get_instance()
         embedder.load()
     except Exception:
@@ -66,8 +66,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="Open Brain",
-    version="0.3.0",
+    title="Lore",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -77,7 +77,7 @@ app.include_router(lessons_router)
 app.include_router(sharing_router)
 app.include_router(rate_router)
 
-# Open Brain memory endpoints
+# Lore memory endpoints
 app.include_router(memories_router)
 app.include_router(stats_router)
 
@@ -98,7 +98,7 @@ async def auth_error_handler(request: Request, exc: AuthError) -> JSONResponse:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok", "service": "openbrain"}
+    return {"status": "ok", "service": "lore"}
 
 
 @app.get("/ready")
@@ -182,10 +182,10 @@ async def org_init(body: OrgInitRequest) -> OrgInitResponse:
                 body.name,
             )
 
-            # Generate API key with ob_sk_ prefix (Open Brain)
-            raw_key = "ob_sk_" + secrets.token_hex(16)
+            # Generate API key with lore_sk_ prefix
+            raw_key = "lore_sk_" + secrets.token_hex(16)
             key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-            key_prefix = raw_key[:12]
+            key_prefix = raw_key[:15]
             key_id = str(ULID())
 
             await conn.execute(

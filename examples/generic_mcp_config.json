@@ -1,13 +1,13 @@
 {
   "mcpServers": {
-    "openbrain": {
+    "lore": {
       "command": "python",
-      "args": ["-m", "openbrain.mcp"],
+      "args": ["-m", "lore.mcp"],
       "env": {
-        "OPENBRAIN_STORE": "local",
-        "OPENBRAIN_PROJECT": "my-project",
-        "OPENBRAIN_DB_PATH": "~/.openbrain/default.db",
-        "OPENBRAIN_MODEL_DIR": "~/.openbrain/models"
+        "LORE_STORE": "local",
+        "LORE_PROJECT": "my-project",
+        "LORE_DB_PATH": "~/.lore/default.db",
+        "LORE_MODEL_DIR": "~/.lore/models"
       }
     }
   }

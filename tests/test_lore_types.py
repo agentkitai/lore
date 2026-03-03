@@ -1,8 +1,8 @@
-"""Tests for Open Brain core data types."""
+"""Tests for Lore core data types."""
 
 from __future__ import annotations
 
-from openbrain.types import Memory, SearchResult, StoreStats
+from lore.types import Memory, SearchResult, StoreStats
 
 
 class TestMemory:

@@ -1,8 +1,8 @@
-# Open Brain
+# Lore
 
 [![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz1/lore/ci.yml?label=tests)](https://github.com/amitpaz1/lore/actions)
 [![License](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.9+-blue)](https://pypi.org/project/openbrain/)
+[![Python](https://img.shields.io/badge/python-3.9+-blue)](https://pypi.org/project/lore-sdk/)
 
 **Give your AI a brain.** Universal memory layer for AI agents. MCP-native. Self-hosted. One `docker compose up` and your AI remembers everything.
 
@@ -11,8 +11,8 @@
 ## Quickstart (< 2 minutes)
 
 ```bash
-# 1. Start Open Brain
-git clone https://github.com/amitpaz1/lore.git openbrain && cd openbrain
+# 1. Start Lore
+git clone https://github.com/amitpaz1/lore.git && cd lore
 docker compose up -d
 
 # 2. Initialize your org + get an API key
@@ -27,11 +27,11 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 ```json
 {
   "mcpServers": {
-    "openbrain": {
+    "lore": {
       "command": "python",
-      "args": ["-m", "openbrain.mcp"],
+      "args": ["-m", "lore.mcp"],
       "env": {
-        "OPENBRAIN_PROJECT": "my-project"
+        "LORE_PROJECT": "my-project"
       }
     }
   }
@@ -42,9 +42,9 @@ Restart Claude Desktop. Done. Claude can now remember and recall information acr
 
 ---
 
-## What Is Open Brain?
+## What Is Lore?
 
-Open Brain gives AI agents persistent memory. Your AI learns something? It remembers it forever. Next conversation, next agent, next week — the knowledge is there.
+Lore gives AI agents persistent memory. Your AI learns something? It remembers it forever. Next conversation, next agent, next week — the knowledge is there.
 
 **5 MCP tools** your AI gets:
 
@@ -67,7 +67,7 @@ Open Brain gives AI agents persistent memory. Your AI learns something? It remem
 └──────────────────────┬──────────────────────────────┘
                        │ MCP (stdio)
 ┌──────────────────────▼──────────────────────────────┐
-│           Open Brain MCP Server                      │
+│              Lore MCP Server                         │
 │  ┌────────┐ ┌──────┐ ┌──────┐ ┌────┐ ┌─────┐      │
 │  │remember│ │recall│ │forget│ │list│ │stats│      │
 │  └───┬────┘ └──┬───┘ └──┬───┘ └─┬──┘ └──┬──┘      │
@@ -106,11 +106,11 @@ Open Brain gives AI agents persistent memory. Your AI learns something? It remem
 ```json
 {
   "mcpServers": {
-    "openbrain": {
+    "lore": {
       "command": "python",
-      "args": ["-m", "openbrain.mcp"],
+      "args": ["-m", "lore.mcp"],
       "env": {
-        "OPENBRAIN_PROJECT": "my-project"
+        "LORE_PROJECT": "my-project"
       }
     }
   }
@@ -124,11 +124,11 @@ Add to `.cursor/mcp.json` in your project root:
 ```json
 {
   "mcpServers": {
-    "openbrain": {
+    "lore": {
       "command": "python",
-      "args": ["-m", "openbrain.mcp"],
+      "args": ["-m", "lore.mcp"],
       "env": {
-        "OPENBRAIN_PROJECT": "my-project"
+        "LORE_PROJECT": "my-project"
       }
     }
   }
@@ -137,18 +137,18 @@ Add to `.cursor/mcp.json` in your project root:
 
 ### Remote Mode (shared server)
 
-Point the MCP client at your Open Brain server instead of using local SQLite:
+Point the MCP client at your Lore server instead of using local SQLite:
 
 ```json
 {
   "mcpServers": {
-    "openbrain": {
+    "lore": {
       "command": "python",
-      "args": ["-m", "openbrain.mcp"],
+      "args": ["-m", "lore.mcp"],
       "env": {
-        "OPENBRAIN_STORE": "remote",
-        "OPENBRAIN_API_URL": "http://localhost:8765",
-        "OPENBRAIN_API_KEY": "ob_sk_..."
+        "LORE_STORE": "remote",
+        "LORE_API_URL": "http://localhost:8765",
+        "LORE_API_KEY": "lore_sk_..."
       }
     }
   }
@@ -162,24 +162,24 @@ See [`examples/`](examples/) for ready-to-paste config files.
 ## Install
 
 ```bash
-pip install openbrain
+pip install lore-sdk
 ```
 
 With MCP support:
 ```bash
-pip install openbrain[mcp]
+pip install lore-sdk[mcp]
 ```
 
 With server dependencies:
 ```bash
-pip install openbrain[server]
+pip install lore-sdk[server]
 ```
 
 ---
 
 ## REST API Reference
 
-All endpoints require `Authorization: Bearer ob_sk_...` header.
+All endpoints require `Authorization: Bearer lore_sk_...` header.
 
 ### Memories
 
@@ -197,7 +197,7 @@ All endpoints require `Authorization: Bearer ob_sk_...` header.
 
 ```bash
 curl -X POST http://localhost:8765/v1/memories \
-  -H "Authorization: Bearer ob_sk_..." \
+  -H "Authorization: Bearer lore_sk_..." \
   -H "Content-Type: application/json" \
   -d '{
     "content": "Stripe rate-limits at 100 req/min. Use exponential backoff.",
@@ -211,7 +211,7 @@ curl -X POST http://localhost:8765/v1/memories \
 
 ```bash
 curl "http://localhost:8765/v1/memories/search?q=rate+limiting&limit=5" \
-  -H "Authorization: Bearer ob_sk_..."
+  -H "Authorization: Bearer lore_sk_..."
 ```
 
 ### Organization setup
@@ -221,7 +221,7 @@ curl "http://localhost:8765/v1/memories/search?q=rate+limiting&limit=5" \
 curl -X POST http://localhost:8765/v1/org/init \
   -H "Content-Type: application/json" \
   -d '{"name": "my-org"}'
-# Returns: {"org_id": "...", "api_key": "ob_sk_...", "key_prefix": "ob_sk_..."}
+# Returns: {"org_id": "...", "api_key": "lore_sk_...", "key_prefix": "lore_sk_..."}
 ```
 
 ---
@@ -231,7 +231,7 @@ curl -X POST http://localhost:8765/v1/org/init \
 ### Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/amitpaz1/lore.git openbrain && cd openbrain
+git clone https://github.com/amitpaz1/lore.git && cd lore
 
 # Development
 docker compose up -d
@@ -242,7 +242,7 @@ docker compose -f docker-compose.prod.yml up -d
 ```
 
 The stack includes:
-- **Open Brain server** on port 8765
+- **Lore server** on port 8765
 - **PostgreSQL 16 + pgvector** for storage and vector search
 - Health checks, auto-restart, resource limits (production)
 
@@ -251,19 +251,19 @@ The stack includes:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DATABASE_URL` | — | PostgreSQL connection string (server mode) |
-| `OPENBRAIN_STORE` | `local` | `local` (SQLite) or `remote` (HTTP to server) |
-| `OPENBRAIN_PROJECT` | — | Default project scope |
-| `OPENBRAIN_API_URL` | — | Server URL (remote mode) |
-| `OPENBRAIN_API_KEY` | — | API key (remote mode) |
-| `OPENBRAIN_DB_PATH` | `~/.openbrain/default.db` | SQLite path (local mode) |
-| `OPENBRAIN_MODEL_DIR` | `~/.openbrain/models` | Embedding model cache |
-| `OPENBRAIN_REDACT` | `false` | Enable PII redaction |
+| `LORE_STORE` | `local` | `local` (SQLite) or `remote` (HTTP to server) |
+| `LORE_PROJECT` | — | Default project scope |
+| `LORE_API_URL` | — | Server URL (remote mode) |
+| `LORE_API_KEY` | — | API key (remote mode) |
+| `LORE_DB_PATH` | `~/.lore/default.db` | SQLite path (local mode) |
+| `LORE_MODEL_DIR` | `~/.lore/models` | Embedding model cache |
+| `LORE_REDACT` | `false` | Enable PII redaction |
 
 ---
 
-## Why Open Brain?
+## Why Lore?
 
-| | Open Brain | Mem0 | Zep | DIY pgvector |
+| | Lore | Mem0 | Zep | DIY pgvector |
 |---|---|---|---|---|
 | **MCP native** | Yes | No | No | No |
 | **Self-hosted** | Yes | Paid cloud | Paid cloud | Yes |
@@ -274,9 +274,9 @@ The stack includes:
 | **Cost** | Free | $99+/mo | $99+/mo | Free + time |
 | **Vendor lock-in** | None | High | High | None |
 
-Open Brain is the only memory layer that's:
+Lore is the only memory layer that's:
 1. **MCP-native** — works directly with Claude Desktop, Cursor, Windsurf
-2. **Zero-config local mode** — `pip install openbrain` and go, no server needed
+2. **Zero-config local mode** — `pip install lore-sdk` and go, no server needed
 3. **Self-hosted** — your data stays on your machine or your infra
 4. **Open source** — MIT licensed, no usage limits, no telemetry
 
@@ -284,7 +284,7 @@ Open Brain is the only memory layer that's:
 
 ## How It Works
 
-Open Brain uses **semantic search** powered by a local ONNX embedding model (all-MiniLM-L6-v2, 384 dimensions). No API calls, no data leaves your machine.
+Lore uses **semantic search** powered by a local ONNX embedding model (all-MiniLM-L6-v2, 384 dimensions). No API calls, no data leaves your machine.
 
 **Storing a memory:**
 1. Content comes in via MCP tool or REST API
@@ -303,36 +303,36 @@ Open Brain uses **semantic search** powered by a local ONNX embedding model (all
 ## Python SDK
 
 ```python
-from openbrain import OpenBrain
+from lore import Lore
 
-ob = OpenBrain()  # local mode — zero config
+client = Lore()  # local mode — zero config
 
 # Store
-ob.remember(
+client.remember(
     content="Stripe rate-limits at 100 req/min. Use exponential backoff.",
     type="lesson",
     tags=["stripe", "rate-limit"],
 )
 
 # Search
-results = ob.recall("stripe rate limiting", limit=5)
+results = client.recall("stripe rate limiting", limit=5)
 
 # List
-memories = ob.list(type="lesson", project="payments")
+memories = client.list(type="lesson", project="payments")
 
 # Stats
-stats = ob.stats()
+stats = client.stats()
 ```
 
 ### Remote mode
 
 ```python
-from openbrain import OpenBrain
+from lore import Lore
 
-ob = OpenBrain(
+client = Lore(
     store="remote",
     api_url="http://localhost:8765",
-    api_key="ob_sk_...",
+    api_key="lore_sk_...",
 )
 ```
 
@@ -359,7 +359,7 @@ Contributions welcome! Please open an issue first to discuss what you'd like to 
 
 ```bash
 # Development setup
-git clone https://github.com/amitpaz1/lore.git openbrain && cd openbrain
+git clone https://github.com/amitpaz1/lore.git && cd lore
 pip install -e ".[dev,server,mcp]"
 pytest
 ```

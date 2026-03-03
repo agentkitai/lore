@@ -17,7 +17,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_MODEL_DIR_DEFAULT = os.path.join(os.path.expanduser("~"), ".openbrain", "models")
+_MODEL_DIR_DEFAULT = os.path.join(os.path.expanduser("~"), ".lore", "models")
 _MODEL_NAME = "all-MiniLM-L6-v2"
 _EMBEDDING_DIM = 384
 
@@ -37,7 +37,7 @@ _TOKENIZER_FILES = {
 
 def _download_file(url: str, dest: str, desc: str) -> None:
     """Download a file with progress indication."""
-    req = Request(url, headers={"User-Agent": "openbrain/0.3"})
+    req = Request(url, headers={"User-Agent": "lore/0.4"})
     response = urlopen(req, timeout=60)  # noqa: S310
     total = response.headers.get("Content-Length")
     total_bytes = int(total) if total else None
@@ -78,7 +78,7 @@ def _download_file(url: str, dest: str, desc: str) -> None:
 
 def _ensure_model(model_dir: Optional[str] = None) -> str:
     """Ensure model files exist, downloading if needed. Returns model directory."""
-    base = model_dir or os.environ.get("OPENBRAIN_MODEL_DIR", _MODEL_DIR_DEFAULT)
+    base = model_dir or os.environ.get("LORE_MODEL_DIR", _MODEL_DIR_DEFAULT)
     model_path = os.path.join(base, _MODEL_NAME)
 
     onnx_path = os.path.join(model_path, "model.onnx")

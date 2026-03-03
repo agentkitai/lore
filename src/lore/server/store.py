@@ -258,38 +258,43 @@ class ServerStore:
         # asyncpg returns "DELETE N"
         return int(result.split()[-1])
 
-    async def stats(self, org_id: str) -> Dict[str, Any]:
-        """Aggregate statistics for an org."""
+    async def stats(self, org_id: str, project: Optional[str] = None) -> Dict[str, Any]:
+        """Aggregate statistics for an org, optionally filtered by project."""
+        where_parts: list[str] = ["org_id = $1", "(expires_at IS NULL OR expires_at > now())"]
+        params: list[Any] = [org_id]
+
+        if project is not None:
+            params.append(project)
+            where_parts.append(f"project = ${len(params)}")
+
+        where_sql = " AND ".join(where_parts)
+
         async with self._pool.acquire() as conn:
-            # Total count (excluding expired)
             total = await conn.fetchval(
-                "SELECT COUNT(*) FROM memories WHERE org_id = $1 AND (expires_at IS NULL OR expires_at > now())",
-                org_id,
+                f"SELECT COUNT(*) FROM memories WHERE {where_sql}",
+                *params,
             )
 
-            # Count by type
             type_rows = await conn.fetch(
-                """SELECT type, COUNT(*) as cnt FROM memories
-                   WHERE org_id = $1 AND (expires_at IS NULL OR expires_at > now())
+                f"""SELECT type, COUNT(*) as cnt FROM memories
+                   WHERE {where_sql}
                    GROUP BY type ORDER BY cnt DESC""",
-                org_id,
+                *params,
             )
 
-            # Count by project
             project_rows = await conn.fetch(
-                """SELECT COALESCE(project, '(unscoped)') as project, COUNT(*) as cnt
+                f"""SELECT COALESCE(project, '(unscoped)') as project, COUNT(*) as cnt
                    FROM memories
-                   WHERE org_id = $1 AND (expires_at IS NULL OR expires_at > now())
+                   WHERE {where_sql}
                    GROUP BY project ORDER BY cnt DESC""",
-                org_id,
+                *params,
             )
 
-            # Date range
             dates = await conn.fetchrow(
-                """SELECT MIN(created_at) as oldest, MAX(created_at) as newest
+                f"""SELECT MIN(created_at) as oldest, MAX(created_at) as newest
                    FROM memories
-                   WHERE org_id = $1 AND (expires_at IS NULL OR expires_at > now())""",
-                org_id,
+                   WHERE {where_sql}""",
+                *params,
             )
 
         return {

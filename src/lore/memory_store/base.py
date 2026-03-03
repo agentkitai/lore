@@ -1,11 +1,11 @@
-"""Abstract store interface for Open Brain."""
+"""Abstract store interface for Lore memories."""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 
-from openbrain.types import Memory, SearchResult, StoreStats
+from lore.types import Memory, SearchResult, StoreStats
 
 
 class Store(ABC):

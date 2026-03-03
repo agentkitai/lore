@@ -1,8 +1,10 @@
-"""Memory CRUD, search, and stats REST endpoints for Open Brain."""
+"""Memory CRUD, search, and stats REST endpoints for Lore."""
 
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -10,8 +12,8 @@ from ulid import ULID
 
 from lore.server.auth import AuthContext, get_auth_context, require_role
 from lore.server.db import get_pool
-from openbrain.server.embed import ServerEmbedder
-from openbrain.server.models import (
+from lore.server.embed import ServerEmbedder
+from lore.server.models import (
     BulkDeleteResponse,
     MemoryCreateRequest,
     MemoryCreateResponse,
@@ -21,7 +23,7 @@ from openbrain.server.models import (
     MemorySearchResult,
     StatsResponse,
 )
-from openbrain.server.store import ServerStore
+from lore.server.store import ServerStore
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,19 @@ def _parse_tags(tags_param: Optional[str]) -> Optional[List[str]]:
     if not tags_param:
         return None
     return [t.strip() for t in tags_param.split(",") if t.strip()]
+
+
+def _parse_ttl(ttl: Optional[str]) -> Optional[datetime]:
+    """Parse a TTL string (e.g. '7d', '1h', '30m') into an expires_at datetime."""
+    if not ttl:
+        return None
+    match = re.match(r"^(\d+)([smhdw])$", ttl.strip().lower())
+    if not match:
+        return None
+    value = int(match.group(1))
+    unit = match.group(2)
+    delta_map = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days", "w": "weeks"}
+    return datetime.now(timezone.utc) + timedelta(**{delta_map[unit]: value})
 
 
 async def _get_store() -> ServerStore:
@@ -71,6 +86,11 @@ async def create_memory(
     if auth.project is not None:
         project = auth.project
 
+    # Resolve TTL to expires_at
+    expires_at = body.expires_at
+    if body.ttl and not expires_at:
+        expires_at = _parse_ttl(body.ttl)
+
     memory_id = str(ULID())
     store = await _get_store()
 
@@ -88,7 +108,7 @@ async def create_memory(
         project=project,
         tags=body.tags,
         metadata=body.metadata,
-        expires_at=body.expires_at,
+        expires_at=expires_at,
     )
 
     return MemoryCreateResponse(id=memory_id)
@@ -242,11 +262,16 @@ async def bulk_delete_memories(
 
 @stats_router.get("/v1/stats", response_model=StatsResponse)
 async def get_stats(
+    project: Optional[str] = Query(None),
     auth: AuthContext = Depends(get_auth_context),
 ) -> StatsResponse:
     """Get memory store statistics."""
+    effective_project = project
+    if auth.project is not None:
+        effective_project = auth.project
+
     store = await _get_store()
-    data = await store.stats(auth.org_id)
+    data = await store.stats(auth.org_id, project=effective_project)
 
     return StatsResponse(
         total_count=data["total_count"],

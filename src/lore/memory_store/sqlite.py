@@ -1,4 +1,4 @@
-"""SQLite store implementation for Open Brain local mode."""
+"""SQLite store implementation for Lore local mode."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
-from openbrain.store.base import Store
-from openbrain.types import Memory, SearchResult, StoreStats
+from lore.memory_store.base import Store
+from lore.types import Memory, SearchResult, StoreStats
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS memories (
@@ -239,7 +239,6 @@ class SqliteStore(Store):
 
         cursor = self._conn.execute(query, params)
         self._conn.commit()
-        # Note: tags filtering for delete is less critical in local mode
         return cursor.rowcount
 
     def stats(self) -> StoreStats:

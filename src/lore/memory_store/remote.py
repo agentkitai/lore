@@ -1,18 +1,18 @@
-"""Remote HTTP store implementation for Open Brain."""
+"""Remote HTTP store implementation for Lore memories."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from openbrain.store.base import Store
-from openbrain.types import Memory, SearchResult, StoreStats
+from lore.memory_store.base import Store
+from lore.types import Memory, SearchResult, StoreStats
 
 try:
     import httpx
 except ImportError:
     raise ImportError(
         "httpx is required for RemoteStore. "
-        "Install with: pip install openbrain[remote]"
+        "Install with: pip install lore-sdk[remote]"
     )
 
 
@@ -44,7 +44,7 @@ def _response_to_memory(data: Dict[str, Any]) -> Memory:
 
 
 class RemoteStore(Store):
-    """HTTP-backed memory store that delegates to the Open Brain API server."""
+    """HTTP-backed memory store that delegates to the Lore API server."""
 
     def __init__(self, api_url: str, api_key: str, timeout: float = 30.0) -> None:
         self._api_url = api_url.rstrip("/")
@@ -96,7 +96,6 @@ class RemoteStore(Store):
             payload["expires_at"] = memory.expires_at
 
         resp = self._request("POST", "/v1/memories", json_data=payload)
-        # Update the memory ID from the server response
         data = resp.json()
         memory.id = data["id"]
 
@@ -117,9 +116,6 @@ class RemoteStore(Store):
         project: Optional[str] = None,
         limit: int = 5,
     ) -> List[SearchResult]:
-        # Remote search uses the text-based search endpoint
-        # The embedding is not sent — the server embeds the query itself
-        # This method is only used by the local store; remote mode uses _search_text
         raise NotImplementedError(
             "RemoteStore.search() with embeddings is not supported. "
             "Use search_text() instead."

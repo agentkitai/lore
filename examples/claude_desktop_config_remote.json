@@ -1,12 +1,12 @@
 {
   "mcpServers": {
-    "openbrain": {
+    "lore": {
       "command": "python",
-      "args": ["-m", "openbrain.mcp"],
+      "args": ["-m", "lore.mcp"],
       "env": {
-        "OPENBRAIN_STORE": "remote",
-        "OPENBRAIN_API_URL": "http://localhost:8765",
-        "OPENBRAIN_API_KEY": "ob_sk_your_api_key_here"
+        "LORE_STORE": "remote",
+        "LORE_API_URL": "http://localhost:8765",
+        "LORE_API_KEY": "lore_sk_your_api_key_here"
       }
     }
   }

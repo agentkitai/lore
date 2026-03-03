@@ -26,10 +26,10 @@ jobs:
         run: ruff check src/ tests/
       - name: Test
         run: pytest
-      - name: Verify openbrain imports
+      - name: Verify lore imports
         run: |
-          python -c "from openbrain import Memory, SearchResult, StoreStats; print('OK')"
-          python -c "from openbrain.types import Memory; print('OK')"
+          python -c "from lore import Memory, SearchResult, StoreStats; print('OK')"
+          python -c "from lore.types import Memory; print('OK')"
 
   python-postgres:
     runs-on: ubuntu-latest
@@ -37,13 +37,13 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg16
         env:
-          POSTGRES_USER: openbrain
-          POSTGRES_PASSWORD: openbrain
-          POSTGRES_DB: openbrain_test
+          POSTGRES_USER: lore
+          POSTGRES_PASSWORD: lore
+          POSTGRES_DB: lore_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U openbrain"
+          --health-cmd "pg_isready -U lore"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -59,10 +59,10 @@ jobs:
           pip install -e ".[dev,server]"
       - name: Enable pgvector extension
         run: |
-          PGPASSWORD=openbrain psql -h localhost -U openbrain -d openbrain_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
+          PGPASSWORD=lore psql -h localhost -U lore -d lore_test -c "CREATE EXTENSION IF NOT EXISTS vector;"
       - name: Test with PostgreSQL
         env:
-          DATABASE_URL: postgresql://openbrain:openbrain@localhost:5432/openbrain_test
+          DATABASE_URL: postgresql://lore:lore@localhost:5432/lore_test
         run: pytest tests/server/ -v
 
   docker:
@@ -70,10 +70,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build Docker image
-        run: docker build -f Dockerfile.server -t openbrain:test .
+        run: docker build -f Dockerfile.server -t lore:test .
       - name: Verify image size
         run: |
-          SIZE=$(docker image inspect openbrain:test --format='{{.Size}}')
+          SIZE=$(docker image inspect lore:test --format='{{.Size}}')
           SIZE_MB=$((SIZE / 1024 / 1024))
           echo "Image size: ${SIZE_MB}MB"
           if [ "$SIZE_MB" -gt 500 ]; then

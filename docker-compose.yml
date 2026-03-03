@@ -1,14 +1,14 @@
 services:
-  openbrain:
+  lore:
     build:
       context: .
       dockerfile: Dockerfile.server
-    container_name: openbrain
-    image: openbrain
+    container_name: lore
+    image: lore
     ports:
       - "8765:8765"
     environment:
-      DATABASE_URL: postgresql://openbrain:openbrain@db:5432/openbrain
+      DATABASE_URL: postgresql://lore:lore@db:5432/lore
     depends_on:
       db:
         condition: service_healthy
@@ -16,22 +16,22 @@ services:
       - ./src:/app/src
       - ./migrations:/app/migrations
     command: >
-      uvicorn openbrain.server.app:app
+      uvicorn lore.server.app:app
       --host 0.0.0.0 --port 8765
       --reload --reload-dir /app/src
 
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: openbrain
-      POSTGRES_USER: openbrain
-      POSTGRES_PASSWORD: openbrain
+      POSTGRES_DB: lore
+      POSTGRES_USER: lore
+      POSTGRES_PASSWORD: lore
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U openbrain"]
+      test: ["CMD-SHELL", "pg_isready -U lore"]
       interval: 2s
       timeout: 5s
       retries: 10
