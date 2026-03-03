@@ -373,7 +373,8 @@ def stats(project: Optional[str] = None) -> str:
     """Get memory store statistics."""
     try:
         store = _get_store()
-        s = store.stats()
+        effective_project = project or _default_project
+        s = store.stats(project=effective_project)
 
         lines: List[str] = ["Memory Store Statistics:"]
         lines.append(f"  Total memories: {s.total_count}")

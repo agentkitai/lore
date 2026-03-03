@@ -241,22 +241,28 @@ class SqliteStore(Store):
         self._conn.commit()
         return cursor.rowcount
 
-    def stats(self) -> StoreStats:
+    def stats(self, project: Optional[str] = None) -> StoreStats:
+        where = " WHERE project = ?" if project else ""
+        params: List[Any] = [project] if project else []
+
         total = self._conn.execute(
-            "SELECT COUNT(*) FROM memories"
+            f"SELECT COUNT(*) FROM memories{where}", params
         ).fetchone()[0]
 
         type_rows = self._conn.execute(
-            "SELECT type, COUNT(*) as cnt FROM memories GROUP BY type ORDER BY cnt DESC"
+            f"SELECT type, COUNT(*) as cnt FROM memories{where} GROUP BY type ORDER BY cnt DESC",
+            params,
         ).fetchall()
 
         project_rows = self._conn.execute(
-            "SELECT COALESCE(project, '(unscoped)') as project, COUNT(*) as cnt "
-            "FROM memories GROUP BY project ORDER BY cnt DESC"
+            f"SELECT COALESCE(project, '(unscoped)') as project, COUNT(*) as cnt "
+            f"FROM memories{where} GROUP BY project ORDER BY cnt DESC",
+            params,
         ).fetchall()
 
         dates = self._conn.execute(
-            "SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM memories"
+            f"SELECT MIN(created_at) as oldest, MAX(created_at) as newest FROM memories{where}",
+            params,
         ).fetchone()
 
         return StoreStats(

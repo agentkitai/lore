@@ -55,5 +55,5 @@ class Store(ABC):
         """Bulk delete with filter combination. Returns count deleted."""
 
     @abstractmethod
-    def stats(self) -> StoreStats:
-        """Get aggregate statistics."""
+    def stats(self, project: Optional[str] = None) -> StoreStats:
+        """Get aggregate statistics, optionally filtered by project."""
