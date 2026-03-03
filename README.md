@@ -353,14 +353,30 @@ client = Lore(
 
 ---
 
+## Guides
+
+| Guide | Description |
+|-------|-------------|
+| [Claude Desktop Setup](docs/guides/claude-desktop.md) | Step-by-step Claude Desktop integration |
+| [Cursor Setup](docs/guides/cursor.md) | Cursor IDE integration |
+| [Windsurf Setup](docs/guides/windsurf.md) | Windsurf (Codeium) integration |
+| [Self-Hosted Deployment](docs/guides/self-hosted.md) | Run on your own infrastructure |
+| [Docker Guide](docs/guides/docker.md) | Docker deployment details |
+| [CLI Usage](docs/guides/cli.md) | Command-line interface guide |
+| [Python SDK](docs/guides/python-sdk.md) | Python SDK with code examples |
+| [TypeScript SDK](docs/guides/typescript-sdk.md) | TypeScript SDK guide |
+| [Publishing](PUBLISHING.md) | How to publish to PyPI and npm |
+
+---
+
 ## Contributing
 
-Contributions welcome! Please open an issue first to discuss what you'd like to change.
+Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ```bash
 # Development setup
 git clone https://github.com/amitpaz1/lore.git && cd lore
-pip install -e ".[dev,server,mcp]"
+pip install -e ".[dev,server,mcp,cli]"
 pytest
 ```
 
