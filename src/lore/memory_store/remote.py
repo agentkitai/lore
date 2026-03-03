@@ -153,6 +153,7 @@ class RemoteStore(Store):
         project: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
+        include_expired: bool = False,
     ) -> Tuple[List[Memory], int]:
         params: Dict[str, Any] = {"limit": limit, "offset": offset}
         if type:
@@ -161,6 +162,8 @@ class RemoteStore(Store):
             params["tags"] = ",".join(tags)
         if project:
             params["project"] = project
+        if include_expired:
+            params["include_expired"] = "true"
 
         resp = self._request("GET", "/v1/memories", params=params)
         data = resp.json()
@@ -193,8 +196,15 @@ class RemoteStore(Store):
         resp = self._request("DELETE", "/v1/memories", params=params)
         return resp.json().get("deleted", 0)
 
-    def stats(self) -> StoreStats:
-        resp = self._request("GET", "/v1/stats")
+    def delete_expired(self) -> int:
+        resp = self._request("DELETE", "/v1/memories/expired")
+        return resp.json().get("deleted", 0)
+
+    def stats(self, project: Optional[str] = None) -> StoreStats:
+        params: Dict[str, Any] = {}
+        if project:
+            params["project"] = project
+        resp = self._request("GET", "/v1/stats", params=params)
         data = resp.json()
         return StoreStats(
             total_count=data.get("total_count", 0),

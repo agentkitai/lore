@@ -171,6 +171,7 @@ class SqliteStore(Store):
         project: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
+        include_expired: bool = False,
     ) -> Tuple[List[Memory], int]:
         now = datetime.now(timezone.utc)
         query = "SELECT * FROM memories WHERE 1=1"
@@ -196,8 +197,8 @@ class SqliteStore(Store):
         memories = []
         for row in rows:
             m = self._row_to_memory(row)
-            # Skip expired
-            if m.expires_at:
+            # Skip expired unless include_expired is True
+            if not include_expired and m.expires_at:
                 try:
                     exp = datetime.fromisoformat(m.expires_at)
                     if exp.tzinfo is None:
@@ -241,9 +242,25 @@ class SqliteStore(Store):
         self._conn.commit()
         return cursor.rowcount
 
+    def delete_expired(self) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = self._conn.execute(
+            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at <= ?",
+            (now,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
     def stats(self, project: Optional[str] = None) -> StoreStats:
-        where = " WHERE project = ?" if project else ""
-        params: List[Any] = [project] if project else []
+        # Build WHERE clause excluding expired memories
+        conditions = ["(expires_at IS NULL OR expires_at > ?)"]
+        params: List[Any] = [datetime.now(timezone.utc).isoformat()]
+
+        if project is not None:
+            conditions.append("project = ?")
+            params.append(project)
+
+        where = " WHERE " + " AND ".join(conditions)
 
         total = self._conn.execute(
             f"SELECT COUNT(*) FROM memories{where}", params

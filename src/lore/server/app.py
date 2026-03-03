@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import os
 import secrets
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -41,6 +43,25 @@ setup_logging()
 logger = logging.getLogger(__name__)
 
 
+async def _cleanup_expired_memories(interval_seconds: int) -> None:
+    """Background task that periodically deletes expired memories."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        try:
+            pool = get_pool()
+            if pool is None:
+                continue
+            async with pool.acquire() as conn:
+                result = await conn.execute(
+                    "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < now()"
+                )
+                count = int(result.split()[-1])
+                if count > 0:
+                    logger.info("Cleaned up %d expired memories", count)
+        except Exception:
+            logger.warning("Expired memory cleanup failed", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage DB pool lifecycle."""
@@ -61,7 +82,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception:
         logger.warning("Failed to pre-load embedding model — will load on first request", exc_info=True)
 
+    # Start background cleanup of expired memories (default: hourly)
+    cleanup_interval = int(os.environ.get("LORE_CLEANUP_INTERVAL", "3600"))
+    cleanup_task = asyncio.create_task(_cleanup_expired_memories(cleanup_interval))
+
     yield
+
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     await close_pool()
 
 

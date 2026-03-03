@@ -96,6 +96,7 @@ def cmd_memories(args: argparse.Namespace) -> None:
         type=args.type,
         limit=args.limit,
         offset=args.offset,
+        include_expired=getattr(args, "include_expired", False),
     )
     lore.close()
 
@@ -346,6 +347,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--type", default=None, help="Filter by type")
     p.add_argument("--limit", type=int, default=20, help="Max results")
     p.add_argument("--offset", type=int, default=0, help="Offset for pagination")
+    p.add_argument("--include-expired", action="store_true", help="Include expired memories")
     p.add_argument("--json", action="store_true", help="JSON output")
 
     # stats

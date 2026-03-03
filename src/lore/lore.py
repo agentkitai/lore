@@ -530,6 +530,7 @@ class Lore:
         project: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
+        include_expired: bool = False,
     ) -> Tuple[List[Memory], int]:
         """List memories with optional filters. Returns (memories, total)."""
         effective_project = project or self.project
@@ -539,6 +540,7 @@ class Lore:
             project=effective_project,
             limit=limit,
             offset=offset,
+            include_expired=include_expired,
         )
 
     def memory_stats(

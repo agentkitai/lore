@@ -38,6 +38,7 @@ class Store(ABC):
         project: Optional[str] = None,
         limit: int = 20,
         offset: int = 0,
+        include_expired: bool = False,
     ) -> Tuple[List[Memory], int]:
         """List memories with filters. Returns (memories, total_count)."""
 
@@ -53,6 +54,10 @@ class Store(ABC):
         project: Optional[str] = None,
     ) -> int:
         """Bulk delete with filter combination. Returns count deleted."""
+
+    @abstractmethod
+    def delete_expired(self) -> int:
+        """Delete all expired memories. Returns count deleted."""
 
     @abstractmethod
     def stats(self, project: Optional[str] = None) -> StoreStats:

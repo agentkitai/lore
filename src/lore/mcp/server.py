@@ -325,6 +325,7 @@ def list_memories(
     project: Optional[str] = None,
     limit: int = 20,
     offset: int = 0,
+    include_expired: bool = False,
 ) -> str:
     """List memories in Lore."""
     try:
@@ -338,6 +339,7 @@ def list_memories(
             project=effective_project,
             limit=limit,
             offset=offset,
+            include_expired=include_expired,
         )
 
         if not memories:
