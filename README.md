@@ -1,342 +1,370 @@
-# Lore
+# Open Brain
 
-[![PyPI](https://img.shields.io/pypi/v/lore-sdk)](https://pypi.org/project/lore-sdk/)
-[![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
 [![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz1/lore/ci.yml?label=tests)](https://github.com/amitpaz1/lore/actions)
 [![License](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9+-blue)](https://pypi.org/project/openbrain/)
 
-**Cross-agent memory.** Agents publish what they learn, other agents query it. PII redacted automatically.
+**Give your AI a brain.** Universal memory layer for AI agents. MCP-native. Self-hosted. One `docker compose up` and your AI remembers everything.
 
-## Why Lore?
+---
 
-Your agents keep making the same mistakes. Agent A discovers Stripe rate-limits at 100 req/min. Agent B hits the same wall tomorrow. No learning transfer.
-
-Lore fixes this. It's a tiny library — no server, no infra — that gives agents a shared memory of operational lessons. Publish a lesson in one line, query it in another. Sensitive data is redacted before storage automatically.
-
-**What Lore is:** A local-first SDK for storing and retrieving structured lessons across agent runs. SQLite-backed, embedding-powered semantic search, automatic PII redaction.
-
-**What Lore is not:** A conversation memory store (see Mem0/Zep), a vector database, or a RAG framework.
-
-Integrates with [AgentLens](https://github.com/amitpaz1/agentlens) as an optional memory backend.
-
-## Quickstart
-
-```python
-from lore import Lore
-
-lore = Lore()  # zero config — local SQLite, built-in embeddings
-
-lore.publish(
-    problem="Stripe API returns 429 after 100 req/min",
-    resolution="Exponential backoff starting at 1s, cap at 32s",
-    tags=["stripe", "rate-limit"],
-    confidence=0.9,
-)
-
-lessons = lore.query("stripe rate limiting")
-prompt = lore.as_prompt(lessons)  # ready for system prompt injection
-```
-
-```typescript
-import { Lore } from 'lore-sdk';
-
-const lore = new Lore({ embeddingFn: yourEmbedFn });
-
-await lore.publish({
-  problem: 'Stripe API returns 429 after 100 req/min',
-  resolution: 'Exponential backoff starting at 1s, cap at 32s',
-  tags: ['stripe', 'rate-limit'],
-  confidence: 0.9,
-});
-
-const lessons = await lore.query('stripe rate limiting');
-const prompt = lore.asPrompt(lessons);
-```
-
-## Install
-
-**Python** (3.9+):
-```bash
-pip install lore-sdk
-```
-
-**TypeScript** (Node 18+):
-```bash
-npm install lore-sdk
-```
-
-## Python API Reference
-
-### `Lore(project?, db_path?, store?, embedding_fn?, embedder?, redact?, redact_patterns?, decay_half_life_days?)`
-
-Create a Lore instance.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `project` | `str \| None` | `None` | Scope lessons to a project name |
-| `db_path` | `str \| None` | `~/.lore/default.db` | Path to SQLite database |
-| `store` | `Store \| None` | `None` | Custom storage backend |
-| `embedding_fn` | `Callable[[str], list[float]] \| None` | `None` | Custom embedding function |
-| `embedder` | `Embedder \| None` | `None` | Custom embedder instance |
-| `redact` | `bool` | `True` | Enable automatic PII redaction |
-| `redact_patterns` | `list[tuple[str, str]] \| None` | `None` | Custom redaction patterns as `(regex, label)` |
-| `decay_half_life_days` | `float` | `30` | Half-life for lesson score decay |
-
-Lore supports context manager usage:
-
-```python
-with Lore() as lore:
-    lore.publish(problem="...", resolution="...")
-```
-
-### `lore.publish(problem, resolution, context?, tags?, confidence?, source?, project?) → str`
-
-Publish a lesson. Returns the lesson ID (ULID).
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `problem` | `str` | *required* | What went wrong |
-| `resolution` | `str` | *required* | How to fix it |
-| `context` | `str \| None` | `None` | Additional context |
-| `tags` | `list[str] \| None` | `[]` | Filterable tags |
-| `confidence` | `float` | `0.5` | Confidence score (0.0–1.0) |
-| `source` | `str \| None` | `None` | Who/what created this lesson |
-| `project` | `str \| None` | instance default | Override project scope |
-
-### `lore.query(text, tags?, limit?, min_confidence?) → list[QueryResult]`
-
-Query lessons by semantic similarity.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `text` | `str` | *required* | Search query |
-| `tags` | `list[str] \| None` | `None` | Filter: lessons must have ALL these tags |
-| `limit` | `int` | `5` | Max results |
-| `min_confidence` | `float` | `0.0` | Minimum confidence threshold |
-
-Returns `list[QueryResult]` sorted by score (cosine similarity × confidence × time decay × vote factor).
-
-### `lore.as_prompt(lessons, max_tokens?) → str`
-
-Format query results as a markdown string for system prompt injection.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `lessons` | `list[QueryResult]` | *required* | Results from `query()` |
-| `max_tokens` | `int` | `1000` | Approximate token budget (1 token ≈ 4 chars) |
-
-### `lore.get(lesson_id) → Lesson | None`
-
-Retrieve a single lesson by ID.
-
-### `lore.list(project?, limit?) → list[Lesson]`
-
-List lessons, optionally filtered by project.
-
-### `lore.delete(lesson_id) → bool`
-
-Delete a lesson. Returns `True` if found and deleted.
-
-### `lore.upvote(lesson_id) → None`
-
-Increment a lesson's upvote count. Raises `LessonNotFoundError` if not found.
-
-### `lore.downvote(lesson_id) → None`
-
-Increment a lesson's downvote count. Raises `LessonNotFoundError` if not found.
-
-### `lore.export_lessons(path?) → list[dict]`
-
-Export lessons as JSON-serializable dicts. If `path` is given, writes to file.
-
-### `lore.import_lessons(path?, data?) → int`
-
-Import lessons from file or data. Skips duplicates by ID. Returns count imported.
-
-### `lore.close() → None`
-
-Close the underlying store.
-
-## TypeScript API Reference
-
-The TypeScript SDK mirrors the Python API. See [ts/README.md](ts/README.md) for full details.
-
-Key differences:
-- All store operations are `async`
-- Constructor takes an options object: `new Lore({ project, dbPath, embeddingFn, ... })`
-- No built-in embedding model — you must provide `embeddingFn`
-- `asPrompt()` instead of `as_prompt()`
-- `minConfidence` instead of `min_confidence` (camelCase throughout)
-
-## Redaction
-
-Lore automatically redacts sensitive data before storage:
-
-- **API keys** (Bearer tokens, `sk-*`, `key-*`, etc.)
-- **Email addresses**
-- **Phone numbers**
-- **IP addresses** (IPv4 and IPv6)
-- **Credit card numbers** (with Luhn validation)
-
-```python
-lore.publish(
-    problem="Auth failed with key sk-abc123def456ghi789jkl012mno",
-    resolution="Rotate the key",
-)
-# Stored as: "Auth failed with key [REDACTED:api_key]"
-```
-
-Add custom patterns:
-
-```python
-lore = Lore(redact_patterns=[
-    (r"ACCT-\d{8}", "account_id"),
-])
-```
-
-Disable redaction entirely with `redact=False`.
-
-## Scoring
-
-Query results are ranked by:
-
-```
-score = cosine_similarity × confidence × time_decay × vote_factor
-```
-
-- **Time decay:** Lessons lose relevance over time (configurable half-life, default 30 days)
-- **Vote factor:** `1.0 + (upvotes - downvotes) × 0.1`, floored at 0.1
-- **Confidence:** Author's self-assessed confidence (0.0–1.0)
-
-## Remote Server (Lore Cloud)
-
-Share lessons across agents, machines, and teams with the Lore Cloud server.
-
-### 5-Line Remote Setup
-
-```python
-from lore import Lore
-
-lore = Lore(store="remote", api_url="http://localhost:8765", api_key="lore_sk_...")
-lore.publish(problem="Docker builds fail on M1", resolution="Use --platform linux/amd64")
-lessons = lore.query("Docker build issues")
-```
-
-### Self-Host with Docker Compose
+## Quickstart (< 2 minutes)
 
 ```bash
-docker compose -f docker-compose.prod.yml up -d
-curl -X POST http://localhost:8765/v1/org/init \
-  -H "Content-Type: application/json" -d '{"name": "my-org"}'
+# 1. Start Open Brain
+git clone https://github.com/amitpaz1/lore.git openbrain && cd openbrain
+docker compose up -d
+
+# 2. Initialize your org + get an API key
+curl -s -X POST http://localhost:8765/v1/org/init \
+  -H "Content-Type: application/json" -d '{"name": "my-org"}' | python3 -m json.tool
+
+# 3. Add this to your Claude Desktop config (see below)
 ```
 
-→ [Self-Hosted Guide](docs/self-hosted.md) · [API Reference](docs/api-reference.md)
-
-### MCP Integration (Claude Desktop / OpenClaw)
-
-Give Claude direct access to your lesson memory:
-
-```bash
-pip install lore-sdk[mcp]
-```
+Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
 
 ```json
 {
   "mcpServers": {
-    "lore": {
+    "openbrain": {
       "command": "python",
-      "args": ["-m", "lore.mcp.server"],
-      "env": { "LORE_PROJECT": "my-project" }
+      "args": ["-m", "openbrain.mcp"],
+      "env": {
+        "OPENBRAIN_PROJECT": "my-project"
+      }
     }
   }
 }
 ```
 
-→ [MCP Setup Guide](docs/mcp-setup.md)
+Restart Claude Desktop. Done. Claude can now remember and recall information across conversations.
 
-## Examples
+---
 
-See [`examples/`](examples/) for runnable scripts:
-- [`basic_usage.py`](examples/basic_usage.py) — publish, query, format
-- [`custom_embeddings.py`](examples/custom_embeddings.py) — bring your own embedding function
-- [`redaction_demo.py`](examples/redaction_demo.py) — see redaction in action
+## What Is Open Brain?
 
+Open Brain gives AI agents persistent memory. Your AI learns something? It remembers it forever. Next conversation, next agent, next week — the knowledge is there.
 
-## 🧰 AgentKit Ecosystem
+**5 MCP tools** your AI gets:
 
-| Project | Description | |
-|---------|-------------|-|
-| [AgentLens](https://github.com/agentkitai/agentlens) | Observability & audit trail for AI agents | |
-| **Lore** | Cross-agent memory and lesson sharing | ⬅️ you are here |
-| [AgentGate](https://github.com/agentkitai/agentgate) | Human-in-the-loop approval gateway | |
-| [FormBridge](https://github.com/agentkitai/formbridge) | Agent-human mixed-mode forms | |
-| [AgentEval](https://github.com/agentkitai/agenteval) | Testing & evaluation framework | |
-| [agentkit-mesh](https://github.com/agentkitai/agentkit-mesh) | Agent discovery & delegation | |
-| [agentkit-cli](https://github.com/agentkitai/agentkit-cli) | Unified CLI orchestrator | |
-| [agentkit-guardrails](https://github.com/agentkitai/agentkit-guardrails) | Reactive policy guardrails | |
+| Tool | What it does | Example |
+|------|-------------|---------|
+| `remember` | Store a memory | "Remember that Stripe rate-limits at 100 req/min" |
+| `recall` | Semantic search | "What do we know about rate limiting?" |
+| `forget` | Delete memories | "Forget the outdated deployment notes" |
+| `list` | Browse memories | "Show me all lessons tagged 'postgres'" |
+| `stats` | Memory statistics | "How many memories do we have?" |
 
-## Enterprise Usage Patterns
+---
 
-### LoreClient — Hardened Async SDK
+## Architecture
 
-For production/enterprise use, `LoreClient` provides retry logic, graceful degradation, connection pooling, and optional batching:
-
-```python
-from lore import LoreClient
-
-# Reads LORE_URL, LORE_API_KEY, LORE_ORG_ID, LORE_TIMEOUT from env
-async with LoreClient() as client:
-    # Save a lesson — returns None if server is unreachable (never raises)
-    lesson_id = await client.save(
-        problem="Rate limit exceeded on OpenAI API",
-        resolution="Add exponential backoff with jitter",
-        tags=["openai", "rate-limit"],
-    )
-
-    # Recall lessons — returns [] if server is unreachable (never raises)
-    results = await client.recall("how to handle rate limits", limit=5)
 ```
+┌─────────────────────────────────────────────────────┐
+│              AI Clients                              │
+│  Claude Desktop · Cursor · Windsurf · Custom Agents  │
+└──────────────────────┬──────────────────────────────┘
+                       │ MCP (stdio)
+┌──────────────────────▼──────────────────────────────┐
+│           Open Brain MCP Server                      │
+│  ┌────────┐ ┌──────┐ ┌──────┐ ┌────┐ ┌─────┐      │
+│  │remember│ │recall│ │forget│ │list│ │stats│      │
+│  └───┬────┘ └──┬───┘ └──┬───┘ └─┬──┘ └──┬──┘      │
+│      └─────────┴────────┴───────┴───────┘           │
+│                     │                                │
+│         ┌───────────┼───────────┐                    │
+│         ▼           ▼           ▼                    │
+│   ┌──────────┐ ┌─────────┐ ┌────────┐              │
+│   │ Embedder │ │ Storage │ │Redactor│              │
+│   │(MiniLM)  │ │(SQLite/ │ │(opt-in)│              │
+│   │ 384-dim  │ │ Postgres│ │        │              │
+│   └──────────┘ └─────────┘ └────────┘              │
+└──────────────────────────────────────────────────────┘
+                       │
+        ┌──────────────┼──────────────┐
+        ▼                             ▼
+ ┌──────────────┐            ┌──────────────────┐
+ │ Local Mode   │            │ Server Mode      │
+ │ SQLite       │            │ PostgreSQL +     │
+ │ Zero config  │            │ pgvector         │
+ │ Single user  │            │ Multi-tenant     │
+ └──────────────┘            │ REST API         │
+                             └──────────────────┘
+```
+
+**Two modes:**
+- **Local mode** (default): SQLite + embedded ONNX model. Zero config. Perfect for single-user Claude Desktop.
+- **Server mode**: PostgreSQL + pgvector. Multi-tenant, API keys, shared across teams. Use with `docker compose up`.
+
+---
+
+## MCP Setup
+
+### Claude Desktop
+
+```json
+{
+  "mcpServers": {
+    "openbrain": {
+      "command": "python",
+      "args": ["-m", "openbrain.mcp"],
+      "env": {
+        "OPENBRAIN_PROJECT": "my-project"
+      }
+    }
+  }
+}
+```
+
+### Cursor
+
+Add to `.cursor/mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "openbrain": {
+      "command": "python",
+      "args": ["-m", "openbrain.mcp"],
+      "env": {
+        "OPENBRAIN_PROJECT": "my-project"
+      }
+    }
+  }
+}
+```
+
+### Remote Mode (shared server)
+
+Point the MCP client at your Open Brain server instead of using local SQLite:
+
+```json
+{
+  "mcpServers": {
+    "openbrain": {
+      "command": "python",
+      "args": ["-m", "openbrain.mcp"],
+      "env": {
+        "OPENBRAIN_STORE": "remote",
+        "OPENBRAIN_API_URL": "http://localhost:8765",
+        "OPENBRAIN_API_KEY": "ob_sk_..."
+      }
+    }
+  }
+}
+```
+
+See [`examples/`](examples/) for ready-to-paste config files.
+
+---
+
+## Install
+
+```bash
+pip install openbrain
+```
+
+With MCP support:
+```bash
+pip install openbrain[mcp]
+```
+
+With server dependencies:
+```bash
+pip install openbrain[server]
+```
+
+---
+
+## REST API Reference
+
+All endpoints require `Authorization: Bearer ob_sk_...` header.
+
+### Memories
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/memories` | Create a memory (server embeds automatically) |
+| `GET` | `/v1/memories` | List memories (paginated, filterable) |
+| `GET` | `/v1/memories/search?q=...` | Semantic search |
+| `GET` | `/v1/memories/{id}` | Get a single memory |
+| `DELETE` | `/v1/memories/{id}` | Delete a memory |
+| `DELETE` | `/v1/memories?confirm=true` | Bulk delete with filters |
+| `GET` | `/v1/stats` | Memory store statistics |
+
+### Create a memory
+
+```bash
+curl -X POST http://localhost:8765/v1/memories \
+  -H "Authorization: Bearer ob_sk_..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "Stripe rate-limits at 100 req/min. Use exponential backoff.",
+    "type": "lesson",
+    "tags": ["stripe", "rate-limit"],
+    "project": "payments"
+  }'
+```
+
+### Search memories
+
+```bash
+curl "http://localhost:8765/v1/memories/search?q=rate+limiting&limit=5" \
+  -H "Authorization: Bearer ob_sk_..."
+```
+
+### Organization setup
+
+```bash
+# First-run: create org and get API key
+curl -X POST http://localhost:8765/v1/org/init \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-org"}'
+# Returns: {"org_id": "...", "api_key": "ob_sk_...", "key_prefix": "ob_sk_..."}
+```
+
+---
+
+## Self-Hosted Deployment
+
+### Docker Compose (recommended)
+
+```bash
+git clone https://github.com/amitpaz1/lore.git openbrain && cd openbrain
+
+# Development
+docker compose up -d
+
+# Production (with secure password)
+echo "POSTGRES_PASSWORD=$(openssl rand -hex 16)" > .env
+docker compose -f docker-compose.prod.yml up -d
+```
+
+The stack includes:
+- **Open Brain server** on port 8765
+- **PostgreSQL 16 + pgvector** for storage and vector search
+- Health checks, auto-restart, resource limits (production)
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `LORE_URL` | `http://localhost:8765` | Lore server URL |
-| `LORE_API_KEY` | *(empty)* | API key for authentication |
-| `LORE_ORG_ID` | *(empty)* | Organization ID (multi-tenant) |
-| `LORE_TIMEOUT` | `5` | Request timeout in seconds |
+| `DATABASE_URL` | — | PostgreSQL connection string (server mode) |
+| `OPENBRAIN_STORE` | `local` | `local` (SQLite) or `remote` (HTTP to server) |
+| `OPENBRAIN_PROJECT` | — | Default project scope |
+| `OPENBRAIN_API_URL` | — | Server URL (remote mode) |
+| `OPENBRAIN_API_KEY` | — | API key (remote mode) |
+| `OPENBRAIN_DB_PATH` | `~/.openbrain/default.db` | SQLite path (local mode) |
+| `OPENBRAIN_MODEL_DIR` | `~/.openbrain/models` | Embedding model cache |
+| `OPENBRAIN_REDACT` | `false` | Enable PII redaction |
 
-### Retry & Graceful Degradation
+---
 
-- **Retries:** 3 attempts with exponential backoff (0.5s → 1s → 2s) on 5xx and connection errors only
-- **Graceful degradation:** `save()` returns `None` and `recall()` returns `[]` if the server is unreachable — they never raise exceptions
-- **Connection pooling:** A single `httpx.AsyncClient` is reused across all calls
+## Why Open Brain?
 
-### Batched Saves
+| | Open Brain | Mem0 | Zep | DIY pgvector |
+|---|---|---|---|---|
+| **MCP native** | Yes | No | No | No |
+| **Self-hosted** | Yes | Paid cloud | Paid cloud | Yes |
+| **Setup time** | 2 min | Account signup | Account signup | Hours |
+| **Local mode** | Yes (SQLite) | No | No | No |
+| **Embedding** | Built-in (ONNX) | API-dependent | Built-in | DIY |
+| **Multi-tenant** | Yes | Yes | Yes | DIY |
+| **Cost** | Free | $99+/mo | $99+/mo | Free + time |
+| **Vendor lock-in** | None | High | High | None |
 
-For high-throughput scenarios, enable batching to buffer saves and flush periodically:
+Open Brain is the only memory layer that's:
+1. **MCP-native** — works directly with Claude Desktop, Cursor, Windsurf
+2. **Zero-config local mode** — `pip install openbrain` and go, no server needed
+3. **Self-hosted** — your data stays on your machine or your infra
+4. **Open source** — MIT licensed, no usage limits, no telemetry
+
+---
+
+## How It Works
+
+Open Brain uses **semantic search** powered by a local ONNX embedding model (all-MiniLM-L6-v2, 384 dimensions). No API calls, no data leaves your machine.
+
+**Storing a memory:**
+1. Content comes in via MCP tool or REST API
+2. Text is embedded into a 384-dim vector (local ONNX, ~200ms)
+3. Memory + embedding stored in SQLite (local) or PostgreSQL (server)
+4. Optional PII redaction runs before embedding
+
+**Recalling memories:**
+1. Query text is embedded using the same model
+2. Cosine similarity search against stored embeddings
+3. Results ranked by: `similarity × time_decay` (newer memories score higher)
+4. Filtered by type, tags, project as requested
+
+---
+
+## Python SDK
 
 ```python
-async with LoreClient(batch=True, batch_size=10, batch_interval=5.0) as client:
-    # These are buffered and flushed every 5s or every 10 items
-    await client.save(problem="...", resolution="...")
-    await client.save(problem="...", resolution="...")
-    # Remaining items flush automatically on close
+from openbrain import OpenBrain
+
+ob = OpenBrain()  # local mode — zero config
+
+# Store
+ob.remember(
+    content="Stripe rate-limits at 100 req/min. Use exponential backoff.",
+    type="lesson",
+    tags=["stripe", "rate-limit"],
+)
+
+# Search
+results = ob.recall("stripe rate limiting", limit=5)
+
+# List
+memories = ob.list(type="lesson", project="payments")
+
+# Stats
+stats = ob.stats()
 ```
 
-### Constructor Parameters
+### Remote mode
 
 ```python
-LoreClient(
-    url="http://lore.internal:8765",  # or use LORE_URL env var
-    api_key="sk-...",                  # or use LORE_API_KEY env var
-    org_id="my-org",                   # or use LORE_ORG_ID env var
-    timeout=10.0,                      # or use LORE_TIMEOUT env var
-    batch=False,                       # enable batched saves
-    batch_size=10,                     # flush after N buffered items
-    batch_interval=5.0,                # flush every N seconds
+from openbrain import OpenBrain
+
+ob = OpenBrain(
+    store="remote",
+    api_url="http://localhost:8765",
+    api_key="ob_sk_...",
 )
 ```
+
+---
+
+## Features
+
+- **Semantic search** — find memories by meaning, not keywords
+- **Local-first** — SQLite + ONNX embeddings, no server needed
+- **Multi-tenant server** — PostgreSQL + pgvector, API key auth
+- **MCP native** — 5 tools for Claude Desktop, Cursor, Windsurf
+- **Memory types** — note, lesson, snippet, fact, conversation, decision
+- **Project scoping** — isolate memories by project
+- **Tag filtering** — organize with tags, filter on recall
+- **Time decay** — newer memories rank higher in search
+- **PII redaction** — opt-in scrubbing of API keys, emails, IPs, etc.
+- **REST API** — full CRUD + search, OpenAPI docs at `/docs`
+
+---
+
+## Contributing
+
+Contributions welcome! Please open an issue first to discuss what you'd like to change.
+
+```bash
+# Development setup
+git clone https://github.com/amitpaz1/lore.git openbrain && cd openbrain
+pip install -e ".[dev,server,mcp]"
+pytest
+```
+
+---
 
 ## License
 

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "openbrain": {
+      "command": "python",
+      "args": ["-m", "openbrain.mcp"],
+      "env": {
+        "OPENBRAIN_PROJECT": "my-project"
+      }
+    }
+  }
+}

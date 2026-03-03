@@ -1,14 +1,16 @@
-# Production Docker Compose for Lore Cloud
+# Production Docker Compose for Open Brain
 # Create a .env file with POSTGRES_PASSWORD=<secure-random-value>
 services:
-  lore:
+  openbrain:
     build:
       context: .
       dockerfile: Dockerfile.server
+    container_name: openbrain
+    image: openbrain
     ports:
       - "8765:8765"
     environment:
-      DATABASE_URL: postgresql://lore:${POSTGRES_PASSWORD:-lore}@db:5432/lore
+      DATABASE_URL: postgresql://openbrain:${POSTGRES_PASSWORD:-openbrain}@db:5432/openbrain
     depends_on:
       db:
         condition: service_healthy
@@ -21,13 +23,13 @@ services:
   db:
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_DB: lore
-      POSTGRES_USER: lore
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lore}
+      POSTGRES_DB: openbrain
+      POSTGRES_USER: openbrain
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-openbrain}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U lore"]
+      test: ["CMD-SHELL", "pg_isready -U openbrain"]
       interval: 5s
       timeout: 5s
       retries: 10

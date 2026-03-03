@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "openbrain": {
+      "command": "python",
+      "args": ["-m", "openbrain.mcp"],
+      "env": {
+        "OPENBRAIN_STORE": "remote",
+        "OPENBRAIN_API_URL": "http://localhost:8765",
+        "OPENBRAIN_API_KEY": "ob_sk_your_api_key_here"
+      }
+    }
+  }
+}

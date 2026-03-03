@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "openbrain": {
+      "command": "python",
+      "args": ["-m", "openbrain.mcp"],
+      "env": {
+        "OPENBRAIN_STORE": "local",
+        "OPENBRAIN_PROJECT": "my-project",
+        "OPENBRAIN_DB_PATH": "~/.openbrain/default.db",
+        "OPENBRAIN_MODEL_DIR": "~/.openbrain/models"
+      }
+    }
+  }
+}

@@ -19,17 +19,17 @@ WORKDIR /app
 # Only runtime lib needed (no gcc)
 RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r lore && useradd -r -g lore -d /app lore
+    && groupadd -r openbrain && useradd -r -g openbrain -d /app openbrain
 
 COPY --from=builder /install /usr/local
 COPY migrations/ migrations/
 
 # Don't run as root
-USER lore
+USER openbrain
 
 EXPOSE 8765
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')" || exit 1
 
-CMD ["uvicorn", "lore.server.app:app", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["uvicorn", "openbrain.server.app:app", "--host", "0.0.0.0", "--port", "8765"]
