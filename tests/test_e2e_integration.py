@@ -21,7 +21,6 @@ import pytest
 
 from lore.mcp import server as mcp_server
 
-
 # ── Helpers ──────────────────────────────────────────────────────────
 
 class _FakeEmbedder:

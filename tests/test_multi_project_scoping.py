@@ -19,7 +19,6 @@ from lore.mcp import server as mcp_server
 from lore.memory_store.sqlite import SqliteStore
 from lore.types import Memory
 
-
 # ── Helpers ──────────────────────────────────────────────────────────
 
 

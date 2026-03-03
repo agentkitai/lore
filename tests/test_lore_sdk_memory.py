@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import os
-import struct
 from typing import List
-from unittest.mock import patch
 
 import pytest
 
