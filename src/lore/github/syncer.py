@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from lore.github.state import get_sync_state, update_sync_state, utc_now_iso
 from lore.github.transforms import (
@@ -105,64 +105,100 @@ def _gh_api(endpoint: str, params: Optional[Dict[str, str]] = None, paginate: bo
 
 
 # ---------------------------------------------------------------------------
-# Data fetchers
+# Data fetchers — paginated via gh api with --paginate
 # ---------------------------------------------------------------------------
 
-def fetch_merged_prs(repo: str, since: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
-    """Fetch merged PRs from *repo* using ``gh pr list``."""
-    args = [
-        "pr", "list",
-        "--repo", repo,
-        "--state", "merged",
-        "--limit", str(limit),
-        "--json", "number,title,body,labels,url,mergedAt",
-    ]
-    raw = _run_gh(args, timeout=60)
-    prs = json.loads(raw)
-    if since:
-        prs = [p for p in prs if (p.get("mergedAt") or "") >= since]
+def fetch_merged_prs(repo: str, since: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Fetch merged PRs from *repo* using ``gh api`` with pagination."""
+    endpoint = f"repos/{repo}/pulls"
+    params: Dict[str, str] = {
+        "state": "closed",
+        "per_page": "100",
+        "sort": "updated",
+        "direction": "desc",
+    }
+    raw = _gh_api(endpoint, params, paginate=True)
+    prs = []
+    for p in raw:
+        if not p.get("merged_at"):
+            continue
+        merged_at = p.get("merged_at", "")
+        if since and merged_at < since:
+            continue
+        labels = [lb.get("name", "") for lb in p.get("labels", []) if isinstance(lb, dict)]
+        prs.append({
+            "number": p.get("number"),
+            "title": p.get("title", ""),
+            "body": p.get("body") or "",
+            "labels": [{"name": n} for n in labels],
+            "url": p.get("html_url", ""),
+            "mergedAt": merged_at,
+        })
     return prs
 
 
-def fetch_closed_issues(repo: str, since: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
-    """Fetch closed issues from *repo* using ``gh issue list``."""
-    args = [
-        "issue", "list",
-        "--repo", repo,
-        "--state", "closed",
-        "--limit", str(limit),
-        "--json", "number,title,body,labels,url,comments",
-    ]
-    raw = _run_gh(args, timeout=60)
-    issues = json.loads(raw)
+def fetch_closed_issues(repo: str, since: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Fetch closed issues from *repo* using ``gh api`` with pagination."""
+    endpoint = f"repos/{repo}/issues"
+    params: Dict[str, str] = {
+        "state": "closed",
+        "per_page": "100",
+        "sort": "updated",
+        "direction": "desc",
+    }
     if since:
-        issues = [i for i in issues if (i.get("closedAt") or i.get("updatedAt") or "") >= since]
+        params["since"] = since
+    raw = _gh_api(endpoint, params, paginate=True)
+    issues = []
+    for i in raw:
+        # Skip pull requests (GitHub API returns them in /issues too)
+        if "pull_request" in i:
+            continue
+        closed_at = i.get("closed_at") or ""
+        if since and closed_at < since:
+            continue
+        # Fetch last comment if any
+        comments_list: List[Dict[str, Any]] = []
+        comments_url = i.get("comments_url")
+        comment_count = i.get("comments", 0)
+        if comment_count and comments_url:
+            try:
+                endpoint_c = f"repos/{repo}/issues/{i['number']}/comments"
+                comments_raw = _gh_api(endpoint_c, {"per_page": "1", "page": str(max(1, comment_count))})
+                if isinstance(comments_raw, list):
+                    comments_list = comments_raw
+            except GitHubCLIError:
+                pass
+        labels = [lb.get("name", "") for lb in i.get("labels", []) if isinstance(lb, dict)]
+        issues.append({
+            "number": i.get("number"),
+            "title": i.get("title", ""),
+            "body": i.get("body") or "",
+            "labels": [{"name": n} for n in labels],
+            "url": i.get("html_url", ""),
+            "closedAt": closed_at,
+            "comments": comments_list,
+        })
     return issues
 
 
-def fetch_releases(repo: str, since: Optional[str] = None, limit: int = 30) -> List[Dict[str, Any]]:
-    """Fetch published releases from *repo*."""
-    args = [
-        "release", "list",
-        "--repo", repo,
-        "--limit", str(limit),
-        "--json", "name,tagName,body,url,publishedAt",
-    ]
-    # gh release list --json may not support 'body' on older versions; fall back
-    try:
-        raw = _run_gh(args, timeout=60)
-        releases = json.loads(raw)
-    except GitHubCLIError:
-        args = [
-            "release", "list",
-            "--repo", repo,
-            "--limit", str(limit),
-            "--json", "name,tagName,url,publishedAt",
-        ]
-        raw = _run_gh(args, timeout=60)
-        releases = json.loads(raw)
-    if since:
-        releases = [r for r in releases if (r.get("publishedAt") or "") >= since]
+def fetch_releases(repo: str, since: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Fetch published releases from *repo* using ``gh api`` with pagination."""
+    endpoint = f"repos/{repo}/releases"
+    params: Dict[str, str] = {"per_page": "100"}
+    raw = _gh_api(endpoint, params, paginate=True)
+    releases = []
+    for r in raw:
+        published_at = r.get("published_at") or ""
+        if since and published_at < since:
+            continue
+        releases.append({
+            "name": r.get("name") or "",
+            "tagName": r.get("tag_name") or "",
+            "body": r.get("body") or "",
+            "url": r.get("html_url") or "",
+            "publishedAt": published_at,
+        })
     return releases
 
 
@@ -172,10 +208,7 @@ def fetch_notable_commits(repo: str, since: Optional[str] = None, limit: int = 5
     params: Dict[str, str] = {"per_page": str(limit)}
     if since:
         params["since"] = since
-    try:
-        commits_raw = _gh_api(endpoint, params)
-    except GitHubCLIError:
-        return []
+    commits_raw = _gh_api(endpoint, params)
     commits = []
     for c in commits_raw:
         cm = c.get("commit", {})
@@ -208,6 +241,7 @@ class GitHubSyncer:
     def __init__(self, lore: Any, state_path: Optional[str] = None) -> None:
         self._lore = lore
         self._state_path = state_path
+        self._known_sources: Optional[Set[str]] = None
 
     def sync(
         self,
@@ -244,21 +278,36 @@ class GitHubSyncer:
         state = None if full else get_sync_state(repo, **state_kwargs)
         effective_since = since or (state.get("last_sync") if state else None)
 
+        # Pre-cache known sources for O(1) dedup lookups
+        self._known_sources = None
+
+        last_pr = None
+        last_issue = None
+
         for entity_type in types:
             if entity_type not in ALL_TYPES:
                 result.errors.append(f"Unknown type: {entity_type}")
                 continue
             try:
-                count = self._sync_type(
+                count, last_id = self._sync_type(
                     repo, entity_type, effective_since, dry_run, project,
                 )
                 setattr(result, entity_type, count)
+                if entity_type == "prs" and last_id is not None:
+                    last_pr = last_id
+                elif entity_type == "issues" and last_id is not None:
+                    last_issue = last_id
             except GitHubCLIError as exc:
                 result.errors.append(f"{entity_type}: {exc}")
 
         # Update sync state
         if not dry_run and result.total > 0:
-            update_sync_state(repo, last_sync=utc_now_iso(), **state_kwargs)
+            state_update: Dict[str, Any] = {"last_sync": utc_now_iso()}
+            if last_pr is not None:
+                state_update["last_pr"] = last_pr
+            if last_issue is not None:
+                state_update["last_issue"] = last_issue
+            update_sync_state(repo, **state_update, **state_kwargs)
 
         return result
 
@@ -269,8 +318,8 @@ class GitHubSyncer:
         since: Optional[str],
         dry_run: bool,
         project: Optional[str],
-    ) -> int:
-        """Fetch, transform, and store one entity type. Returns count stored."""
+    ) -> tuple[int, Optional[int]]:
+        """Fetch, transform, and store one entity type. Returns (count, last_id)."""
         items = _fetch(entity_type, repo, since)
 
         transform = {
@@ -281,6 +330,7 @@ class GitHubSyncer:
         }[entity_type]
 
         count = 0
+        last_id = None
         for item in items:
             kwargs = transform(item, repo)
             if kwargs is None:
@@ -295,13 +345,22 @@ class GitHubSyncer:
             if source and self._source_exists(source):
                 continue
             self._lore.remember(**kwargs)
+            # Track the source for future dedup within this sync run
+            if self._known_sources is not None:
+                self._known_sources.add(source)
             count += 1
-        return count
+            # Track last PR/issue number
+            number = kwargs.get("metadata", {}).get("gh_number")
+            if number is not None:
+                last_id = number
+        return count, last_id
 
     def _source_exists(self, source: str) -> bool:
-        """Check if a memory with this source already exists."""
-        memories = self._lore.list_memories()
-        return any(m.source == source for m in memories)
+        """Check if a memory with this source already exists (cached)."""
+        if self._known_sources is None:
+            memories = self._lore.list_memories()
+            self._known_sources = {m.source for m in memories if m.source}
+        return source in self._known_sources
 
 
 def _fetch(entity_type: str, repo: str, since: Optional[str]) -> List[Dict[str, Any]]:

@@ -66,6 +66,7 @@ class TestTransforms:
         assert result["metadata"]["gh_type"] == "pr"
         assert result["metadata"]["gh_number"] == 42
         assert result["metadata"]["gh_repo"] == "acme/repo"
+        assert "gh_synced_at" in result["metadata"]
 
     def test_pr_empty_title_returns_none(self):
         assert pr_to_memory_kwargs({"title": "", "number": 1}, "a/b") is None
@@ -91,6 +92,7 @@ class TestTransforms:
         assert "Fixed in PR #42" in result["content"]
         assert "issue" in result["tags"]
         assert result["metadata"]["gh_type"] == "issue"
+        assert "gh_synced_at" in result["metadata"]
 
     def test_issue_no_comments_uses_body(self):
         issue = {
@@ -119,6 +121,7 @@ class TestTransforms:
         assert "Removed unused middleware" in result["content"]
         assert "commit" in result["tags"]
         assert result["metadata"]["gh_sha"] == "abc123def456"
+        assert "gh_synced_at" in result["metadata"]
 
     def test_commit_empty_message_returns_none(self):
         assert commit_to_memory_kwargs({"message": "", "sha": "abc"}, "a/b") is None
@@ -136,6 +139,7 @@ class TestTransforms:
         assert "release" in result["tags"]
         assert "v2.0.0" in result["tags"]
         assert result["metadata"]["gh_tag"] == "v2.0.0"
+        assert "gh_synced_at" in result["metadata"]
 
     def test_release_no_name_uses_tag(self):
         release = {"name": "", "tagName": "v1.0", "body": ""}
@@ -227,50 +231,65 @@ class TestRunGh:
 
 
 # ---------------------------------------------------------------------------
-# Fetchers (mock subprocess)
+# Fetchers (mock subprocess) — now use gh api with --paginate
 # ---------------------------------------------------------------------------
 
-SAMPLE_PRS = json.dumps([
+# API-format sample data (REST API response format)
+SAMPLE_API_PRS = json.dumps([
     {
         "number": 1,
         "title": "Add caching",
         "body": "Implemented Redis caching layer",
         "labels": [{"name": "enhancement"}],
-        "url": "https://github.com/acme/app/pull/1",
-        "mergedAt": "2026-02-01T10:00:00Z",
+        "html_url": "https://github.com/acme/app/pull/1",
+        "merged_at": "2026-02-01T10:00:00Z",
     },
     {
         "number": 2,
         "title": "Fix login",
         "body": "Session cookie was not being set",
         "labels": [{"name": "bug"}],
-        "url": "https://github.com/acme/app/pull/2",
-        "mergedAt": "2026-03-01T10:00:00Z",
+        "html_url": "https://github.com/acme/app/pull/2",
+        "merged_at": "2026-03-01T10:00:00Z",
+    },
+    {
+        "number": 3,
+        "title": "Unmerged PR",
+        "body": "Still open",
+        "labels": [],
+        "html_url": "https://github.com/acme/app/pull/3",
+        "merged_at": None,
     },
 ])
 
-SAMPLE_ISSUES = json.dumps([
+SAMPLE_API_ISSUES = json.dumps([
     {
         "number": 10,
         "title": "Dashboard slow",
         "body": "Takes 5s to load",
         "labels": [],
-        "url": "https://github.com/acme/app/issues/10",
-        "comments": {"nodes": [{"body": "Fixed with query optimization"}]},
+        "html_url": "https://github.com/acme/app/issues/10",
+        "closed_at": "2026-02-15T10:00:00Z",
+        "comments": 1,
+        "comments_url": "https://api.github.com/repos/acme/app/issues/10/comments",
     },
 ])
 
-SAMPLE_RELEASES = json.dumps([
+SAMPLE_API_ISSUE_COMMENTS = json.dumps([
+    {"body": "Fixed with query optimization"},
+])
+
+SAMPLE_API_RELEASES = json.dumps([
     {
         "name": "v1.0.0",
-        "tagName": "v1.0.0",
+        "tag_name": "v1.0.0",
         "body": "Initial stable release",
-        "url": "https://github.com/acme/app/releases/tag/v1.0.0",
-        "publishedAt": "2026-01-01T00:00:00Z",
+        "html_url": "https://github.com/acme/app/releases/tag/v1.0.0",
+        "published_at": "2026-01-01T00:00:00Z",
     },
 ])
 
-SAMPLE_COMMITS = json.dumps([
+SAMPLE_API_COMMITS = json.dumps([
     {
         "sha": "aaa111",
         "commit": {"message": "feat: add user dashboard"},
@@ -280,16 +299,19 @@ SAMPLE_COMMITS = json.dumps([
 
 
 def _mock_run_gh(args, timeout=30):
-    """Simulate ``_run_gh`` for different gh subcommands."""
+    """Simulate ``_run_gh`` for different gh api subcommands."""
     joined = " ".join(args)
-    if "pr list" in joined:
-        return SAMPLE_PRS
-    if "issue list" in joined:
-        return SAMPLE_ISSUES
-    if "release list" in joined:
-        return SAMPLE_RELEASES
-    if "api repos/" in joined and "commits" in joined:
-        return SAMPLE_COMMITS
+    if "api" in joined and "repos/" in joined:
+        if "/pulls" in joined and "/comments" not in joined:
+            return SAMPLE_API_PRS
+        if "/issues/" in joined and "/comments" in joined:
+            return SAMPLE_API_ISSUE_COMMENTS
+        if "/issues" in joined:
+            return SAMPLE_API_ISSUES
+        if "/releases" in joined:
+            return SAMPLE_API_RELEASES
+        if "/commits" in joined:
+            return SAMPLE_API_COMMITS
     return "[]"
 
 
@@ -297,7 +319,7 @@ class TestFetchers:
     @patch("lore.github.syncer._run_gh", side_effect=_mock_run_gh)
     def test_fetch_merged_prs(self, mock):
         prs = fetch_merged_prs("acme/app")
-        assert len(prs) == 2
+        assert len(prs) == 2  # Only merged PRs, not the unmerged one
         assert prs[0]["title"] == "Add caching"
 
     @patch("lore.github.syncer._run_gh", side_effect=_mock_run_gh)
@@ -445,6 +467,30 @@ class TestGitHubSyncer:
         result = syncer.sync("acme/app", types=["prs"])
         assert result.errors
         assert "gh not found" in result.errors[0]
+
+    @patch("lore.github.syncer._run_gh", side_effect=_mock_run_gh)
+    def test_gh_synced_at_in_metadata(self, mock_gh, tmp_path):
+        """All stored memories should have gh_synced_at in metadata."""
+        lore = _make_lore()
+        syncer = GitHubSyncer(lore, state_path=str(tmp_path / "state.json"))
+        syncer.sync("acme/app", full=True)
+
+        for mem in lore.list_memories():
+            assert mem.metadata is not None
+            assert "gh_synced_at" in mem.metadata
+
+    @patch("lore.github.syncer._run_gh", side_effect=_mock_run_gh)
+    def test_last_pr_issue_in_state(self, mock_gh, tmp_path):
+        """Sync state should track last_pr/last_issue numbers."""
+        lore = _make_lore()
+        state_path = str(tmp_path / "state.json")
+        syncer = GitHubSyncer(lore, state_path=state_path)
+        syncer.sync("acme/app", full=True)
+
+        state = get_sync_state("acme/app", path=state_path)
+        assert state is not None
+        assert "last_pr" in state
+        assert "last_issue" in state
 
 
 # ---------------------------------------------------------------------------

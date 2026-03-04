@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+
+def _synced_at() -> str:
+    """Return current UTC timestamp for gh_synced_at metadata."""
+    return datetime.now(timezone.utc).isoformat()
 
 
 def pr_to_memory_kwargs(pr: Dict[str, Any], repo: str) -> Optional[Dict[str, Any]]:
@@ -35,6 +41,7 @@ def pr_to_memory_kwargs(pr: Dict[str, Any], repo: str) -> Optional[Dict[str, Any
             "gh_repo": repo,
             "gh_url": url,
             "gh_merged_at": merged_at,
+            "gh_synced_at": _synced_at(),
         },
     )
 
@@ -79,6 +86,7 @@ def issue_to_memory_kwargs(issue: Dict[str, Any], repo: str) -> Optional[Dict[st
             "gh_number": number,
             "gh_repo": repo,
             "gh_url": url,
+            "gh_synced_at": _synced_at(),
         },
     )
 
@@ -108,6 +116,7 @@ def commit_to_memory_kwargs(commit: Dict[str, Any], repo: str) -> Optional[Dict[
             "gh_sha": sha,
             "gh_repo": repo,
             "gh_url": url,
+            "gh_synced_at": _synced_at(),
         },
     )
 
@@ -135,6 +144,7 @@ def release_to_memory_kwargs(release: Dict[str, Any], repo: str) -> Optional[Dic
             "gh_tag": tag,
             "gh_repo": repo,
             "gh_url": url,
+            "gh_synced_at": _synced_at(),
         },
     )
 
