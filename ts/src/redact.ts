@@ -225,11 +225,21 @@ export class RedactionPipeline {
     return { text, findings, action, blockedTypes };
   }
 
+  /** Return masked text from a ScanResult. */
+  maskedText(result: ScanResult): string {
+    if (!result.findings.length) return result.text;
+    return this._applyMask(result.text, result.findings);
+  }
+
   run(text: string): string {
     const result = this.scan(text);
     if (!result.findings.length) return text;
+    return this._applyMask(text, result.findings);
+  }
+
+  private _applyMask(text: string, findings: Finding[]): string {
     // Sort by start asc, then by length desc (prefer longer/earlier matches)
-    const sorted = [...result.findings].sort((a, b) =>
+    const sorted = [...findings].sort((a, b) =>
       a.start !== b.start ? a.start - b.start : (b.end - b.start) - (a.end - a.start),
     );
     // Deduplicate overlapping findings — keep the first (earliest/longest)

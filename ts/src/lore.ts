@@ -24,6 +24,7 @@ import {
   DECAY_HALF_LIVES,
 } from './embed.js';
 import { RedactionPipeline } from './redact.js';
+import { SecretBlockedError } from './errors.js';
 import { asPrompt as _asPrompt } from './prompt.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 30;
@@ -115,9 +116,17 @@ export class Lore {
     let context = opts?.context ?? null;
 
     if (this.redactor) {
-      processedContent = this.redactor.run(processedContent);
+      const contentScan = this.redactor.scan(processedContent);
+      if (contentScan.action === 'block') {
+        throw new SecretBlockedError(contentScan.blockedTypes[0]);
+      }
+      processedContent = this.redactor.maskedText(contentScan);
       if (context) {
-        context = this.redactor.run(context);
+        const contextScan = this.redactor.scan(context);
+        if (contextScan.action === 'block') {
+          throw new SecretBlockedError(contextScan.blockedTypes[0]);
+        }
+        context = this.redactor.maskedText(contextScan);
       }
     }
 

@@ -24,5 +24,15 @@ export class MemoryNotFoundError extends Error {
   }
 }
 
+/** Raised when remember() detects a secret that should be blocked. */
+export class SecretBlockedError extends Error {
+  readonly findingType: string;
+  constructor(findingType: string) {
+    super(`Content blocked: ${findingType} detected — remove the secret and retry.`);
+    this.name = 'SecretBlockedError';
+    this.findingType = findingType;
+  }
+}
+
 /** @deprecated Use MemoryNotFoundError instead */
 export const LessonNotFoundError = MemoryNotFoundError;

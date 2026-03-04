@@ -127,9 +127,28 @@ const lore = new Lore({
 });
 ```
 
-## Redaction
+## Security & Redaction
 
-Same as Python — automatic redaction of API keys, emails, phones, IPs, and credit cards. Add custom patterns:
+The TS SDK includes **Layer 1 (L1)** pattern-based security scanning:
+
+- **Secrets (blocked):** API keys, JWT tokens, PEM private keys, AWS secret keys, high-entropy strings
+- **PII (masked):** emails, phones, IPs, credit cards
+
+When `remember()` detects a secret, it throws `SecretBlockedError` (preventing storage). PII is automatically masked with `[REDACTED:type]` tokens.
+
+```typescript
+import { Lore, SecretBlockedError } from 'lore-sdk';
+
+try {
+  await lore.remember('my key is sk-abc123...');
+} catch (e) {
+  if (e instanceof SecretBlockedError) {
+    console.error(e.message); // "Content blocked: api_key detected ..."
+  }
+}
+```
+
+Add custom patterns:
 
 ```typescript
 const lore = new Lore({
@@ -138,6 +157,8 @@ const lore = new Lore({
   ],
 });
 ```
+
+> **Note:** Layer 2 (detect-secrets entropy analysis) and Layer 3 (SpaCy NER entity masking) are **Python-only** features. The TS SDK provides L1 regex-based detection which covers the most common secret and PII patterns.
 
 ## Examples
 

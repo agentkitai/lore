@@ -20,7 +20,7 @@ export { MemoryStore } from './store/memory.js';
 export { SqliteStore } from './store/sqlite.js';
 export { RemoteStore } from './store/remote.js';
 export type { RemoteStoreOptions } from './store/remote.js';
-export { LoreConnectionError, LoreAuthError, MemoryNotFoundError, LessonNotFoundError } from './errors.js';
+export { LoreConnectionError, LoreAuthError, MemoryNotFoundError, LessonNotFoundError, SecretBlockedError } from './errors.js';
 export { RedactionPipeline, redact } from './redact.js';
 export { asPrompt } from './prompt.js';
 export { serializeEmbedding, deserializeEmbedding, cosineSimilarity, decayFactor, voteFactor } from './embed.js';

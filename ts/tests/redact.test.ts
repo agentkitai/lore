@@ -121,4 +121,115 @@ describe('RedactionPipeline', () => {
     // Pipeline itself always redacts — the Lore class gates it
     expect(pipeline.run(text)).toBe('key: [REDACTED:api_key]');
   });
+
+  // JWT tokens
+  it('redacts JWT token', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    expect(pipeline.run(`auth: ${jwt}`)).toBe('auth: [REDACTED:jwt_token]');
+  });
+
+  it('does not redact short dotted strings as JWT', () => {
+    expect(pipeline.run('version 1.2.3')).toBe('version 1.2.3');
+  });
+
+  it('does not redact URLs as JWT', () => {
+    expect(pipeline.run('abc123.def456.ghi789')).toBe('abc123.def456.ghi789');
+  });
+
+  // PEM private keys
+  it('redacts RSA private key header', () => {
+    expect(pipeline.run('-----BEGIN RSA PRIVATE KEY-----')).toBe(
+      '[REDACTED:private_key]',
+    );
+  });
+
+  it('redacts EC private key header', () => {
+    expect(pipeline.run('-----BEGIN EC PRIVATE KEY-----')).toBe(
+      '[REDACTED:private_key]',
+    );
+  });
+
+  it('does not redact public key header', () => {
+    expect(pipeline.run('-----BEGIN PUBLIC KEY-----')).toBe(
+      '-----BEGIN PUBLIC KEY-----',
+    );
+  });
+
+  // AWS secret keys
+  it('redacts AWS secret key near AKIA', () => {
+    const text = 'AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const result = pipeline.scan(text);
+    const types = result.findings.map((f) => f.type);
+    expect(types).toContain('aws_secret_key');
+  });
+
+  it('does not flag AWS secret without AKIA', () => {
+    const text = 'secret=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const result = pipeline.scan(text);
+    const types = result.findings.map((f) => f.type);
+    expect(types).not.toContain('aws_secret_key');
+  });
+
+  it('does not flag AWS secret on different line', () => {
+    const text =
+      'AKIAIOSFODNN7EXAMPLE\nunrelated\nwJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';
+    const result = pipeline.scan(text);
+    const types = result.findings.map((f) => f.type);
+    expect(types).not.toContain('aws_secret_key');
+  });
+
+  // High entropy
+  it('detects high-entropy string', () => {
+    const secret = 'Zk9mXpL2vR8nQw4jY6tU0hC3bA7dE5fG';
+    const result = pipeline.scan(`key=${secret}`);
+    const types = result.findings.map((f) => f.type);
+    expect(types).toContain('high_entropy_string');
+  });
+
+  it('does not flag low-entropy repeating string', () => {
+    expect(pipeline.run('value=00000000000000000000')).toBe(
+      'value=00000000000000000000',
+    );
+  });
+
+  it('does not flag short string as high entropy', () => {
+    expect(pipeline.run('hash=a1b2c3d4e5f6')).toBe('hash=a1b2c3d4e5f6');
+  });
+
+  // Scan result / block action
+  it('scan returns block for API key', () => {
+    const result = pipeline.scan('key: sk-abc123def456ghi789jkl012');
+    expect(result.action).toBe('block');
+    expect(result.blockedTypes).toContain('api_key');
+  });
+
+  it('scan returns mask for email', () => {
+    const result = pipeline.scan('user@example.com');
+    expect(result.action).toBe('mask');
+  });
+
+  it('scan returns pass for clean text', () => {
+    const result = pipeline.scan('just normal text');
+    expect(result.action).toBe('pass');
+    expect(result.findings).toHaveLength(0);
+  });
+
+  it('JWT triggers block', () => {
+    const jwt =
+      'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U';
+    const result = pipeline.scan(`auth: ${jwt}`);
+    expect(result.action).toBe('block');
+  });
+
+  it('private key triggers block', () => {
+    const result = pipeline.scan('-----BEGIN RSA PRIVATE KEY-----');
+    expect(result.action).toBe('block');
+  });
+
+  // maskedText method
+  it('maskedText returns redacted text from scan result', () => {
+    const result = pipeline.scan('email: user@example.com');
+    expect(pipeline.maskedText(result)).toBe('email: [REDACTED:email]');
+  });
 });

@@ -129,11 +129,17 @@ describe('Lore with redaction', () => {
     await lore.close();
   });
 
-  it('redacts on remember', async () => {
-    const id = await lore.remember('API key sk-abcdefghijklmnopqrst123 leaked');
+  it('blocks secrets on remember', async () => {
+    await expect(
+      lore.remember('API key sk-abcdefghijklmnopqrst123 leaked'),
+    ).rejects.toThrow('api_key detected');
+  });
+
+  it('masks PII on remember', async () => {
+    const id = await lore.remember('Contact user@example.com for info');
     const memory = await lore.get(id);
-    expect(memory!.content).toContain('[REDACTED:api_key]');
-    expect(memory!.content).not.toContain('sk-');
+    expect(memory!.content).toContain('[REDACTED:email]');
+    expect(memory!.content).not.toContain('user@');
   });
 
   it('redact: false disables redaction', async () => {
