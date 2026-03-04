@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -15,6 +16,7 @@ CREATE TABLE IF NOT EXISTS memories (
     id          TEXT PRIMARY KEY,
     content     TEXT NOT NULL,
     type        TEXT DEFAULT 'general',
+    context     TEXT,
     tags        TEXT,
     metadata    TEXT,
     source      TEXT,
@@ -38,6 +40,7 @@ CREATE TABLE memories AS SELECT
     id,
     (problem || '\n' || resolution) AS content,
     'lesson' AS type,
+    context,
     tags,
     meta AS metadata,
     source,
@@ -65,6 +68,7 @@ class SqliteStore(Store):
         self._conn.row_factory = sqlite3.Row
         self._maybe_migrate()
         self._conn.executescript(_SCHEMA)
+        self._maybe_add_context_column()
 
     def _maybe_migrate(self) -> None:
         """Auto-migrate lessons table to memories table if needed."""
@@ -76,24 +80,34 @@ class SqliteStore(Store):
         }
         if "lessons" in tables and "memories" not in tables:
             self._conn.executescript(_MIGRATION_SQL)
-            # Re-create indexes on the migrated table
             self._conn.executescript(
                 "CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);\n"
                 "CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);\n"
                 "CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);"
             )
 
+    def _maybe_add_context_column(self) -> None:
+        """Add context column to existing memories table if missing."""
+        cols = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(memories)").fetchall()
+        }
+        if "context" not in cols:
+            self._conn.execute("ALTER TABLE memories ADD COLUMN context TEXT")
+            self._conn.commit()
+
     def save(self, memory: Memory) -> None:
         self._conn.execute(
             """INSERT OR REPLACE INTO memories
-               (id, content, type, tags, metadata, source,
+               (id, content, type, context, tags, metadata, source,
                 project, embedding, created_at, updated_at,
                 ttl, expires_at, confidence, upvotes, downvotes)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 memory.id,
                 memory.content,
                 memory.type,
+                memory.context,
                 json.dumps(memory.tags),
                 json.dumps(memory.metadata) if memory.metadata is not None else None,
                 memory.source,
@@ -145,13 +159,14 @@ class SqliteStore(Store):
     def update(self, memory: Memory) -> bool:
         cursor = self._conn.execute(
             """UPDATE memories SET
-               content=?, type=?, tags=?, metadata=?, source=?,
+               content=?, type=?, context=?, tags=?, metadata=?, source=?,
                project=?, embedding=?, updated_at=?,
                ttl=?, expires_at=?, confidence=?, upvotes=?, downvotes=?
                WHERE id=?""",
             (
                 memory.content,
                 memory.type,
+                memory.context,
                 json.dumps(memory.tags),
                 json.dumps(memory.metadata) if memory.metadata is not None else None,
                 memory.source,
@@ -195,6 +210,15 @@ class SqliteStore(Store):
         row = self._conn.execute(query, params).fetchone()
         return row[0]
 
+    def cleanup_expired(self) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = self._conn.execute(
+            "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?",
+            (now,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
     @staticmethod
     def _row_to_memory(row: sqlite3.Row) -> Memory:
         tags_raw = row["tags"]
@@ -207,6 +231,7 @@ class SqliteStore(Store):
             id=row["id"],
             content=row["content"],
             type=row["type"] or "general",
+            context=row["context"],
             tags=tags,
             metadata=metadata,
             source=row["source"],

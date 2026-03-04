@@ -43,3 +43,7 @@ class Store(ABC):
         type: Optional[str] = None,
     ) -> int:
         """Count memories, optionally filtered by project/type."""
+
+    @abstractmethod
+    def cleanup_expired(self) -> int:
+        """Delete memories where expires_at < now. Returns count deleted."""

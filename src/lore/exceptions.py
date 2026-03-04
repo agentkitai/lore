@@ -15,3 +15,7 @@ class LoreConnectionError(Exception):
 
 class LoreAuthError(Exception):
     """Raised when the server rejects the API key (401/403)."""
+
+
+# Deprecated alias
+LessonNotFoundError = MemoryNotFoundError

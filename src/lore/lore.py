@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import struct
+import time
+import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -16,7 +19,7 @@ from lore.exceptions import MemoryNotFoundError
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
-from lore.types import Memory, RecallResult
+from lore.types import Memory, MemoryStats, RecallResult
 
 # Type alias for user-provided embedding functions
 EmbeddingFn = Callable[[str], List[float]]
@@ -26,6 +29,7 @@ RedactPattern = Tuple[str, str]
 
 _EMBEDDING_DIM = 384
 _DEFAULT_HALF_LIFE_DAYS = 30
+_CLEANUP_INTERVAL_SECONDS = 60
 
 
 def _serialize_embedding(vec: List[float]) -> bytes:
@@ -77,6 +81,8 @@ class Lore:
     ) -> None:
         self.project = project
         self._half_life_days = decay_half_life_days
+        self._last_cleanup: float = 0.0
+        self._last_cleanup_count: int = 0
 
         # Redaction pipeline
         self._redact_enabled = redact
@@ -94,7 +100,6 @@ class Lore:
                 raise ValueError(
                     "api_url and api_key are required when store='remote'"
                 )
-            # Remote store deferred to Phase B — raise clear error
             raise ValueError(
                 "Remote store is not supported in this version. "
                 "Use a local store instead."
@@ -127,11 +132,16 @@ class Lore:
     def __exit__(self, *args: object) -> None:
         self.close()
 
+    # ------------------------------------------------------------------
+    # Core API
+    # ------------------------------------------------------------------
+
     def remember(
         self,
         content: str,
         *,
         type: str = "general",
+        context: Optional[str] = None,
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         source: Optional[str] = None,
@@ -148,9 +158,12 @@ class Lore:
         # Redact sensitive data before storage
         if self._redactor is not None:
             content = self._redactor.run(content)
+            if context:
+                context = self._redactor.run(context)
 
         # Compute embedding
-        embedding_vec = self._embedder.embed(content)
+        embed_text = f"{content} {context}" if context else content
+        embedding_vec = self._embedder.embed(embed_text)
         embedding_bytes = _serialize_embedding(embedding_vec)
 
         now = _utc_now_iso()
@@ -166,6 +179,7 @@ class Lore:
             id=str(ULID()),
             content=content,
             type=type,
+            context=context,
             tags=tags or [],
             metadata=metadata,
             source=source,
@@ -192,7 +206,9 @@ class Lore:
         """Semantic search for memories.
 
         Returns a list of RecallResult ordered by descending score.
+        Triggers lazy cleanup of expired memories.
         """
+        self._maybe_cleanup_expired()
         query_vec = self._embedder.embed(query)
         return self._recall_local(
             query_vec, tags=tags, type=type, limit=limit,
@@ -285,26 +301,39 @@ class Lore:
         type: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Memory]:
-        """List memories with optional filters."""
-        return self._store.list(project=project, type=type, limit=limit)
+        """List memories with optional filters. Excludes expired memories."""
+        now = datetime.now(timezone.utc)
+        memories = self._store.list(project=project, type=type, limit=None)
+        memories = [
+            m for m in memories
+            if m.expires_at is None
+            or datetime.fromisoformat(m.expires_at) > now
+        ]
+        if limit is not None:
+            memories = memories[:limit]
+        return memories
 
-    def stats(self, project: Optional[str] = None) -> Dict[str, Any]:
+    def stats(self, project: Optional[str] = None) -> MemoryStats:
         """Return memory statistics."""
         all_memories = self._store.list(project=project)
         if not all_memories:
-            return {"total": 0, "by_type": {}, "oldest": None, "newest": None}
+            return MemoryStats(
+                total=0,
+                expired_cleaned=self._last_cleanup_count,
+            )
 
         by_type: Dict[str, int] = {}
         for m in all_memories:
             by_type[m.type] = by_type.get(m.type, 0) + 1
 
         # Memories are sorted by created_at desc, so newest is first
-        return {
-            "total": len(all_memories),
-            "by_type": by_type,
-            "oldest": all_memories[-1].created_at,
-            "newest": all_memories[0].created_at,
-        }
+        return MemoryStats(
+            total=len(all_memories),
+            by_type=by_type,
+            oldest=all_memories[-1].created_at,
+            newest=all_memories[0].created_at,
+            expired_cleaned=self._last_cleanup_count,
+        )
 
     def upvote(self, memory_id: str) -> None:
         """Increment upvotes for a memory."""
@@ -323,6 +352,122 @@ class Lore:
         memory.downvotes += 1
         memory.updated_at = _utc_now_iso()
         self._store.update(memory)
+
+    # ------------------------------------------------------------------
+    # TTL Cleanup
+    # ------------------------------------------------------------------
+
+    def _maybe_cleanup_expired(self) -> None:
+        """Run cleanup_expired at most once per 60 seconds."""
+        now = time.monotonic()
+        if now - self._last_cleanup >= _CLEANUP_INTERVAL_SECONDS:
+            self._last_cleanup = now
+            self._last_cleanup_count = self._store.cleanup_expired()
+
+    # ------------------------------------------------------------------
+    # Deprecated methods (backward compat with pre-0.3 API)
+    # ------------------------------------------------------------------
+
+    def publish(
+        self,
+        problem: str,
+        resolution: str,
+        *,
+        context: Optional[str] = None,
+        tags: Optional[List[str]] = None,
+        confidence: float = 0.5,
+        source: Optional[str] = None,
+        project: Optional[str] = None,
+    ) -> str:
+        """Deprecated: use remember() instead."""
+        warnings.warn("publish() is deprecated, use remember()", DeprecationWarning, stacklevel=2)
+        content = f"{problem}\n\n{resolution}"
+        return self.remember(
+            content, type="lesson", context=context, tags=tags,
+            confidence=confidence, source=source, project=project,
+        )
+
+    def query(
+        self,
+        text: str,
+        *,
+        tags: Optional[List[str]] = None,
+        limit: int = 5,
+        min_confidence: float = 0.0,
+    ) -> List[RecallResult]:
+        """Deprecated: use recall() instead."""
+        warnings.warn("query() is deprecated, use recall()", DeprecationWarning, stacklevel=2)
+        return self.recall(text, tags=tags, limit=limit, min_confidence=min_confidence)
+
+    def delete(self, memory_id: str) -> bool:
+        """Deprecated: use forget() instead."""
+        warnings.warn("delete() is deprecated, use forget()", DeprecationWarning, stacklevel=2)
+        return self.forget(memory_id)
+
+    def export_lessons(self, path: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Deprecated: export memories as JSON-serializable dicts."""
+        warnings.warn("export_lessons() is deprecated", DeprecationWarning, stacklevel=2)
+        memories = self._store.list()
+        data = []
+        for m in memories:
+            d: Dict[str, Any] = {
+                "id": m.id,
+                "content": m.content,
+                "type": m.type,
+                "tags": m.tags,
+                "confidence": m.confidence,
+                "source": m.source,
+                "project": m.project,
+                "created_at": m.created_at,
+                "updated_at": m.updated_at,
+                "upvotes": m.upvotes,
+                "downvotes": m.downvotes,
+            }
+            if m.metadata:
+                d["metadata"] = m.metadata
+            if m.context:
+                d["context"] = m.context
+            data.append(d)
+        if path:
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+        return data
+
+    def import_lessons(
+        self,
+        path: Optional[str] = None,
+        data: Optional[List[Dict[str, Any]]] = None,
+    ) -> int:
+        """Deprecated: import memories from file or data. Skips duplicates."""
+        warnings.warn("import_lessons() is deprecated", DeprecationWarning, stacklevel=2)
+        if path:
+            with open(path) as f:
+                data = json.load(f)
+        if not data:
+            return 0
+        count = 0
+        for d in data:
+            mid = d.get("id", str(ULID()))
+            if self._store.get(mid) is not None:
+                continue
+            memory = Memory(
+                id=mid,
+                content=d.get("content", ""),
+                type=d.get("type", "general"),
+                context=d.get("context"),
+                tags=d.get("tags", []),
+                metadata=d.get("metadata"),
+                confidence=d.get("confidence", 1.0),
+                source=d.get("source"),
+                project=d.get("project"),
+                created_at=d.get("created_at", _utc_now_iso()),
+                updated_at=d.get("updated_at", _utc_now_iso()),
+                upvotes=d.get("upvotes", 0),
+                downvotes=d.get("downvotes", 0),
+            )
+            self._store.save(memory)
+            count += 1
+        return count
 
 
 def _utc_now_iso() -> str:

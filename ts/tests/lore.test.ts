@@ -17,75 +17,122 @@ describe('Lore with MemoryStore', () => {
     await lore.close();
   });
 
-  it('publish returns a ULID', async () => {
-    const id = await lore.publish({ problem: 'p', resolution: 'r' });
+  it('remember returns a ULID', async () => {
+    const id = await lore.remember('test content');
     expect(id).toMatch(/^[0-9A-Z]{26}$/);
   });
 
-  it('publish and get round-trip', async () => {
-    const id = await lore.publish({
-      problem: 'rate limit',
-      resolution: 'backoff',
+  it('remember and get round-trip', async () => {
+    const id = await lore.remember('rate limit fix: use backoff', {
       tags: ['api'],
       confidence: 0.9,
     });
-    const lesson = await lore.get(id);
-    expect(lesson).not.toBeNull();
-    expect(lesson!.problem).toBe('rate limit');
-    expect(lesson!.tags).toEqual(['api']);
-    expect(lesson!.confidence).toBe(0.9);
+    const memory = await lore.get(id);
+    expect(memory).not.toBeNull();
+    expect(memory!.content).toBe('rate limit fix: use backoff');
+    expect(memory!.tags).toEqual(['api']);
+    expect(memory!.confidence).toBe(0.9);
   });
 
   it('get returns null for missing', async () => {
     expect(await lore.get('nope')).toBeNull();
   });
 
-  it('list returns lessons', async () => {
-    await lore.publish({ problem: 'p1', resolution: 'r1' });
-    await lore.publish({ problem: 'p2', resolution: 'r2' });
-    const all = await lore.list();
+  it('listMemories returns memories', async () => {
+    await lore.remember('memory 1');
+    await lore.remember('memory 2');
+    const all = await lore.listMemories();
     expect(all).toHaveLength(2);
   });
 
-  it('list filters by project', async () => {
-    await lore.publish({ problem: 'p1', resolution: 'r1', project: 'a' });
-    await lore.publish({ problem: 'p2', resolution: 'r2', project: 'b' });
-    const filtered = await lore.list({ project: 'a' });
+  it('listMemories filters by project', async () => {
+    await lore.remember('m1', { project: 'a' });
+    await lore.remember('m2', { project: 'b' });
+    const filtered = await lore.listMemories({ project: 'a' });
     expect(filtered).toHaveLength(1);
     expect(filtered[0].project).toBe('a');
   });
 
-  it('delete removes lesson', async () => {
-    const id = await lore.publish({ problem: 'p', resolution: 'r' });
-    expect(await lore.delete(id)).toBe(true);
+  it('forget removes memory', async () => {
+    const id = await lore.remember('to forget');
+    expect(await lore.forget(id)).toBe(true);
     expect(await lore.get(id)).toBeNull();
   });
 
-  it('delete returns false for missing', async () => {
-    expect(await lore.delete('nope')).toBe(false);
+  it('forget returns false for missing', async () => {
+    expect(await lore.forget('nope')).toBe(false);
   });
 
-  it('publish rejects invalid confidence', async () => {
-    await expect(lore.publish({ problem: 'p', resolution: 'r', confidence: 1.5 }))
+  it('remember rejects invalid confidence', async () => {
+    await expect(lore.remember('t', { confidence: 1.5 }))
       .rejects.toThrow(RangeError);
-    await expect(lore.publish({ problem: 'p', resolution: 'r', confidence: -0.1 }))
+    await expect(lore.remember('t', { confidence: -0.1 }))
       .rejects.toThrow(RangeError);
   });
 
-  it('publish uses project from constructor', async () => {
+  it('remember uses project from constructor', async () => {
     const projLore = new Lore({ store: new MemoryStore(), project: 'my-proj' });
-    const id = await projLore.publish({ problem: 'p', resolution: 'r' });
-    const lesson = await projLore.get(id);
-    expect(lesson!.project).toBe('my-proj');
+    const id = await projLore.remember('content');
+    const memory = await projLore.get(id);
+    expect(memory!.project).toBe('my-proj');
     await projLore.close();
   });
 
-  it('publish option project overrides constructor project', async () => {
+  it('remember option project overrides constructor project', async () => {
     const projLore = new Lore({ store: new MemoryStore(), project: 'default' });
-    const id = await projLore.publish({ problem: 'p', resolution: 'r', project: 'override' });
-    const lesson = await projLore.get(id);
-    expect(lesson!.project).toBe('override');
+    const id = await projLore.remember('content', { project: 'override' });
+    const memory = await projLore.get(id);
+    expect(memory!.project).toBe('override');
     await projLore.close();
+  });
+
+  it('remember with context', async () => {
+    const id = await lore.remember('fix applied', { context: 'production outage' });
+    const memory = await lore.get(id);
+    expect(memory!.context).toBe('production outage');
+  });
+
+  it('remember with type', async () => {
+    const id = await lore.remember('content', { type: 'lesson' });
+    const memory = await lore.get(id);
+    expect(memory!.type).toBe('lesson');
+  });
+
+  it('remember with metadata', async () => {
+    const id = await lore.remember('content', { metadata: { key: 'value' } });
+    const memory = await lore.get(id);
+    expect(memory!.metadata).toEqual({ key: 'value' });
+  });
+
+  it('stats returns MemoryStats', async () => {
+    await lore.remember('m1', { type: 'general' });
+    await lore.remember('m2', { type: 'lesson' });
+    const s = await lore.stats();
+    expect(s.total).toBe(2);
+    expect(s.byType['general']).toBe(1);
+    expect(s.byType['lesson']).toBe(1);
+    expect(s.oldest).toBeTruthy();
+    expect(s.newest).toBeTruthy();
+  });
+
+  // Deprecated methods still work
+  it('publish (deprecated) still works', async () => {
+    const id = await lore.publish({ problem: 'p', resolution: 'r' });
+    expect(id).toMatch(/^[0-9A-Z]{26}$/);
+    const memory = await lore.get(id);
+    expect(memory!.content).toContain('p');
+    expect(memory!.content).toContain('r');
+  });
+
+  it('list (deprecated) still works', async () => {
+    await lore.remember('content');
+    const all = await lore.list();
+    expect(all).toHaveLength(1);
+  });
+
+  it('delete (deprecated) still works', async () => {
+    const id = await lore.remember('content');
+    expect(await lore.delete(id)).toBe(true);
   });
 });
 
@@ -104,30 +151,27 @@ describe('Lore with SqliteStore', () => {
   });
 
   it('full CRUD cycle', async () => {
-    const id = await lore.publish({
-      problem: 'timeout',
-      resolution: 'increase to 120s',
+    const id = await lore.remember('timeout: increase to 120s', {
       tags: ['api'],
       confidence: 0.85,
     });
 
     // Read
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toBe('timeout');
+    const memory = await lore.get(id);
+    expect(memory!.content).toBe('timeout: increase to 120s');
 
     // List
-    const all = await lore.list();
+    const all = await lore.listMemories();
     expect(all).toHaveLength(1);
 
     // Delete
-    expect(await lore.delete(id)).toBe(true);
-    expect(await lore.list()).toHaveLength(0);
+    expect(await lore.forget(id)).toBe(true);
+    expect(await lore.listMemories()).toHaveLength(0);
   });
 
   it('default db path creates ~/.lore/default.db', async () => {
-    // Just test that constructor doesn't throw with defaults
     const defaultLore = new Lore();
-    const id = await defaultLore.publish({ problem: 'p', resolution: 'r' });
+    const id = await defaultLore.remember('test content');
     expect(id).toBeTruthy();
     await defaultLore.close();
   });

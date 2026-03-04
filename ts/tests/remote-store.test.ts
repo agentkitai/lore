@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { RemoteStore } from '../src/store/remote.js';
-import { LoreConnectionError, LoreAuthError, LessonNotFoundError } from '../src/errors.js';
-import type { Lesson } from '../src/types.js';
+import { LoreConnectionError, LoreAuthError, MemoryNotFoundError } from '../src/errors.js';
+import type { Memory } from '../src/types.js';
 
 function makeMockResponse(status: number, body?: unknown): Response {
   return {
@@ -12,23 +12,24 @@ function makeMockResponse(status: number, body?: unknown): Response {
   } as Response;
 }
 
-function makeLesson(overrides?: Partial<Lesson>): Lesson {
+function makeMemory(overrides?: Partial<Memory>): Memory {
   return {
     id: 'test-id-1',
-    problem: 'test problem',
-    resolution: 'test resolution',
+    content: 'test content',
+    type: 'general',
     context: null,
     tags: ['ts'],
+    metadata: null,
     confidence: 0.8,
     source: null,
     project: 'myproject',
     embedding: null,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
+    ttl: null,
     expiresAt: null,
     upvotes: 0,
     downvotes: 0,
-    meta: null,
     ...overrides,
   };
 }
@@ -47,36 +48,36 @@ describe('RemoteStore', () => {
     vi.restoreAllMocks();
   });
 
-  it('save sends POST /v1/lessons', async () => {
+  it('save sends POST /v1/memories', async () => {
     fetchSpy.mockResolvedValue(makeMockResponse(201, { id: 'test-id-1' }));
-    const lesson = makeLesson();
-    await store.save(lesson);
+    const memory = makeMemory();
+    await store.save(memory);
 
     expect(fetchSpy).toHaveBeenCalledOnce();
     const [url, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe('https://api.lore.dev/v1/lessons');
+    expect(url).toBe('https://api.lore.dev/v1/memories');
     expect(opts.method).toBe('POST');
     expect(opts.headers).toEqual({
       Authorization: 'Bearer test-key',
       'Content-Type': 'application/json',
     });
     const body = JSON.parse(opts.body as string);
-    expect(body.problem).toBe('test problem');
+    expect(body.content).toBe('test content');
     expect(body.embedding).toEqual([]);
   });
 
-  it('get returns lesson on 200', async () => {
+  it('get returns memory on 200', async () => {
     fetchSpy.mockResolvedValue(makeMockResponse(200, {
-      id: 'abc', problem: 'p', resolution: 'r', context: null,
+      id: 'abc', content: 'test', type: 'general', context: null,
       tags: [], confidence: 0.5, source: null, project: null,
       created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z',
-      expires_at: null, upvotes: 1, downvotes: 0, meta: null,
+      expires_at: null, upvotes: 1, downvotes: 0, metadata: null,
     }));
 
-    const lesson = await store.get('abc');
-    expect(lesson).not.toBeNull();
-    expect(lesson!.id).toBe('abc');
-    expect(lesson!.upvotes).toBe(1);
+    const memory = await store.get('abc');
+    expect(memory).not.toBeNull();
+    expect(memory!.id).toBe('abc');
+    expect(memory!.upvotes).toBe(1);
   });
 
   it('get returns null on 404', async () => {
@@ -85,8 +86,8 @@ describe('RemoteStore', () => {
     expect(result).toBeNull();
   });
 
-  it('list sends GET /v1/lessons with params', async () => {
-    fetchSpy.mockResolvedValue(makeMockResponse(200, { lessons: [] }));
+  it('list sends GET /v1/memories with params', async () => {
+    fetchSpy.mockResolvedValue(makeMockResponse(200, { memories: [] }));
     await store.list({ project: 'proj', limit: 10 });
 
     const [url] = fetchSpy.mock.calls[0] as [string];
@@ -96,13 +97,13 @@ describe('RemoteStore', () => {
 
   it('update returns false on 404', async () => {
     fetchSpy.mockResolvedValue(makeMockResponse(404));
-    const result = await store.update(makeLesson());
+    const result = await store.update(makeMemory());
     expect(result).toBe(false);
   });
 
   it('update returns true on 200', async () => {
     fetchSpy.mockResolvedValue(makeMockResponse(200, {}));
-    const result = await store.update(makeLesson());
+    const result = await store.update(makeMemory());
     expect(result).toBe(true);
   });
 
@@ -118,12 +119,12 @@ describe('RemoteStore', () => {
     expect(result).toBe(true);
   });
 
-  it('search sends POST /v1/lessons/search', async () => {
-    fetchSpy.mockResolvedValue(makeMockResponse(200, { lessons: [{ id: 'x', score: 0.9 }] }));
+  it('search sends POST /v1/memories/search', async () => {
+    fetchSpy.mockResolvedValue(makeMockResponse(200, { memories: [{ id: 'x', score: 0.9 }] }));
     const results = await store.search([0.1, 0.2], { tags: ['a'], limit: 3 });
 
     const [url, opts] = fetchSpy.mock.calls[0] as [string, RequestInit];
-    expect(url).toContain('/v1/lessons/search');
+    expect(url).toContain('/v1/memories/search');
     const body = JSON.parse(opts.body as string);
     expect(body.embedding).toEqual([0.1, 0.2]);
     expect(body.tags).toEqual(['a']);
@@ -140,9 +141,9 @@ describe('RemoteStore', () => {
     expect(body.upvotes).toBe('+1');
   });
 
-  it('upvote throws LessonNotFoundError on 404', async () => {
+  it('upvote throws MemoryNotFoundError on 404', async () => {
     fetchSpy.mockResolvedValue(makeMockResponse(404));
-    await expect(store.upvote('missing')).rejects.toThrow(LessonNotFoundError);
+    await expect(store.upvote('missing')).rejects.toThrow(MemoryNotFoundError);
   });
 
   it('downvote sends PATCH with +1', async () => {
@@ -154,9 +155,9 @@ describe('RemoteStore', () => {
     expect(body.downvotes).toBe('+1');
   });
 
-  it('downvote throws LessonNotFoundError on 404', async () => {
+  it('downvote throws MemoryNotFoundError on 404', async () => {
     fetchSpy.mockResolvedValue(makeMockResponse(404));
-    await expect(store.downvote('missing')).rejects.toThrow(LessonNotFoundError);
+    await expect(store.downvote('missing')).rejects.toThrow(MemoryNotFoundError);
   });
 
   it('throws LoreAuthError on 401', async () => {
@@ -182,24 +183,20 @@ describe('RemoteStore', () => {
 
   it('strips trailing slashes from apiUrl', () => {
     const s = new RemoteStore({ apiUrl: 'https://api.lore.dev///', apiKey: 'k' });
-    // Verify by making a call and checking URL
-    fetchSpy.mockResolvedValue(makeMockResponse(200, { lessons: [] }));
+    fetchSpy.mockResolvedValue(makeMockResponse(200, { memories: [] }));
     s.list();
-    // Async - we just verify construction doesn't throw
   });
 
-  it('exportLessons sends POST /v1/lessons/export', async () => {
-    fetchSpy.mockResolvedValue(makeMockResponse(200, { lessons: [{ id: 'x' }] }));
-    const result = await store.exportLessons();
-    expect(result).toHaveLength(1);
-    const [url] = fetchSpy.mock.calls[0] as [string];
-    expect(url).toContain('/v1/lessons/export');
+  it('count sends GET /v1/memories/count', async () => {
+    fetchSpy.mockResolvedValue(makeMockResponse(200, { count: 42 }));
+    const result = await store.count();
+    expect(result).toBe(42);
   });
 
-  it('importLessons sends POST /v1/lessons/import', async () => {
-    fetchSpy.mockResolvedValue(makeMockResponse(200, { imported: 5 }));
-    const result = await store.importLessons([{ id: 'a' }]);
-    expect(result).toBe(5);
+  it('cleanupExpired sends POST /v1/memories/cleanup', async () => {
+    fetchSpy.mockResolvedValue(makeMockResponse(200, { deleted: 3 }));
+    const result = await store.cleanupExpired();
+    expect(result).toBe(3);
   });
 
   it('close resolves without error', async () => {
@@ -209,14 +206,13 @@ describe('RemoteStore', () => {
 
 describe('Lore with remote store', () => {
   it('creates RemoteStore when store is "remote"', async () => {
-    // Dynamic import to avoid polluting other tests
     const { Lore } = await import('../src/lore.js');
 
-    const fetchSpy = vi.fn().mockResolvedValue(makeMockResponse(200, { lessons: [] }));
+    const fetchSpy = vi.fn().mockResolvedValue(makeMockResponse(200, { memories: [] }));
     vi.stubGlobal('fetch', fetchSpy);
 
     const lore = new Lore({ store: 'remote', apiUrl: 'https://api.test', apiKey: 'key' });
-    await lore.list();
+    await lore.listMemories();
     expect(fetchSpy).toHaveBeenCalled();
     await lore.close();
 

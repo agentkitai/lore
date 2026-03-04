@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from lore.store.base import Store
@@ -56,3 +57,14 @@ class MemoryStore(Store):
         if type is not None:
             memories = [m for m in memories if m.type == type]
         return len(memories)
+
+    def cleanup_expired(self) -> int:
+        now = datetime.now(timezone.utc)
+        expired_ids = [
+            mid for mid, m in self._memories.items()
+            if m.expires_at is not None
+            and datetime.fromisoformat(m.expires_at) < now
+        ]
+        for mid in expired_ids:
+            del self._memories[mid]
+        return len(expired_ids)

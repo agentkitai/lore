@@ -305,8 +305,8 @@ class TestLore:
     def test_stats_empty(self) -> None:
         lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         s = lore.stats()
-        assert s["total"] == 0
-        assert s["by_type"] == {}
+        assert s.total == 0
+        assert s.by_type == {}
 
     def test_stats_with_memories(self) -> None:
         lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
@@ -314,11 +314,11 @@ class TestLore:
         lore.remember("b", type="fact")
         lore.remember("c", type="lesson")
         s = lore.stats()
-        assert s["total"] == 3
-        assert s["by_type"]["lesson"] == 2
-        assert s["by_type"]["fact"] == 1
-        assert s["oldest"] is not None
-        assert s["newest"] is not None
+        assert s.total == 3
+        assert s.by_type["lesson"] == 2
+        assert s.by_type["fact"] == 1
+        assert s.oldest is not None
+        assert s.newest is not None
 
     def test_list_filter_by_type(self) -> None:
         lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)

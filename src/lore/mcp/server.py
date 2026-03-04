@@ -189,15 +189,15 @@ def stats(project: Optional[str] = None) -> str:
         lore = _get_lore()
         s = lore.stats(project=project)
         lines = [
-            f"Total memories: {s['total']}",
+            f"Total memories: {s.total}",
         ]
-        if s["by_type"]:
+        if s.by_type:
             lines.append("By type:")
-            for t, count in sorted(s["by_type"].items()):
+            for t, count in sorted(s.by_type.items()):
                 lines.append(f"  {t}: {count}")
-        if s.get("oldest"):
-            lines.append(f"Oldest: {s['oldest']}")
-            lines.append(f"Newest: {s['newest']}")
+        if s.oldest:
+            lines.append(f"Oldest: {s.oldest}")
+            lines.append(f"Newest: {s.newest}")
         return "\n".join(lines)
     except Exception as e:
         return f"Failed to get stats: {e}"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import warnings
 from typing import List, Optional, Sequence
 
 
@@ -23,6 +24,7 @@ def cmd_remember(args: argparse.Namespace) -> None:
     mid = lore.remember(
         content=args.content,
         type=args.type,
+        context=getattr(args, "context", None),
         tags=tags,
         source=args.source,
         ttl=args.ttl,
@@ -34,7 +36,10 @@ def cmd_remember(args: argparse.Namespace) -> None:
 
 def cmd_recall(args: argparse.Namespace) -> None:
     lore = _get_lore(args.db)
-    results = lore.recall(args.query, type=args.type, limit=args.limit)
+    tags = None
+    if getattr(args, "tags", None):
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+    results = lore.recall(args.query, type=args.type, tags=tags, limit=args.limit)
     lore.close()
     if not results:
         print("No results.")
@@ -73,14 +78,54 @@ def cmd_stats(args: argparse.Namespace) -> None:
     lore = _get_lore(args.db)
     s = lore.stats()
     lore.close()
-    print(f"Total: {s['total']}")
-    if s["by_type"]:
-        for t, count in sorted(s["by_type"].items()):
+    print(f"Total: {s.total}")
+    if s.by_type:
+        for t, count in sorted(s.by_type.items()):
             print(f"  {t}: {count}")
-    if s.get("oldest"):
-        print(f"Oldest: {s['oldest']}")
-        print(f"Newest: {s['newest']}")
+    if s.oldest:
+        print(f"Oldest: {s.oldest}")
+        print(f"Newest: {s.newest}")
 
+
+# ------------------------------------------------------------------
+# Deprecated legacy commands
+# ------------------------------------------------------------------
+
+def cmd_publish(args: argparse.Namespace) -> None:
+    print("Warning: 'publish' is deprecated, use 'remember' instead.", file=sys.stderr)
+    lore = _get_lore(args.db)
+    tags: List[str] = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        mid = lore.publish(
+            problem=args.problem,
+            resolution=args.resolution,
+            tags=tags,
+            confidence=args.confidence,
+        )
+    lore.close()
+    print(mid)
+
+
+def cmd_query(args: argparse.Namespace) -> None:
+    print("Warning: 'query' is deprecated, use 'recall' instead.", file=sys.stderr)
+    lore = _get_lore(args.db)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        results = lore.query(args.text, limit=args.limit)
+    lore.close()
+    if not results:
+        print("No results.")
+        return
+    for r in results:
+        print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type})")
+        print(f"  {r.memory.content[:200]}")
+        print()
+
+
+# ------------------------------------------------------------------
+# API key management
+# ------------------------------------------------------------------
 
 def _get_api_config(args: argparse.Namespace) -> tuple:
     """Get API URL and key from args or env vars."""
@@ -180,6 +225,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("content", help="The memory content")
     p.add_argument("--type", default="general", help="Memory type (general, lesson, fact, preference, context)")
     p.add_argument("--tags", default=None, help="Comma-separated tags")
+    p.add_argument("--context", default=None, help="Additional context for the memory")
     p.add_argument("--ttl", type=int, default=None, help="Time-to-live in seconds")
     p.add_argument("--source", default=None)
     p.add_argument("--confidence", type=float, default=1.0)
@@ -188,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("recall", help="Search memories")
     p.add_argument("query", help="Search query")
     p.add_argument("--type", default=None, help="Filter by memory type")
+    p.add_argument("--tags", default=None, help="Comma-separated tags to filter by")
     p.add_argument("--limit", type=int, default=5)
 
     # forget
@@ -201,6 +248,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     # stats
     sub.add_parser("stats", help="Show memory statistics")
+
+    # --- Deprecated legacy commands ---
+    p = sub.add_parser("publish", help="(deprecated) Use 'remember' instead")
+    p.add_argument("problem", help="What went wrong")
+    p.add_argument("resolution", help="How to fix it")
+    p.add_argument("--tags", default=None, help="Comma-separated tags")
+    p.add_argument("--confidence", type=float, default=0.5)
+
+    p = sub.add_parser("query", help="(deprecated) Use 'recall' instead")
+    p.add_argument("text", help="Search query")
+    p.add_argument("--limit", type=int, default=5)
 
     # keys
     keys_parser = sub.add_parser("keys", help="Manage API keys (remote server)")
@@ -263,6 +321,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "forget": cmd_forget,
         "memories": cmd_memories,
         "stats": cmd_stats,
+        "publish": cmd_publish,
+        "query": cmd_query,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

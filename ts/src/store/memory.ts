@@ -1,34 +1,37 @@
 import type { Store } from './base.js';
-import type { Lesson, ListOptions } from '../types.js';
+import type { Memory, ListOptions } from '../types.js';
 
-function cloneLesson(lesson: Lesson): Lesson {
+function cloneMemory(memory: Memory): Memory {
   return {
-    ...lesson,
-    tags: [...lesson.tags],
-    meta: lesson.meta ? { ...lesson.meta } : null,
+    ...memory,
+    tags: [...memory.tags],
+    metadata: memory.metadata ? { ...memory.metadata } : null,
   };
 }
 
 /**
- * In-memory store for testing. Uses a Map keyed by lesson ID.
+ * In-memory store for testing. Uses a Map keyed by memory ID.
  */
 export class MemoryStore implements Store {
-  private lessons = new Map<string, Lesson>();
+  private memories = new Map<string, Memory>();
 
-  async save(lesson: Lesson): Promise<void> {
-    this.lessons.set(lesson.id, cloneLesson(lesson));
+  async save(memory: Memory): Promise<void> {
+    this.memories.set(memory.id, cloneMemory(memory));
   }
 
-  async get(lessonId: string): Promise<Lesson | null> {
-    const lesson = this.lessons.get(lessonId);
-    return lesson ? cloneLesson(lesson) : null;
+  async get(memoryId: string): Promise<Memory | null> {
+    const memory = this.memories.get(memoryId);
+    return memory ? cloneMemory(memory) : null;
   }
 
-  async list(options?: ListOptions): Promise<Lesson[]> {
-    let results = Array.from(this.lessons.values());
+  async list(options?: ListOptions): Promise<Memory[]> {
+    let results = Array.from(this.memories.values());
 
     if (options?.project != null) {
-      results = results.filter((l) => l.project === options.project);
+      results = results.filter((m) => m.project === options.project);
+    }
+    if (options?.type != null) {
+      results = results.filter((m) => m.type === options.type);
     }
 
     // Sort by createdAt descending
@@ -38,20 +41,43 @@ export class MemoryStore implements Store {
       results = results.slice(0, options.limit);
     }
 
-    return results.map(cloneLesson);
+    return results.map(cloneMemory);
   }
 
-  async update(lesson: Lesson): Promise<boolean> {
-    if (!this.lessons.has(lesson.id)) return false;
-    this.lessons.set(lesson.id, cloneLesson(lesson));
+  async update(memory: Memory): Promise<boolean> {
+    if (!this.memories.has(memory.id)) return false;
+    this.memories.set(memory.id, cloneMemory(memory));
     return true;
   }
 
-  async delete(lessonId: string): Promise<boolean> {
-    return this.lessons.delete(lessonId);
+  async delete(memoryId: string): Promise<boolean> {
+    return this.memories.delete(memoryId);
+  }
+
+  async count(options?: { project?: string; type?: string }): Promise<number> {
+    let results = Array.from(this.memories.values());
+    if (options?.project != null) {
+      results = results.filter((m) => m.project === options.project);
+    }
+    if (options?.type != null) {
+      results = results.filter((m) => m.type === options.type);
+    }
+    return results.length;
+  }
+
+  async cleanupExpired(): Promise<number> {
+    const now = new Date();
+    let count = 0;
+    for (const [id, m] of this.memories) {
+      if (m.expiresAt && new Date(m.expiresAt) < now) {
+        this.memories.delete(id);
+        count++;
+      }
+    }
+    return count;
   }
 
   async close(): Promise<void> {
-    this.lessons.clear();
+    this.memories.clear();
   }
 }

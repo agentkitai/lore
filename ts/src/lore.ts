@@ -5,11 +5,13 @@ import type { Store } from './store/base.js';
 import { SqliteStore } from './store/sqlite.js';
 import { RemoteStore } from './store/remote.js';
 import type {
-  Lesson,
-  PublishOptions,
+  Memory,
+  RememberOptions,
+  RecallOptions,
+  RecallResult,
   ListOptions,
-  QueryResult,
-  QueryOptions,
+  MemoryStats,
+  PublishOptions,
   EmbeddingFn,
   RedactPattern,
 } from './types.js';
@@ -24,6 +26,7 @@ import { RedactionPipeline } from './redact.js';
 import { asPrompt as _asPrompt } from './prompt.js';
 
 const DEFAULT_HALF_LIFE_DAYS = 30;
+const CLEANUP_INTERVAL_MS = 60_000;
 
 /** Options for constructing a Lore instance. */
 export interface LoreOptions {
@@ -51,6 +54,8 @@ export class Lore {
   private embeddingFn: EmbeddingFn | undefined;
   private redactor: RedactionPipeline | null;
   private halfLifeDays: number;
+  private lastCleanup: number = 0;
+  private lastCleanupCount: number = 0;
 
   constructor(options?: LoreOptions) {
     this.project = options?.project;
@@ -83,23 +88,24 @@ export class Lore {
     }
   }
 
+  // ------------------------------------------------------------------
+  // Core API
+  // ------------------------------------------------------------------
+
   /**
-   * Publish a new lesson. Returns the lesson ID (ULID).
+   * Store a new memory. Returns the memory ID (ULID).
    */
-  async publish(opts: PublishOptions): Promise<string> {
-    const confidence = opts.confidence ?? 0.5;
+  async remember(content: string, opts?: RememberOptions): Promise<string> {
+    const confidence = opts?.confidence ?? 1.0;
     if (confidence < 0 || confidence > 1) {
       throw new RangeError(`confidence must be between 0.0 and 1.0, got ${confidence}`);
     }
 
-    // Redact sensitive data before storage
-    let problem = opts.problem;
-    let resolution = opts.resolution;
-    let context = opts.context ?? null;
+    let processedContent = content;
+    let context = opts?.context ?? null;
 
     if (this.redactor) {
-      problem = this.redactor.run(problem);
-      resolution = this.redactor.run(resolution);
+      processedContent = this.redactor.run(processedContent);
       if (context) {
         context = this.redactor.run(context);
       }
@@ -108,139 +114,229 @@ export class Lore {
     // Compute embedding if we have an embedding function
     let embeddingBuf: Buffer | null = null;
     if (this.embeddingFn) {
-      const embedText = context
-        ? `${problem} ${resolution} ${context}`
-        : `${problem} ${resolution}`;
+      const embedText = context ? `${processedContent} ${context}` : processedContent;
       const vec = await this.embeddingFn(embedText);
       embeddingBuf = serializeEmbedding(vec);
     }
 
     const now = utcNowIso();
-    const lesson: Lesson = {
+
+    let expiresAt: string | null = null;
+    if (opts?.ttl != null) {
+      expiresAt = new Date(Date.now() + opts.ttl * 1000).toISOString();
+    }
+
+    const memory: Memory = {
       id: ulid(),
-      problem,
-      resolution,
+      content: processedContent,
+      type: opts?.type ?? 'general',
       context,
-      tags: opts.tags ?? [],
+      tags: opts?.tags ?? [],
+      metadata: opts?.metadata ?? null,
       confidence,
-      source: opts.source ?? null,
-      project: opts.project ?? this.project ?? null,
+      source: opts?.source ?? null,
+      project: opts?.project ?? this.project ?? null,
       embedding: embeddingBuf,
       createdAt: now,
       updatedAt: now,
-      expiresAt: null,
+      ttl: opts?.ttl ?? null,
+      expiresAt,
       upvotes: 0,
       downvotes: 0,
-      meta: null,
     };
 
-    await this.store.save(lesson);
-    return lesson.id;
+    await this.store.save(memory);
+    return memory.id;
   }
 
   /**
-   * Query lessons by semantic similarity, optionally filtered by tags.
+   * Semantic search for memories.
    * Requires embeddingFn to be set.
    */
-  async query(text: string, options?: QueryOptions): Promise<QueryResult[]> {
+  async recall(query: string, options?: RecallOptions): Promise<RecallResult[]> {
     if (!this.embeddingFn) {
-      throw new Error('query() requires an embeddingFn to be configured');
+      throw new Error('recall() requires an embeddingFn to be configured');
     }
+
+    await this._maybeCleanupExpired();
 
     const limit = options?.limit ?? 5;
     const minConfidence = options?.minConfidence ?? 0.0;
     const tags = options?.tags;
+    const typeFilter = options?.type;
     const now = new Date();
 
     // Get all candidates
-    let candidates = await this.store.list({ project: this.project ?? undefined });
+    let candidates = await this.store.list({ project: this.project ?? undefined, type: typeFilter });
 
     // Filter expired
-    candidates = candidates.filter((l) => {
-      if (!l.expiresAt) return true;
-      return new Date(l.expiresAt) > now;
+    candidates = candidates.filter((m) => {
+      if (!m.expiresAt) return true;
+      return new Date(m.expiresAt) > now;
     });
 
     // Filter by tags
     if (tags && tags.length > 0) {
       const tagSet = new Set(tags);
-      candidates = candidates.filter((l) =>
-        [...tagSet].every((t) => l.tags.includes(t)),
+      candidates = candidates.filter((m) =>
+        [...tagSet].every((t) => m.tags.includes(t)),
       );
     }
 
     // Filter by min confidence
     if (minConfidence > 0) {
-      candidates = candidates.filter((l) => l.confidence >= minConfidence);
+      candidates = candidates.filter((m) => m.confidence >= minConfidence);
     }
 
     // Filter to those with embeddings
-    candidates = candidates.filter((l) => l.embedding !== null && l.embedding.length > 0);
+    candidates = candidates.filter((m) => m.embedding !== null && m.embedding.length > 0);
     if (candidates.length === 0) return [];
 
     // Embed query
-    const queryVec = await this.embeddingFn(text);
+    const queryVec = await this.embeddingFn(query);
 
     // Score each candidate
-    const results: QueryResult[] = [];
-    for (const lesson of candidates) {
-      const lessonVec = deserializeEmbedding(lesson.embedding!);
-      const cosine = cosineSimilarity(queryVec, lessonVec);
+    const results: RecallResult[] = [];
+    for (const memory of candidates) {
+      const memVec = deserializeEmbedding(memory.embedding!);
+      const cosine = cosineSimilarity(queryVec, memVec);
 
       const ageDays =
-        (now.getTime() - new Date(lesson.createdAt).getTime()) / (86400 * 1000);
+        (now.getTime() - new Date(memory.createdAt).getTime()) / (86400 * 1000);
       const timeFactor = decayFactor(ageDays, this.halfLifeDays);
-      const vFactor = voteFactor(lesson.upvotes, lesson.downvotes);
-      const decay = lesson.confidence * timeFactor * vFactor;
+      const vFactor = voteFactor(memory.upvotes, memory.downvotes);
+      const decay = memory.confidence * timeFactor * vFactor;
       const finalScore = cosine * decay;
 
-      results.push({ lesson, score: finalScore });
+      results.push({ memory, score: finalScore });
     }
 
     results.sort((a, b) => b.score - a.score);
     return results.slice(0, limit);
   }
 
-  /** Upvote a lesson. */
-  async upvote(lessonId: string): Promise<void> {
-    const lesson = await this.store.get(lessonId);
-    if (!lesson) throw new Error(`Lesson not found: ${lessonId}`);
-    lesson.upvotes += 1;
-    lesson.updatedAt = utcNowIso();
-    await this.store.update(lesson);
+  /** Delete a memory by ID. Returns True if it existed. */
+  async forget(memoryId: string): Promise<boolean> {
+    return this.store.delete(memoryId);
   }
 
-  /** Downvote a lesson. */
-  async downvote(lessonId: string): Promise<void> {
-    const lesson = await this.store.get(lessonId);
-    if (!lesson) throw new Error(`Lesson not found: ${lessonId}`);
-    lesson.downvotes += 1;
-    lesson.updatedAt = utcNowIso();
-    await this.store.update(lesson);
+  /** Get a memory by ID. */
+  async get(memoryId: string): Promise<Memory | null> {
+    return this.store.get(memoryId);
   }
 
-  /** Format query results for system prompt injection. */
-  asPrompt(lessons: QueryResult[], maxTokens = 1000): string {
-    return _asPrompt(lessons, maxTokens);
+  /** List memories with optional filters. Excludes expired memories. */
+  async listMemories(options?: ListOptions): Promise<Memory[]> {
+    const now = new Date();
+    const memories = await this.store.list({ project: options?.project, type: options?.type });
+    let filtered = memories.filter((m) => {
+      if (!m.expiresAt) return true;
+      return new Date(m.expiresAt) > now;
+    });
+    if (options?.limit != null) {
+      filtered = filtered.slice(0, options.limit);
+    }
+    return filtered;
   }
 
-  /** Get a lesson by ID. */
-  async get(lessonId: string): Promise<Lesson | null> {
-    return this.store.get(lessonId);
+  /** Return memory statistics. */
+  async stats(options?: { project?: string }): Promise<MemoryStats> {
+    const memories = await this.store.list({ project: options?.project });
+    if (memories.length === 0) {
+      return { total: 0, byType: {}, oldest: null, newest: null, expiredCleaned: this.lastCleanupCount };
+    }
+
+    const byType: Record<string, number> = {};
+    for (const m of memories) {
+      byType[m.type] = (byType[m.type] ?? 0) + 1;
+    }
+
+    return {
+      total: memories.length,
+      byType,
+      oldest: memories[memories.length - 1].createdAt,
+      newest: memories[0].createdAt,
+      expiredCleaned: this.lastCleanupCount,
+    };
   }
 
-  /** List lessons, optionally filtered by project. */
-  async list(options?: ListOptions): Promise<Lesson[]> {
-    return this.store.list(options);
+  /** Upvote a memory. */
+  async upvote(memoryId: string): Promise<void> {
+    const memory = await this.store.get(memoryId);
+    if (!memory) throw new Error(`Memory not found: ${memoryId}`);
+    memory.upvotes += 1;
+    memory.updatedAt = utcNowIso();
+    await this.store.update(memory);
   }
 
-  /** Delete a lesson by ID. */
-  async delete(lessonId: string): Promise<boolean> {
-    return this.store.delete(lessonId);
+  /** Downvote a memory. */
+  async downvote(memoryId: string): Promise<void> {
+    const memory = await this.store.get(memoryId);
+    if (!memory) throw new Error(`Memory not found: ${memoryId}`);
+    memory.downvotes += 1;
+    memory.updatedAt = utcNowIso();
+    await this.store.update(memory);
+  }
+
+  /** Format recall results for system prompt injection. */
+  asPrompt(results: RecallResult[], maxTokens = 1000): string {
+    return _asPrompt(results, maxTokens);
   }
 
   /** Close underlying store. */
   async close(): Promise<void> {
     return this.store.close();
+  }
+
+  // ------------------------------------------------------------------
+  // TTL Cleanup
+  // ------------------------------------------------------------------
+
+  private async _maybeCleanupExpired(): Promise<void> {
+    const now = Date.now();
+    if (now - this.lastCleanup >= CLEANUP_INTERVAL_MS) {
+      this.lastCleanup = now;
+      this.lastCleanupCount = await this.store.cleanupExpired();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Deprecated methods (backward compat with pre-0.3 API)
+  // ------------------------------------------------------------------
+
+  /**
+   * @deprecated Use remember() instead
+   */
+  async publish(opts: PublishOptions): Promise<string> {
+    const content = `${opts.problem}\n\n${opts.resolution}`;
+    return this.remember(content, {
+      type: 'lesson',
+      context: opts.context,
+      tags: opts.tags,
+      confidence: opts.confidence ?? 0.5,
+      source: opts.source,
+      project: opts.project,
+    });
+  }
+
+  /**
+   * @deprecated Use recall() instead
+   */
+  async query(text: string, options?: RecallOptions): Promise<RecallResult[]> {
+    return this.recall(text, options);
+  }
+
+  /**
+   * @deprecated Use listMemories() instead
+   */
+  async list(options?: ListOptions): Promise<Memory[]> {
+    return this.listMemories(options);
+  }
+
+  /**
+   * @deprecated Use forget() instead
+   */
+  async delete(memoryId: string): Promise<boolean> {
+    return this.forget(memoryId);
   }
 }

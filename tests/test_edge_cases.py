@@ -38,7 +38,7 @@ class TestEmptyDB:
 
     def test_stats_empty(self, lore):
         s = lore.stats()
-        assert s["total"] == 0
+        assert s.total == 0
 
 
 class TestUnicode:

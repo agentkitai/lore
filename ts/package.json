@@ -1,7 +1,7 @@
 {
   "name": "lore-sdk",
-  "version": "0.2.0",
-  "description": "Cross-agent memory SDK — TypeScript",
+  "version": "0.3.0",
+  "description": "Cross-agent memory SDK — store, recall, and share knowledge across AI agents (TypeScript)",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -19,7 +19,7 @@
     "test:watch": "vitest",
     "lint": "eslint src/ tests/"
   },
-  "keywords": ["agent", "memory", "lessons", "lore"],
+  "keywords": ["agent", "memory", "lore", "knowledge"],
   "author": "Amit Paz <amit.paz@gmail.com>",
   "license": "MIT",
   "homepage": "https://github.com/amitpaz1/lore",

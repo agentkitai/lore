@@ -21,7 +21,7 @@ function fakeEmbedder(): EmbeddingFn {
     };
 }
 
-describe('Lore.query()', () => {
+describe('Lore.recall()', () => {
   let lore: Lore;
 
   beforeEach(async () => {
@@ -31,9 +31,9 @@ describe('Lore.query()', () => {
       redact: false,
     });
 
-    await lore.publish({ problem: 'rate limit errors', resolution: 'add exponential backoff', tags: ['api'], confidence: 0.9 });
-    await lore.publish({ problem: 'timeout on large queries', resolution: 'increase timeout to 120s', tags: ['api', 'database'], confidence: 0.8 });
-    await lore.publish({ problem: 'auth token expired', resolution: 'refresh token before expiry', tags: ['auth'], confidence: 0.7 });
+    await lore.remember('rate limit errors: add exponential backoff', { tags: ['api'], confidence: 0.9 });
+    await lore.remember('timeout on large queries: increase timeout to 120s', { tags: ['api', 'database'], confidence: 0.8 });
+    await lore.remember('auth token expired: refresh token before expiry', { tags: ['auth'], confidence: 0.7 });
   });
 
   afterEach(async () => {
@@ -41,30 +41,30 @@ describe('Lore.query()', () => {
   });
 
   it('returns results ranked by similarity', async () => {
-    const results = await lore.query('rate limiting');
+    const results = await lore.recall('rate limiting');
     expect(results.length).toBeGreaterThan(0);
-    expect(results[0].lesson.problem).toContain('rate limit');
+    expect(results[0].memory.content).toContain('rate limit');
     expect(results[0].score).toBeGreaterThan(0);
   });
 
   it('filters by tags', async () => {
-    const results = await lore.query('timeout', { tags: ['auth'] });
-    expect(results.every((r) => r.lesson.tags.includes('auth'))).toBe(true);
+    const results = await lore.recall('timeout', { tags: ['auth'] });
+    expect(results.every((r) => r.memory.tags.includes('auth'))).toBe(true);
   });
 
   it('respects limit', async () => {
-    const results = await lore.query('api issues', { limit: 1 });
+    const results = await lore.recall('api issues', { limit: 1 });
     expect(results.length).toBeLessThanOrEqual(1);
   });
 
   it('respects minConfidence', async () => {
-    const results = await lore.query('auth', { minConfidence: 0.8 });
-    expect(results.every((r) => r.lesson.confidence >= 0.8)).toBe(true);
+    const results = await lore.recall('auth', { minConfidence: 0.8 });
+    expect(results.every((r) => r.memory.confidence >= 0.8)).toBe(true);
   });
 
   it('throws without embeddingFn', async () => {
     const noEmbedLore = new Lore({ store: new MemoryStore(), redact: false });
-    await expect(noEmbedLore.query('test')).rejects.toThrow('embeddingFn');
+    await expect(noEmbedLore.recall('test')).rejects.toThrow('embeddingFn');
     await noEmbedLore.close();
   });
 
@@ -74,9 +74,16 @@ describe('Lore.query()', () => {
       embeddingFn: fakeEmbedder(),
       redact: false,
     });
-    const results = await emptyLore.query('anything');
+    const results = await emptyLore.recall('anything');
     expect(results).toEqual([]);
     await emptyLore.close();
+  });
+
+  // Deprecated query() still works
+  it('query() (deprecated) delegates to recall()', async () => {
+    const results = await lore.query('rate limiting');
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].memory.content).toContain('rate limit');
   });
 });
 
@@ -92,21 +99,21 @@ describe('Lore.upvote() / downvote()', () => {
   });
 
   it('upvote increments', async () => {
-    const id = await lore.publish({ problem: 'p', resolution: 'r' });
+    const id = await lore.remember('test content');
     await lore.upvote(id);
     await lore.upvote(id);
-    const lesson = await lore.get(id);
-    expect(lesson!.upvotes).toBe(2);
+    const memory = await lore.get(id);
+    expect(memory!.upvotes).toBe(2);
   });
 
   it('downvote increments', async () => {
-    const id = await lore.publish({ problem: 'p', resolution: 'r' });
+    const id = await lore.remember('test content');
     await lore.downvote(id);
-    const lesson = await lore.get(id);
-    expect(lesson!.downvotes).toBe(1);
+    const memory = await lore.get(id);
+    expect(memory!.downvotes).toBe(1);
   });
 
-  it('upvote throws for missing lesson', async () => {
+  it('upvote throws for missing memory', async () => {
     await expect(lore.upvote('nonexistent')).rejects.toThrow('not found');
   });
 });
@@ -122,24 +129,18 @@ describe('Lore with redaction', () => {
     await lore.close();
   });
 
-  it('redacts on publish', async () => {
-    const id = await lore.publish({
-      problem: 'API key sk-abcdefghijklmnopqrst123 leaked',
-      resolution: 'rotate key',
-    });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toContain('[REDACTED:api_key]');
-    expect(lesson!.problem).not.toContain('sk-');
+  it('redacts on remember', async () => {
+    const id = await lore.remember('API key sk-abcdefghijklmnopqrst123 leaked');
+    const memory = await lore.get(id);
+    expect(memory!.content).toContain('[REDACTED:api_key]');
+    expect(memory!.content).not.toContain('sk-');
   });
 
   it('redact: false disables redaction', async () => {
     const noRedactLore = new Lore({ store: new MemoryStore(), redact: false });
-    const id = await noRedactLore.publish({
-      problem: 'API key sk-abcdefghijklmnopqrst123 is here',
-      resolution: 'ok',
-    });
-    const lesson = await noRedactLore.get(id);
-    expect(lesson!.problem).toContain('sk-');
+    const id = await noRedactLore.remember('API key sk-abcdefghijklmnopqrst123 is here');
+    const memory = await noRedactLore.get(id);
+    expect(memory!.content).toContain('sk-');
     await noRedactLore.close();
   });
 
@@ -148,12 +149,9 @@ describe('Lore with redaction', () => {
       store: new MemoryStore(),
       redactPatterns: [[/ACCT-\d+/, 'account_id']],
     });
-    const id = await customLore.publish({
-      problem: 'account ACCT-12345 has error',
-      resolution: 'fix it',
-    });
-    const lesson = await customLore.get(id);
-    expect(lesson!.problem).toContain('[REDACTED:account_id]');
+    const id = await customLore.remember('account ACCT-12345 has error');
+    const memory = await customLore.get(id);
+    expect(memory!.content).toContain('[REDACTED:account_id]');
     await customLore.close();
   });
 });

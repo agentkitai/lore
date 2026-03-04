@@ -13,6 +13,7 @@ class Memory:
     id: str
     content: str
     type: str = "general"
+    context: Optional[str] = None
     tags: List[str] = field(default_factory=list)
     metadata: Optional[Dict[str, Any]] = None
     source: Optional[str] = None
@@ -33,3 +34,19 @@ class RecallResult:
 
     memory: Memory
     score: float
+
+
+@dataclass
+class MemoryStats:
+    """Aggregate statistics about stored memories."""
+
+    total: int
+    by_type: Dict[str, int] = field(default_factory=dict)
+    oldest: Optional[str] = None
+    newest: Optional[str] = None
+    expired_cleaned: int = 0
+
+
+# Deprecated aliases for backward compatibility
+Lesson = Memory
+QueryResult = RecallResult

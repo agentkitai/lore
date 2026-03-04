@@ -11,16 +11,16 @@ describe('Empty DB', () => {
   beforeEach(() => { lore = makeLore(); });
   afterEach(async () => { await lore.close(); });
 
-  it('query returns empty', async () => {
-    expect(await lore.list()).toEqual([]);
+  it('listMemories returns empty', async () => {
+    expect(await lore.listMemories()).toEqual([]);
   });
 
   it('get nonexistent returns null', async () => {
     expect(await lore.get('nonexistent')).toBeNull();
   });
 
-  it('delete nonexistent returns false', async () => {
-    expect(await lore.delete('nonexistent')).toBe(false);
+  it('forget nonexistent returns false', async () => {
+    expect(await lore.forget('nonexistent')).toBe(false);
   });
 });
 
@@ -29,32 +29,23 @@ describe('Unicode', () => {
   beforeEach(() => { lore = makeLore(); });
   afterEach(async () => { await lore.close(); });
 
-  it('publishes Chinese characters', async () => {
-    const id = await lore.publish({
-      problem: 'API返回错误代码：429',
-      resolution: '添加指数退避策略',
-    });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toContain('429');
+  it('remembers Chinese characters', async () => {
+    const id = await lore.remember('API返回错误代码：429');
+    const memory = await lore.get(id);
+    expect(memory!.content).toContain('429');
   });
 
-  it('publishes emoji', async () => {
-    const id = await lore.publish({
-      problem: '🔥 Server on fire 🔥',
-      resolution: '🧯 Deploy fix 🚀',
-    });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toContain('🔥');
+  it('remembers emoji', async () => {
+    const id = await lore.remember('🔥 Server on fire 🔥');
+    const memory = await lore.get(id);
+    expect(memory!.content).toContain('🔥');
   });
 
-  it('publishes mixed scripts', async () => {
-    const id = await lore.publish({
-      problem: 'Error in модуль for user テスト',
-      resolution: 'Fix — UTF-8',
-    });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toContain('модуль');
-    expect(lesson!.problem).toContain('テスト');
+  it('remembers mixed scripts', async () => {
+    const id = await lore.remember('Error in модуль for user テスト');
+    const memory = await lore.get(id);
+    expect(memory!.content).toContain('модуль');
+    expect(memory!.content).toContain('テスト');
   });
 });
 
@@ -63,11 +54,11 @@ describe('Long text', () => {
   beforeEach(() => { lore = makeLore(); });
   afterEach(async () => { await lore.close(); });
 
-  it('handles 100K char problem', async () => {
+  it('handles 100K char content', async () => {
     const long = 'x'.repeat(100_000);
-    const id = await lore.publish({ problem: long, resolution: 'fix' });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem.length).toBe(100_000);
+    const id = await lore.remember(long);
+    const memory = await lore.get(id);
+    expect(memory!.content.length).toBe(100_000);
   });
 });
 
@@ -77,41 +68,30 @@ describe('Special characters', () => {
   afterEach(async () => { await lore.close(); });
 
   it('handles SQL injection attempt', async () => {
-    const id = await lore.publish({
-      problem: "'; DROP TABLE lessons; --",
-      resolution: 'Bobby Tables',
-    });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toContain('DROP TABLE');
+    const id = await lore.remember("'; DROP TABLE memories; --");
+    const memory = await lore.get(id);
+    expect(memory!.content).toContain('DROP TABLE');
   });
 
   it('handles HTML tags', async () => {
-    const id = await lore.publish({
-      problem: "<script>alert('xss')</script>",
-      resolution: '<b>sanitize</b>',
-    });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toContain('<script>');
+    const id = await lore.remember("<script>alert('xss')</script>");
+    const memory = await lore.get(id);
+    expect(memory!.content).toContain('<script>');
   });
 
   it('handles newlines and tabs', async () => {
-    const id = await lore.publish({
-      problem: 'Error\non\nmultiple\nlines',
-      resolution: 'Fix:\n\t1. Do this',
-    });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toContain('\n');
+    const id = await lore.remember('Error\non\nmultiple\nlines');
+    const memory = await lore.get(id);
+    expect(memory!.content).toContain('\n');
   });
 
   it('handles tags with special chars', async () => {
-    const id = await lore.publish({
-      problem: 'test',
-      resolution: 'test',
+    const id = await lore.remember('test', {
       tags: ['rate-limit', 'v2.0', 'c++', 'c#'],
     });
-    const lesson = await lore.get(id);
-    expect(lesson!.tags).toContain('c++');
-    expect(lesson!.tags).toContain('c#');
+    const memory = await lore.get(id);
+    expect(memory!.tags).toContain('c++');
+    expect(memory!.tags).toContain('c#');
   });
 });
 
@@ -121,24 +101,24 @@ describe('Confidence boundaries', () => {
   afterEach(async () => { await lore.close(); });
 
   it('accepts 0.0', async () => {
-    const id = await lore.publish({ problem: 't', resolution: 't', confidence: 0.0 });
-    const l = await lore.get(id);
-    expect(l!.confidence).toBe(0);
+    const id = await lore.remember('t', { confidence: 0.0 });
+    const m = await lore.get(id);
+    expect(m!.confidence).toBe(0);
   });
 
   it('accepts 1.0', async () => {
-    const id = await lore.publish({ problem: 't', resolution: 't', confidence: 1.0 });
-    const l = await lore.get(id);
-    expect(l!.confidence).toBe(1);
+    const id = await lore.remember('t', { confidence: 1.0 });
+    const m = await lore.get(id);
+    expect(m!.confidence).toBe(1);
   });
 
   it('rejects negative', async () => {
-    await expect(lore.publish({ problem: 't', resolution: 't', confidence: -0.1 }))
+    await expect(lore.remember('t', { confidence: -0.1 }))
       .rejects.toThrow();
   });
 
   it('rejects > 1', async () => {
-    await expect(lore.publish({ problem: 't', resolution: 't', confidence: 1.1 }))
+    await expect(lore.remember('t', { confidence: 1.1 }))
       .rejects.toThrow();
   });
 });
@@ -149,17 +129,14 @@ describe('Redaction edge cases', () => {
   afterEach(async () => { await lore.close(); });
 
   it('handles empty strings', async () => {
-    const id = await lore.publish({ problem: '', resolution: '' });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).toBe('');
+    const id = await lore.remember('');
+    const memory = await lore.get(id);
+    expect(memory!.content).toBe('');
   });
 
   it('redacts PII-only content', async () => {
-    const id = await lore.publish({
-      problem: 'test@example.com',
-      resolution: 'sk-abc123def456ghi789jkl012mno',
-    });
-    const lesson = await lore.get(id);
-    expect(lesson!.problem).not.toContain('test@example.com');
+    const id = await lore.remember('test@example.com');
+    const memory = await lore.get(id);
+    expect(memory!.content).not.toContain('test@example.com');
   });
 });

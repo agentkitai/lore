@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lore-sdk"
-version = "0.2.1"
-description = "Cross-agent memory library"
+version = "0.3.0"
+description = "Cross-agent memory SDK — store, recall, and share knowledge across AI agents"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Amit Paz", email = "amit.paz@gmail.com" }]
-keywords = ["agent", "memory", "lessons", "lore"]
+keywords = ["agent", "memory", "lore", "knowledge"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: MIT License",
@@ -60,6 +60,7 @@ lore = "lore.cli:main"
 Homepage = "https://github.com/amitpaz1/lore"
 Repository = "https://github.com/amitpaz1/lore"
 Issues = "https://github.com/amitpaz1/lore/issues"
+Changelog = "https://github.com/amitpaz1/lore/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lore"]

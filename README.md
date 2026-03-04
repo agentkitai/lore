@@ -5,15 +5,15 @@
 [![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz1/lore/ci.yml?label=tests)](https://github.com/amitpaz1/lore/actions)
 [![License](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
 
-**Cross-agent memory.** Agents publish what they learn, other agents query it. PII redacted automatically.
+**Cross-agent memory.** Agents store what they learn, other agents recall it. PII redacted automatically.
 
 ## Why Lore?
 
 Your agents keep making the same mistakes. Agent A discovers Stripe rate-limits at 100 req/min. Agent B hits the same wall tomorrow. No learning transfer.
 
-Lore fixes this. It's a tiny library — no server, no infra — that gives agents a shared memory of operational lessons. Publish a lesson in one line, query it in another. Sensitive data is redacted before storage automatically.
+Lore fixes this. It's a tiny library — no server, no infra — that gives agents a shared memory. Remember a fact in one line, recall it in another. Sensitive data is redacted before storage automatically.
 
-**What Lore is:** A local-first SDK for storing and retrieving structured lessons across agent runs. SQLite-backed, embedding-powered semantic search, automatic PII redaction.
+**What Lore is:** A local-first SDK for storing and retrieving memories across agent runs. SQLite-backed, embedding-powered semantic search, automatic PII redaction, TTL support.
 
 **What Lore is not:** A conversation memory store (see Mem0/Zep), a vector database, or a RAG framework.
 
@@ -26,15 +26,14 @@ from lore import Lore
 
 lore = Lore()  # zero config — local SQLite, built-in embeddings
 
-lore.publish(
-    problem="Stripe API returns 429 after 100 req/min",
-    resolution="Exponential backoff starting at 1s, cap at 32s",
+lore.remember(
+    "Stripe API returns 429 after 100 req/min — use exponential backoff starting at 1s, cap at 32s",
     tags=["stripe", "rate-limit"],
     confidence=0.9,
 )
 
-lessons = lore.query("stripe rate limiting")
-prompt = lore.as_prompt(lessons)  # ready for system prompt injection
+results = lore.recall("stripe rate limiting")
+prompt = lore.as_prompt(results)  # ready for system prompt injection
 ```
 
 ```typescript
@@ -42,15 +41,13 @@ import { Lore } from 'lore-sdk';
 
 const lore = new Lore({ embeddingFn: yourEmbedFn });
 
-await lore.publish({
-  problem: 'Stripe API returns 429 after 100 req/min',
-  resolution: 'Exponential backoff starting at 1s, cap at 32s',
-  tags: ['stripe', 'rate-limit'],
-  confidence: 0.9,
-});
+await lore.remember(
+  'Stripe API returns 429 after 100 req/min — use exponential backoff starting at 1s, cap at 32s',
+  { tags: ['stripe', 'rate-limit'], confidence: 0.9 },
+);
 
-const lessons = await lore.query('stripe rate limiting');
-const prompt = lore.asPrompt(lessons);
+const results = await lore.recall('stripe rate limiting');
+const prompt = lore.asPrompt(results);
 ```
 
 ## Install
@@ -73,85 +70,84 @@ Create a Lore instance.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `project` | `str \| None` | `None` | Scope lessons to a project name |
+| `project` | `str \| None` | `None` | Scope memories to a project name |
 | `db_path` | `str \| None` | `~/.lore/default.db` | Path to SQLite database |
 | `store` | `Store \| None` | `None` | Custom storage backend |
 | `embedding_fn` | `Callable[[str], list[float]] \| None` | `None` | Custom embedding function |
 | `embedder` | `Embedder \| None` | `None` | Custom embedder instance |
 | `redact` | `bool` | `True` | Enable automatic PII redaction |
 | `redact_patterns` | `list[tuple[str, str]] \| None` | `None` | Custom redaction patterns as `(regex, label)` |
-| `decay_half_life_days` | `float` | `30` | Half-life for lesson score decay |
+| `decay_half_life_days` | `float` | `30` | Half-life for memory score decay |
 
 Lore supports context manager usage:
 
 ```python
 with Lore() as lore:
-    lore.publish(problem="...", resolution="...")
+    lore.remember("important fact", tags=["tag"])
 ```
 
-### `lore.publish(problem, resolution, context?, tags?, confidence?, source?, project?) → str`
+### `lore.remember(content, type?, context?, tags?, confidence?, source?, project?, ttl?, metadata?) → str`
 
-Publish a lesson. Returns the lesson ID (ULID).
+Store a memory. Returns the memory ID (ULID).
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `problem` | `str` | *required* | What went wrong |
-| `resolution` | `str` | *required* | How to fix it |
+| `content` | `str` | *required* | The knowledge to store |
+| `type` | `str` | `"general"` | Memory type (e.g. `"general"`, `"lesson"`, `"preference"`) |
 | `context` | `str \| None` | `None` | Additional context |
 | `tags` | `list[str] \| None` | `[]` | Filterable tags |
-| `confidence` | `float` | `0.5` | Confidence score (0.0–1.0) |
-| `source` | `str \| None` | `None` | Who/what created this lesson |
+| `confidence` | `float` | `1.0` | Confidence score (0.0–1.0) |
+| `source` | `str \| None` | `None` | Who/what created this memory |
 | `project` | `str \| None` | instance default | Override project scope |
+| `ttl` | `int \| None` | `None` | Time-to-live in seconds |
+| `metadata` | `dict \| None` | `None` | Arbitrary metadata |
 
-### `lore.query(text, tags?, limit?, min_confidence?) → list[QueryResult]`
+### `lore.recall(query, tags?, limit?, min_confidence?, type?) → list[RecallResult]`
 
-Query lessons by semantic similarity.
+Search memories by semantic similarity.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `text` | `str` | *required* | Search query |
-| `tags` | `list[str] \| None` | `None` | Filter: lessons must have ALL these tags |
+| `query` | `str` | *required* | Search query |
+| `tags` | `list[str] \| None` | `None` | Filter: memories must have ALL these tags |
 | `limit` | `int` | `5` | Max results |
 | `min_confidence` | `float` | `0.0` | Minimum confidence threshold |
+| `type` | `str \| None` | `None` | Filter by memory type |
 
-Returns `list[QueryResult]` sorted by score (cosine similarity × confidence × time decay × vote factor).
+Returns `list[RecallResult]` sorted by score (cosine similarity × confidence × time decay × vote factor).
 
-### `lore.as_prompt(lessons, max_tokens?) → str`
+### `lore.as_prompt(results, max_tokens?) → str`
 
-Format query results as a markdown string for system prompt injection.
+Format recall results as a markdown string for system prompt injection.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `lessons` | `list[QueryResult]` | *required* | Results from `query()` |
+| `results` | `list[RecallResult]` | *required* | Results from `recall()` |
 | `max_tokens` | `int` | `1000` | Approximate token budget (1 token ≈ 4 chars) |
 
-### `lore.get(lesson_id) → Lesson | None`
+### `lore.get(memory_id) → Memory | None`
 
-Retrieve a single lesson by ID.
+Retrieve a single memory by ID.
 
-### `lore.list(project?, limit?) → list[Lesson]`
+### `lore.forget(memory_id) → bool`
 
-List lessons, optionally filtered by project.
+Delete a memory. Returns `True` if found and deleted.
 
-### `lore.delete(lesson_id) → bool`
+### `lore.list_memories(project?, type?, limit?) → list[Memory]`
 
-Delete a lesson. Returns `True` if found and deleted.
+List memories, optionally filtered by project or type. Excludes expired memories.
 
-### `lore.upvote(lesson_id) → None`
+### `lore.stats(project?) → MemoryStats`
 
-Increment a lesson's upvote count. Raises `LessonNotFoundError` if not found.
+Return memory statistics: `total`, `by_type`, `oldest`, `newest`, `expired_cleaned`.
 
-### `lore.downvote(lesson_id) → None`
+### `lore.upvote(memory_id) → None`
 
-Increment a lesson's downvote count. Raises `LessonNotFoundError` if not found.
+Increment a memory's upvote count. Raises `MemoryNotFoundError` if not found.
 
-### `lore.export_lessons(path?) → list[dict]`
+### `lore.downvote(memory_id) → None`
 
-Export lessons as JSON-serializable dicts. If `path` is given, writes to file.
-
-### `lore.import_lessons(path?, data?) → int`
-
-Import lessons from file or data. Skips duplicates by ID. Returns count imported.
+Increment a memory's downvote count. Raises `MemoryNotFoundError` if not found.
 
 ### `lore.close() → None`
 
@@ -165,7 +161,7 @@ Key differences:
 - All store operations are `async`
 - Constructor takes an options object: `new Lore({ project, dbPath, embeddingFn, ... })`
 - No built-in embedding model — you must provide `embeddingFn`
-- `asPrompt()` instead of `as_prompt()`
+- `asPrompt()` instead of `as_prompt()`, `listMemories()` instead of `list_memories()`
 - `minConfidence` instead of `min_confidence` (camelCase throughout)
 
 ## Redaction
@@ -179,11 +175,8 @@ Lore automatically redacts sensitive data before storage:
 - **Credit card numbers** (with Luhn validation)
 
 ```python
-lore.publish(
-    problem="Auth failed with key sk-abc123def456ghi789jkl012mno",
-    resolution="Rotate the key",
-)
-# Stored as: "Auth failed with key [REDACTED:api_key]"
+lore.remember("Auth failed with key sk-abc123def456ghi789jkl012mno — rotate the key")
+# Stored as: "Auth failed with key [REDACTED:api_key] — rotate the key"
 ```
 
 Add custom patterns:
@@ -204,13 +197,13 @@ Query results are ranked by:
 score = cosine_similarity × confidence × time_decay × vote_factor
 ```
 
-- **Time decay:** Lessons lose relevance over time (configurable half-life, default 30 days)
+- **Time decay:** Memories lose relevance over time (configurable half-life, default 30 days)
 - **Vote factor:** `1.0 + (upvotes - downvotes) × 0.1`, floored at 0.1
 - **Confidence:** Author's self-assessed confidence (0.0–1.0)
 
 ## Remote Server (Lore Cloud)
 
-Share lessons across agents, machines, and teams with the Lore Cloud server.
+Share memories across agents, machines, and teams with the Lore Cloud server.
 
 ### 5-Line Remote Setup
 
@@ -218,8 +211,8 @@ Share lessons across agents, machines, and teams with the Lore Cloud server.
 from lore import Lore
 
 lore = Lore(store="remote", api_url="http://localhost:8765", api_key="lore_sk_...")
-lore.publish(problem="Docker builds fail on M1", resolution="Use --platform linux/amd64")
-lessons = lore.query("Docker build issues")
+lore.remember("Docker builds fail on M1 — use --platform linux/amd64", tags=["docker"])
+results = lore.recall("Docker build issues")
 ```
 
 ### Self-Host with Docker Compose
@@ -234,7 +227,7 @@ curl -X POST http://localhost:8765/v1/org/init \
 
 ### MCP Integration (Claude Desktop / OpenClaw)
 
-Give Claude direct access to your lesson memory:
+Give Claude direct access to your memory:
 
 ```bash
 pip install lore-sdk[mcp]
@@ -286,14 +279,14 @@ from lore import LoreClient
 
 # Reads LORE_URL, LORE_API_KEY, LORE_ORG_ID, LORE_TIMEOUT from env
 async with LoreClient() as client:
-    # Save a lesson — returns None if server is unreachable (never raises)
-    lesson_id = await client.save(
+    # Save a memory — returns None if server is unreachable (never raises)
+    memory_id = await client.save(
         problem="Rate limit exceeded on OpenAI API",
         resolution="Add exponential backoff with jitter",
         tags=["openai", "rate-limit"],
     )
 
-    # Recall lessons — returns [] if server is unreachable (never raises)
+    # Recall memories — returns [] if server is unreachable (never raises)
     results = await client.recall("how to handle rate limits", limit=5)
 ```
 
