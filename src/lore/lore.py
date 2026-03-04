@@ -6,7 +6,8 @@ import json
 import os
 import re
 import struct
-from dataclasses import asdict
+import warnings
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -353,7 +354,17 @@ class Lore:
         project: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Lesson]:
-        """List lessons, optionally filtered by project."""
+        """List lessons, optionally filtered by project.
+
+        .. deprecated::
+            Use :meth:`list_memories` for the new Memory API.
+        """
+        warnings.warn(
+            "Lore.list() returns legacy Lesson objects. "
+            "Use Lore.list_memories() for the new Memory API.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return self._store.list(project=project, limit=limit)
 
     def delete(self, lesson_id: str) -> bool:
@@ -465,8 +476,8 @@ class Lore:
         project: Optional[str] = None,
         source: Optional[str] = None,
         ttl: Optional[str] = None,
-    ) -> str:
-        """Store a memory. Returns the memory ID."""
+    ) -> Memory:
+        """Store a memory. Returns the Memory object (without embedding)."""
         effective_project = project or self.project
         expires_at = _parse_ttl(ttl)
 
@@ -488,7 +499,7 @@ class Lore:
             expires_at=expires_at,
         )
         self._memory_store.save(memory)
-        return memory.id
+        return replace(memory, embedding=None)
 
     def recall(
         self,
@@ -550,6 +561,16 @@ class Lore:
         """Get aggregate statistics for the memory store."""
         effective_project = project or self.project
         return self._memory_store.stats(project=effective_project)
+
+    def stats(
+        self,
+        project: Optional[str] = None,
+    ) -> StoreStats:
+        """Get aggregate statistics for the memory store.
+
+        Convenience alias for :meth:`memory_stats`.
+        """
+        return self.memory_stats(project=project)
 
     def get_memory(self, memory_id: str) -> Optional[Memory]:
         """Get a single memory by ID."""

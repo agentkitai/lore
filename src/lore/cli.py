@@ -28,7 +28,7 @@ def _get_lore(args: argparse.Namespace) -> "Lore":  # noqa: F821
 def cmd_remember(args: argparse.Namespace) -> None:
     lore = _get_lore(args)
     tags: List[str] = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
-    mid = lore.remember(
+    memory = lore.remember(
         content=args.content,
         type=args.type,
         tags=tags or None,
@@ -37,9 +37,9 @@ def cmd_remember(args: argparse.Namespace) -> None:
     )
     lore.close()
     if args.json:
-        print(json.dumps({"id": mid}))
+        print(json.dumps({"id": memory.id}))
     else:
-        print(f"Memory saved (ID: {mid})")
+        print(f"Memory saved (ID: {memory.id})")
 
 
 def cmd_recall(args: argparse.Namespace) -> None:

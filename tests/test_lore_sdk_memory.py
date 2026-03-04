@@ -50,20 +50,22 @@ def client_with_project(tmp_path):
 
 
 class TestRemember:
-    def test_returns_id(self, client: Lore) -> None:
-        mid = client.remember(content="Test content")
-        assert isinstance(mid, str)
-        assert len(mid) > 0
+    def test_returns_memory_object(self, client: Lore) -> None:
+        memory = client.remember(content="Test content")
+        assert isinstance(memory, Memory)
+        assert len(memory.id) > 0
+        assert memory.content == "Test content"
+        assert memory.embedding is None  # embedding stripped from return
 
     def test_stored_and_retrievable(self, client: Lore) -> None:
-        mid = client.remember(content="Important fact")
-        memory = client.get_memory(mid)
-        assert memory is not None
-        assert memory.content == "Important fact"
-        assert memory.type == "note"
+        memory = client.remember(content="Important fact")
+        fetched = client.get_memory(memory.id)
+        assert fetched is not None
+        assert fetched.content == "Important fact"
+        assert fetched.type == "note"
 
     def test_all_fields(self, client: Lore) -> None:
-        mid = client.remember(
+        memory = client.remember(
             content="Use exponential backoff for rate limits",
             type="lesson",
             tags=["api", "reliability"],
@@ -71,30 +73,26 @@ class TestRemember:
             project="backend",
             source="claude",
         )
-        memory = client.get_memory(mid)
-        assert memory is not None
         assert memory.type == "lesson"
         assert memory.tags == ["api", "reliability"]
         assert memory.metadata == {"confidence": 0.9}
         assert memory.project == "backend"
         assert memory.source == "claude"
+        # Verify it was persisted correctly
+        fetched = client.get_memory(memory.id)
+        assert fetched is not None
+        assert fetched.content == memory.content
 
     def test_default_project(self, client_with_project: Lore) -> None:
-        mid = client_with_project.remember(content="test")
-        memory = client_with_project.get_memory(mid)
-        assert memory is not None
+        memory = client_with_project.remember(content="test")
         assert memory.project == "default-proj"
 
     def test_override_default_project(self, client_with_project: Lore) -> None:
-        mid = client_with_project.remember(content="test", project="other")
-        memory = client_with_project.get_memory(mid)
-        assert memory is not None
+        memory = client_with_project.remember(content="test", project="other")
         assert memory.project == "other"
 
     def test_ttl(self, client: Lore) -> None:
-        mid = client.remember(content="temp memory", ttl="7d")
-        memory = client.get_memory(mid)
-        assert memory is not None
+        memory = client.remember(content="temp memory", ttl="7d")
         assert memory.expires_at is not None
 
 
@@ -132,10 +130,10 @@ class TestRecall:
 
 class TestForget:
     def test_by_id(self, client: Lore) -> None:
-        mid = client.remember(content="to delete")
-        count = client.forget(id=mid)
+        memory = client.remember(content="to delete")
+        count = client.forget(id=memory.id)
         assert count == 1
-        assert client.get_memory(mid) is None
+        assert client.get_memory(memory.id) is None
 
     def test_by_id_nonexistent(self, client: Lore) -> None:
         count = client.forget(id="nonexistent")
@@ -201,6 +199,35 @@ class TestMemoryStats:
         client.remember(content="b", project="beta")
         stats = client.memory_stats(project="alpha")
         assert stats.total_count == 1
+
+
+class TestStatsAlias:
+    """stats() is a convenience alias for memory_stats()."""
+
+    def test_stats_returns_store_stats(self, client: Lore) -> None:
+        client.remember(content="a note", type="note")
+        result = client.stats()
+        assert isinstance(result, StoreStats)
+        assert result.total_count == 1
+
+    def test_stats_matches_memory_stats(self, client: Lore) -> None:
+        client.remember(content="one", type="note")
+        client.remember(content="two", type="lesson")
+        assert client.stats() == client.memory_stats()
+
+    def test_stats_project_filter(self, client: Lore) -> None:
+        client.remember(content="a", project="alpha")
+        client.remember(content="b", project="beta")
+        stats = client.stats(project="alpha")
+        assert stats.total_count == 1
+
+
+class TestListDeprecation:
+    """list() emits a deprecation warning."""
+
+    def test_list_warns(self, client: Lore) -> None:
+        with pytest.warns(DeprecationWarning, match="list_memories"):
+            client.list()
 
 
 class TestBackwardCompatibility:
