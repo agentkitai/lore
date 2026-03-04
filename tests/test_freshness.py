@@ -296,7 +296,27 @@ class TestReportFormatting:
         assert "mem02" in report
         assert "1 stale" in report
         assert "1 fresh" in report
+        assert "0 likely stale" in report
+        assert "0 possibly stale" in report
+        assert "0 unknown" in report
         assert "2 total" in report
+
+    def test_format_report_markdown(self, git_repo: str) -> None:
+        results = [
+            StalenessResult(
+                memory_id="mem01",
+                status="stale",
+                confidence=0.9,
+                commits_since=32,
+                file_exists=True,
+                reason="32 commit(s) to src/auth.py since memory creation",
+            ),
+        ]
+        report = FreshnessDetector.format_report(results, git_repo, markdown=True)
+        assert "## Freshness Report" in report
+        assert "| ID |" in report
+        assert "`mem01`" in report
+        assert "**1** stale" in report
 
 
 # ---------------------------------------------------------------------------

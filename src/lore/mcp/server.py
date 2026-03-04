@@ -282,7 +282,7 @@ def check_freshness(
         detector = FreshnessDetector(repo_path)
         results = detector.check_many(memories)
 
-        report = FreshnessDetector.format_report(results, repo_path)
+        report = FreshnessDetector.format_report(results, repo_path, markdown=True)
 
         stale = [r for r in results if r.status in ("stale", "likely_stale")]
         if stale:

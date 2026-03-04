@@ -99,8 +99,22 @@ class FreshnessDetector:
     def format_report(
         results: List[StalenessResult],
         repo_path: str,
+        markdown: bool = False,
     ) -> str:
-        """Format staleness results as a human-readable report."""
+        """Format staleness results as a human-readable report.
+
+        Args:
+            results: List of staleness check results.
+            repo_path: Path to the git repository.
+            markdown: If True, format as Markdown (for MCP).
+        """
+        if markdown:
+            return FreshnessDetector._format_markdown(results, repo_path)
+        return FreshnessDetector._format_table(results, repo_path)
+
+    @staticmethod
+    def _format_table(results: List[StalenessResult], repo_path: str) -> str:
+        """Format as plain-text table."""
         lines: List[str] = [
             f"Freshness Report for {repo_path}",
             "\u2500" * 60,
@@ -121,10 +135,43 @@ class FreshnessDetector:
             )
 
         lines.append("\u2500" * 60)
+        # Always show all categories
         parts = []
-        for label in ("stale", "likely_stale", "possibly_stale", "fresh", "unknown"):
-            if counts[label]:
-                parts.append(f"{counts[label]} {label.replace('_', ' ')}")
+        for label in ("stale", "likely stale", "possibly stale", "fresh", "unknown"):
+            key = label.replace(" ", "_")
+            parts.append(f"{counts[key]} {label}")
         lines.append(f"Summary: {', '.join(parts)} ({len(results)} total)")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_markdown(results: List[StalenessResult], repo_path: str) -> str:
+        """Format as Markdown for MCP responses."""
+        lines: List[str] = [
+            f"## Freshness Report for `{repo_path}`",
+            "",
+            "| ID | Status | Commits | Reason |",
+            "|---|---|---|---|",
+        ]
+
+        counts: Dict[str, int] = {
+            "stale": 0, "likely_stale": 0, "possibly_stale": 0,
+            "fresh": 0, "unknown": 0,
+        }
+
+        for r in results:
+            counts[r.status] = counts.get(r.status, 0) + 1
+            status_display = r.status.replace("_", " ")
+            lines.append(
+                f"| `{r.memory_id}` | {status_display} ({r.confidence:.1f}) "
+                f"| {r.commits_since} | {r.reason} |"
+            )
+
+        lines.append("")
+        parts = []
+        for label in ("stale", "likely stale", "possibly stale", "fresh", "unknown"):
+            key = label.replace(" ", "_")
+            parts.append(f"**{counts[key]}** {label}")
+        lines.append(f"**Summary:** {', '.join(parts)} ({len(results)} total)")
 
         return "\n".join(lines)
