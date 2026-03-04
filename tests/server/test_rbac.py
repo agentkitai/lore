@@ -80,14 +80,14 @@ class TestRoleMapping:
         assert "writer" in ROLE_PERMISSIONS
         assert "admin" in ROLE_PERMISSIONS
         # reader can search
-        assert "lessons:search" in ROLE_PERMISSIONS["reader"]
+        assert "memories:search" in ROLE_PERMISSIONS["reader"]
         # reader cannot write
-        assert "lessons:write" not in ROLE_PERMISSIONS["reader"]
+        assert "memories:write" not in ROLE_PERMISSIONS["reader"]
         # admin can manage keys
         assert "keys:manage" in ROLE_PERMISSIONS["admin"]
 
 
-# ── Reader role cannot create lessons ──────────────────────────────
+# ── Reader role cannot create memories ─────────────────────────────
 
 
 @pytest.mark.asyncio

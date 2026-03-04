@@ -46,9 +46,9 @@ class AuthError(HTTPException):
 
 # Role hierarchy: reader < writer < admin
 ROLE_PERMISSIONS: Dict[str, set] = {
-    "reader": {"lessons:read", "lessons:search"},
-    "writer": {"lessons:read", "lessons:search", "lessons:write", "lessons:rate"},
-    "admin": {"lessons:read", "lessons:search", "lessons:write", "lessons:rate", "keys:manage"},
+    "reader": {"memories:read", "memories:search"},
+    "writer": {"memories:read", "memories:search", "memories:write", "memories:rate"},
+    "admin": {"memories:read", "memories:search", "memories:write", "memories:rate", "keys:manage"},
 }
 
 
@@ -56,7 +56,7 @@ def require_role(*roles: str):
     """FastAPI dependency that checks the caller has one of the given roles.
 
     Usage:
-        @app.post("/v1/lessons")
+        @app.post("/v1/memories")
         async def create(auth: AuthContext = Depends(require_role("writer", "admin"))):
             ...
     """

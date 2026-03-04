@@ -103,7 +103,7 @@ class _Gauge:
 
 # ── Business Metrics ───────────────────────────────────────────────
 
-lessons_saved_total = _Counter("lore_lessons_saved_total", "Total lessons saved")
+memories_saved_total = _Counter("lore_memories_saved_total", "Total memories saved")
 recall_queries_total = _Counter("lore_recall_queries_total", "Total recall queries")
 embedding_latency = _Histogram("lore_embedding_latency_seconds", "Embedding generation latency")
 vector_search_latency = _Histogram("lore_vector_search_latency_seconds", "Vector search latency")
@@ -118,7 +118,7 @@ http_request_duration = _Histogram("http_request_duration_seconds", "HTTP reques
 # ── Registry ───────────────────────────────────────────────────────
 
 ALL_METRICS = [
-    lessons_saved_total,
+    memories_saved_total,
     recall_queries_total,
     embedding_latency,
     vector_search_latency,

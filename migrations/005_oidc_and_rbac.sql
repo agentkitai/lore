@@ -18,11 +18,11 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_sub ON users(oidc_sub);
 CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id);
 
--- Add tenant_id column to lessons (for explicit multi-tenant querying)
+-- Add tenant_id column to memories (for explicit multi-tenant querying)
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lessons' AND column_name = 'tenant_id') THEN
-        ALTER TABLE lessons ADD COLUMN tenant_id TEXT;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memories' AND column_name = 'tenant_id') THEN
+        ALTER TABLE memories ADD COLUMN tenant_id TEXT;
     END IF;
 END $$;
 
@@ -34,11 +34,11 @@ BEGIN
     END IF;
 END $$;
 
--- Add user_id column to lessons (track which user created/modified)
+-- Add user_id column to memories (track which user created/modified)
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lessons' AND column_name = 'user_id') THEN
-        ALTER TABLE lessons ADD COLUMN user_id TEXT;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'memories' AND column_name = 'user_id') THEN
+        ALTER TABLE memories ADD COLUMN user_id TEXT;
     END IF;
 END $$;
 
@@ -62,8 +62,8 @@ END $$;
 -- DROP INDEX IF EXISTS idx_users_sub;
 -- DROP INDEX IF EXISTS idx_users_org;
 -- DROP TABLE IF EXISTS users;
--- ALTER TABLE lessons DROP COLUMN IF EXISTS tenant_id;
--- ALTER TABLE lessons DROP COLUMN IF EXISTS user_id;
+-- ALTER TABLE memories DROP COLUMN IF EXISTS tenant_id;
+-- ALTER TABLE memories DROP COLUMN IF EXISTS user_id;
 -- ALTER TABLE api_keys DROP COLUMN IF EXISTS tenant_id;
 -- ALTER TABLE api_keys DROP COLUMN IF EXISTS user_id;
 -- ALTER TABLE api_keys DROP COLUMN IF EXISTS role;

@@ -73,7 +73,7 @@ class DenyListRuleCreate(BaseModel):
 class AuditEvent(BaseModel):
     id: str
     event_type: str
-    lesson_id: Optional[str] = None
+    memory_id: Optional[str] = None
     query_text: Optional[str] = None
     initiated_by: str
     created_at: Optional[datetime] = None
@@ -108,19 +108,19 @@ async def _record_audit(
     org_id: str,
     event_type: str,
     initiated_by: str,
-    lesson_id: Optional[str] = None,
+    memory_id: Optional[str] = None,
     query_text: Optional[str] = None,
 ) -> None:
     """Insert an audit event."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute(
-            """INSERT INTO sharing_audit (id, org_id, event_type, lesson_id, query_text, initiated_by)
+            """INSERT INTO sharing_audit (id, org_id, event_type, memory_id, query_text, initiated_by)
                VALUES ($1, $2, $3, $4, $5, $6)""",
             str(ULID()),
             org_id,
             event_type,
-            lesson_id,
+            memory_id,
             query_text,
             initiated_by,
         )
@@ -322,7 +322,7 @@ async def list_audit_events(
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
-            f"SELECT id, event_type, lesson_id, query_text, initiated_by, created_at FROM sharing_audit WHERE {' AND '.join(where)} ORDER BY created_at DESC LIMIT ${limit_idx}",
+            f"SELECT id, event_type, memory_id, query_text, initiated_by, created_at FROM sharing_audit WHERE {' AND '.join(where)} ORDER BY created_at DESC LIMIT ${limit_idx}",
             *params,
         )
     return [AuditEvent(**dict(r)) for r in rows]
@@ -337,8 +337,8 @@ async def get_stats(
 ) -> SharingStats:
     pool = await get_pool()
     async with pool.acquire() as conn:
-        count = await conn.fetchval("SELECT COUNT(*) FROM lessons WHERE org_id = $1", auth.org_id)
-        last = await conn.fetchval("SELECT MAX(created_at) FROM lessons WHERE org_id = $1", auth.org_id)
+        count = await conn.fetchval("SELECT COUNT(*) FROM memories WHERE org_id = $1", auth.org_id)
+        last = await conn.fetchval("SELECT MAX(created_at) FROM memories WHERE org_id = $1", auth.org_id)
         summary_rows = await conn.fetch(
             "SELECT event_type, COUNT(*)::int as cnt FROM sharing_audit WHERE org_id = $1 GROUP BY event_type",
             auth.org_id,
@@ -361,25 +361,25 @@ async def purge_sharing(
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            deleted_lessons = await conn.fetchval("SELECT COUNT(*) FROM lessons WHERE org_id = $1", auth.org_id)
-            await conn.execute("DELETE FROM lessons WHERE org_id = $1", auth.org_id)
+            deleted_memories = await conn.fetchval("SELECT COUNT(*) FROM memories WHERE org_id = $1", auth.org_id)
+            await conn.execute("DELETE FROM memories WHERE org_id = $1", auth.org_id)
             await conn.execute("DELETE FROM sharing_audit WHERE org_id = $1", auth.org_id)
             await conn.execute("DELETE FROM deny_list_rules WHERE org_id = $1", auth.org_id)
             await conn.execute("DELETE FROM agent_sharing_config WHERE org_id = $1", auth.org_id)
             await conn.execute("DELETE FROM sharing_config WHERE org_id = $1", auth.org_id)
 
     await _record_audit(auth.org_id, "purge", auth.key_id)
-    return {"deleted_lessons": deleted_lessons, "status": "purged"}
+    return {"deleted_memories": deleted_memories, "status": "purged"}
 
 
-# ── Rate (mounted on lessons prefix) ──────────────────────────────
+# ── Rate (mounted on memories prefix) ─────────────────────────────
 
-rate_router = APIRouter(prefix="/v1/lessons", tags=["lessons"])
+rate_router = APIRouter(prefix="/v1/memories", tags=["memories"])
 
 
-@rate_router.post("/{lesson_id}/rate", response_model=RateResponse)
-async def rate_lesson(
-    lesson_id: str,
+@rate_router.post("/{memory_id}/rate", response_model=RateResponse)
+async def rate_memory(
+    memory_id: str,
     body: RateRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> RateResponse:
@@ -387,20 +387,20 @@ async def rate_lesson(
     async with pool.acquire() as conn:
         async with conn.transaction():
             row = await conn.fetchrow(
-                "UPDATE lessons SET reputation_score = reputation_score + $1, updated_at = now() WHERE id = $2 AND org_id = $3 RETURNING reputation_score",
+                "UPDATE memories SET reputation_score = reputation_score + $1, updated_at = now() WHERE id = $2 AND org_id = $3 RETURNING reputation_score",
                 body.delta,
-                lesson_id,
+                memory_id,
                 auth.org_id,
             )
             if row is None:
-                raise HTTPException(status_code=404, detail="Lesson not found")
+                raise HTTPException(status_code=404, detail="Memory not found")
             await conn.execute(
-                """INSERT INTO sharing_audit (id, org_id, event_type, lesson_id, initiated_by)
+                """INSERT INTO sharing_audit (id, org_id, event_type, memory_id, initiated_by)
                    VALUES ($1, $2, $3, $4, $5)""",
                 str(ULID()),
                 auth.org_id,
                 "rate",
-                lesson_id,
+                memory_id,
                 auth.key_id,
             )
     return RateResponse(reputation_score=row["reputation_score"])

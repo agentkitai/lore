@@ -24,7 +24,7 @@ CREATE TABLE IF NOT EXISTS api_keys (
 
 CREATE INDEX IF NOT EXISTS idx_keys_hash ON api_keys(key_hash);
 
-CREATE TABLE IF NOT EXISTS lessons (
+CREATE TABLE IF NOT EXISTS memories (
     id          TEXT PRIMARY KEY,
     org_id      TEXT NOT NULL REFERENCES orgs(id),
     problem     TEXT NOT NULL,
@@ -43,16 +43,16 @@ CREATE TABLE IF NOT EXISTS lessons (
     meta        JSONB DEFAULT '{}'
 );
 
-CREATE INDEX IF NOT EXISTS idx_lessons_org ON lessons(org_id);
-CREATE INDEX IF NOT EXISTS idx_lessons_org_project ON lessons(org_id, project);
+CREATE INDEX IF NOT EXISTS idx_memories_org ON memories(org_id);
+CREATE INDEX IF NOT EXISTS idx_memories_org_project ON memories(org_id, project);
 
 -- ivfflat index requires data to exist for training; create only if not exists
 -- Note: ivfflat index creation will be deferred in production until sufficient data exists
--- For now we use exact search (no index) which is fine for < 100k lessons
+-- For now we use exact search (no index) which is fine for < 100k memories
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_lessons_embedding') THEN
+    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_memories_embedding') THEN
         -- Use HNSW instead of ivfflat — works on empty tables
-        CREATE INDEX idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops);
+        CREATE INDEX idx_memories_embedding ON memories USING hnsw (embedding vector_cosine_ops);
     END IF;
 END $$;

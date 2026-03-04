@@ -79,9 +79,9 @@ def normalize_path(path: str) -> str:
 
     Keeps the leading slash of each segment intact.
     Examples:
-        /v1/lessons/abc123def456abc123def456 -> /v1/lessons/:id
-        /v1/lessons/550e8400-e29b-41d4-a716-446655440000 -> /v1/lessons/:id
-        /v1/orgs/42/lessons -> /v1/orgs/:id/lessons
+        /v1/memories/abc123def456abc123def456 -> /v1/memories/:id
+        /v1/memories/550e8400-e29b-41d4-a716-446655440000 -> /v1/memories/:id
+        /v1/orgs/42/memories -> /v1/orgs/:id/memories
     """
     # Split on / and replace dynamic segments
     parts = path.split("/")

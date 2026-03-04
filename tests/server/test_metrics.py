@@ -27,7 +27,7 @@ async def test_metrics_endpoint(client):
     assert resp.status_code == 200
     assert "text/plain" in resp.headers["content-type"]
     body = resp.text
-    assert "lore_lessons_saved_total" in body
+    assert "lore_memories_saved_total" in body
     assert "lore_recall_queries_total" in body
     assert "http_requests_total" in body
     assert "http_request_duration_seconds" in body
@@ -84,24 +84,24 @@ class TestNormalizePath:
 
     def test_uuid_replaced(self):
         from lore.server.middleware import normalize_path
-        assert normalize_path("/v1/lessons/550e8400-e29b-41d4-a716-446655440000") == "/v1/lessons/:id"
+        assert normalize_path("/v1/memories/550e8400-e29b-41d4-a716-446655440000") == "/v1/memories/:id"
 
     def test_mongo_objectid_replaced(self):
         from lore.server.middleware import normalize_path
-        assert normalize_path("/v1/lessons/507f1f77bcf86cd799439011") == "/v1/lessons/:id"
+        assert normalize_path("/v1/memories/507f1f77bcf86cd799439011") == "/v1/memories/:id"
 
     def test_numeric_id_replaced(self):
         from lore.server.middleware import normalize_path
-        assert normalize_path("/v1/orgs/42/lessons") == "/v1/orgs/:id/lessons"
+        assert normalize_path("/v1/orgs/42/memories") == "/v1/orgs/:id/memories"
 
     def test_static_path_unchanged(self):
         from lore.server.middleware import normalize_path
-        assert normalize_path("/v1/lessons") == "/v1/lessons"
+        assert normalize_path("/v1/memories") == "/v1/memories"
         assert normalize_path("/health") == "/health"
 
     def test_multiple_dynamic_segments(self):
         from lore.server.middleware import normalize_path
-        assert normalize_path("/v1/orgs/123/lessons/550e8400-e29b-41d4-a716-446655440000") == "/v1/orgs/:id/lessons/:id"
+        assert normalize_path("/v1/orgs/123/memories/550e8400-e29b-41d4-a716-446655440000") == "/v1/orgs/:id/memories/:id"
 
     def test_root_path(self):
         from lore.server.middleware import normalize_path
@@ -110,4 +110,4 @@ class TestNormalizePath:
     def test_mixed_segments(self):
         from lore.server.middleware import normalize_path
         # 'v1' should NOT be replaced (not purely numeric, not a UUID/hex ID)
-        assert normalize_path("/v1/lessons") == "/v1/lessons"
+        assert normalize_path("/v1/memories") == "/v1/memories"

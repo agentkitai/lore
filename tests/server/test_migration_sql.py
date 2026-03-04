@@ -16,7 +16,7 @@ def test_migration_creates_required_tables():
 
     assert "CREATE TABLE IF NOT EXISTS orgs" in sql
     assert "CREATE TABLE IF NOT EXISTS api_keys" in sql
-    assert "CREATE TABLE IF NOT EXISTS lessons" in sql
+    assert "CREATE TABLE IF NOT EXISTS memories" in sql
 
 
 def test_migration_creates_required_indexes():
@@ -24,9 +24,9 @@ def test_migration_creates_required_indexes():
     sql = migration.read_text()
 
     assert "idx_keys_hash" in sql
-    assert "idx_lessons_org" in sql
-    assert "idx_lessons_org_project" in sql
-    assert "idx_lessons_embedding" in sql
+    assert "idx_memories_org" in sql
+    assert "idx_memories_org_project" in sql
+    assert "idx_memories_embedding" in sql
 
 
 def test_migration_enables_pgvector():
