@@ -220,18 +220,25 @@ class RedactionPipeline:
                 action=self._get_action("private_key"),
             ))
 
-        # AWS secret keys (40-char base64 near AKIA)
-        if "AKIA" in text:
-            for m in self._aws_secret_pattern.finditer(text):
-                val = m.group(0)
-                # Skip if it's the AKIA key itself (already caught by API_KEY)
-                if val.startswith("AKIA"):
-                    continue
-                findings.append(Finding(
-                    type="aws_secret_key", value=val,
-                    start=m.start(), end=m.end(),
-                    action=self._get_action("aws_secret_key"),
-                ))
+        # AWS secret keys (40-char base64 near AKIA on same line)
+        for m in self._aws_secret_pattern.finditer(text):
+            val = m.group(0)
+            # Skip if it's the AKIA key itself (already caught by API_KEY)
+            if val.startswith("AKIA"):
+                continue
+            # Check AKIA proximity: must appear on the same line
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            line_end = text.find("\n", m.end())
+            if line_end == -1:
+                line_end = len(text)
+            line = text[line_start:line_end]
+            if "AKIA" not in line:
+                continue
+            findings.append(Finding(
+                type="aws_secret_key", value=val,
+                start=m.start(), end=m.end(),
+                action=self._get_action("aws_secret_key"),
+            ))
 
         # High-entropy strings
         findings.extend(self._scan_entropy(text))
@@ -287,7 +294,7 @@ class RedactionPipeline:
             ]})
             self._l2_available = True
         except Exception:
-            logger.info("detect-secrets not available — L2 scanning disabled")
+            logger.warning("detect-secrets not available — L2 scanning disabled")
             self._l2_available = False
         return self._l2_available
 
@@ -304,15 +311,19 @@ class RedactionPipeline:
             for line in text.split("\n"):
                 for secret in scan_line(line):
                     # detect-secrets returns PotentialSecret objects
-                    stype = secret.type
-                    # Use the raw secret value if available
-                    secret_val = secret.secret_value or line
+                    secret_val = secret.secret_value
+                    if not secret_val:
+                        # If no secret value, skip rather than over-redacting the whole line
+                        continue
                     start = text.find(secret_val, offset)
-                    if start == -1:
+                    if start == -1 or start >= offset + len(line):
+                        # Constrain to current line to avoid matching wrong instances
                         start = offset
-                    end = start + len(secret_val)
+                        end = offset + len(line)
+                    else:
+                        end = start + len(secret_val)
                     findings.append(Finding(
-                        type="secret", value=secret_val,
+                        type="secret", value=text[start:end],
                         start=start, end=end,
                         action=self._get_action("secret"),
                     ))
@@ -334,7 +345,7 @@ class RedactionPipeline:
             self._l3_nlp = spacy.load("en_core_web_sm")
             self._l3_available = True
         except Exception:
-            logger.info("spacy/en_core_web_sm not available — L3 NER disabled")
+            logger.warning("spacy/en_core_web_sm not available — L3 NER disabled")
             self._l3_available = False
         return self._l3_available
 
@@ -370,10 +381,14 @@ class RedactionPipeline:
 
     @staticmethod
     def _deduplicate_findings(findings: List[Finding]) -> List[Finding]:
-        """Remove overlapping findings, keeping broader matches."""
+        """Remove overlapping findings, keeping broader matches.
+
+        When two findings overlap, the broader (longer) one wins.
+        If same span length, block action wins over mask.
+        """
         if len(findings) <= 1:
             return findings
-        # Sort by start, then by span length descending
+        # Sort by start, then by span length descending (broader first)
         findings.sort(key=lambda f: (f.start, -(f.end - f.start)))
         deduped: List[Finding] = []
         last_end = -1
@@ -381,8 +396,13 @@ class RedactionPipeline:
             if f.start >= last_end:
                 deduped.append(f)
                 last_end = f.end
-            # If overlapping but this one is a block and existing is mask, prefer block
-            elif f.action == "block" and deduped and deduped[-1].action == "mask":
+            # Overlapping: only replace if new finding covers at least as much
+            elif (
+                f.action == "block"
+                and deduped
+                and deduped[-1].action == "mask"
+                and f.end >= deduped[-1].end
+            ):
                 deduped[-1] = f
                 last_end = f.end
         return deduped

@@ -18,7 +18,13 @@ from lore.exceptions import MemoryNotFoundError, SecretBlockedError
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
-from lore.types import DECAY_HALF_LIVES, Memory, MemoryStats, RecallResult
+from lore.types import (
+    DECAY_HALF_LIVES,
+    VALID_MEMORY_TYPES,
+    Memory,
+    MemoryStats,
+    RecallResult,
+)
 
 # Type alias for user-provided embedding functions
 EmbeddingFn = Callable[[str], List[float]]
@@ -167,6 +173,13 @@ class Lore:
         confidence: float = 1.0,
     ) -> str:
         """Store a memory. Returns the memory ID (ULID)."""
+        if not type or not isinstance(type, str) or not type.strip():
+            raise ValueError("type must be a non-empty string")
+        if type not in VALID_MEMORY_TYPES:
+            raise ValueError(
+                f"invalid memory type {type!r}, "
+                f"must be one of: {', '.join(sorted(VALID_MEMORY_TYPES))}"
+            )
         if not (0.0 <= confidence <= 1.0):
             raise ValueError(
                 f"confidence must be between 0.0 and 1.0, got {confidence}"

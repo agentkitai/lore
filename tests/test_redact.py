@@ -156,7 +156,7 @@ class TestConvenienceFunction:
 
 
 class TestPerformance:
-    def test_under_5ms(self) -> None:
+    def test_under_1ms(self) -> None:
         p = RedactionPipeline()
         text = (
             "Contact user@example.com or call +1-555-123-4567. "
@@ -169,7 +169,7 @@ class TestPerformance:
         for _ in range(100):
             p.run(text)
         elapsed = (time.perf_counter() - start) / 100
-        assert elapsed < 0.005, f"Redaction took {elapsed*1000:.2f}ms (> 5ms)"
+        assert elapsed < 0.001, f"Redaction took {elapsed*1000:.2f}ms (> 1ms)"
 
 
 # ====================================================================
@@ -337,6 +337,96 @@ class TestSecurityScanLevels:
         result = p.scan("John Smith went to New York")
         # Should complete without error regardless of spacy availability
         assert result is not None
+
+
+# ====================================================================
+# F2-S1: AWS Secret Key tests
+# ====================================================================
+
+
+class TestAWSSecretKeys:
+    def setup_method(self) -> None:
+        self.p = RedactionPipeline()
+
+    def test_aws_secret_detected_near_akia(self) -> None:
+        # 40-char base64 on same line as AKIA
+        text = "AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        result = self.p.scan(text)
+        types = [f.type for f in result.findings]
+        assert "aws_secret_key" in types
+
+    def test_aws_secret_not_detected_without_akia(self) -> None:
+        # Same 40-char string but no AKIA present
+        text = "secret=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        result = self.p.scan(text)
+        types = [f.type for f in result.findings]
+        assert "aws_secret_key" not in types
+
+    def test_aws_secret_not_on_different_line(self) -> None:
+        # AKIA on one line, 40-char string on different line
+        text = "AKIAIOSFODNN7EXAMPLE\nunrelated line\nwJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        result = self.p.scan(text)
+        types = [f.type for f in result.findings]
+        assert "aws_secret_key" not in types
+
+    def test_aws_secret_triggers_block(self) -> None:
+        text = "AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        result = self.p.scan(text)
+        assert result.action == "block"
+
+    def test_normal_base64_not_flagged(self) -> None:
+        # Short base64 strings (< 20 chars of alphanumeric) should not be flagged
+        text = "data=SGVsbG8gV29y"
+        assert self.p.run(text) == text
+
+
+# ====================================================================
+# F2: Additional JWT / Private Key negative tests
+# ====================================================================
+
+
+class TestJWTNegatives:
+    def setup_method(self) -> None:
+        self.p = RedactionPipeline()
+
+    def test_random_dots_not_jwt(self) -> None:
+        text = "version.1.2.3"
+        assert self.p.run(text) == text
+
+    def test_base64_dots_not_jwt(self) -> None:
+        text = "abc123.def456.ghi789"
+        assert self.p.run(text) == text
+
+
+class TestPrivateKeyNegatives:
+    def setup_method(self) -> None:
+        self.p = RedactionPipeline()
+
+    def test_certificate_not_matched(self) -> None:
+        text = "-----BEGIN CERTIFICATE-----\nMIIDdzCCAl..."
+        assert self.p.run(text) == text
+
+    def test_begin_without_private_not_matched(self) -> None:
+        text = "-----BEGIN PUBLIC KEY-----"
+        assert self.p.run(text) == text
+
+
+# ====================================================================
+# F2: CLI SecretBlockedError handling test
+# ====================================================================
+
+
+class TestCLISecretBlocked:
+    def test_cli_remember_blocked_secret(self, capsys) -> None:
+        import pytest
+        from lore.cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["remember", "my api key is sk-abc123def456ghi789jkl012"])
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "Blocked" in err
+        assert "api_key" in err
 
 
 class TestFindingDataclass:

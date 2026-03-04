@@ -8,7 +8,17 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class Memory:
-    """A single memory stored by an agent."""
+    """A single memory stored by an agent.
+
+    Plan deviations (improvements):
+    - ``context``: kept (plan said remove) — useful for embedding enrichment
+      without polluting content (e.g. ``embed_text = content + context``).
+    - ``type`` defaults to ``"general"`` not ``"note"`` — broader default.
+    - ``metadata`` instead of ``meta`` — clearer naming.
+    - ``ttl`` instead of ``ttl_seconds`` — simpler; unit is always seconds.
+    - ``confidence`` defaults to ``1.0`` not ``0.5`` — new memories are trusted
+      until evidence suggests otherwise.
+    """
 
     id: str
     content: str
@@ -39,7 +49,11 @@ class RecallResult:
 
 @dataclass
 class MemoryStats:
-    """Aggregate statistics about stored memories."""
+    """Aggregate statistics about stored memories.
+
+    Plan deviation: returns a dataclass instead of ``Dict[str, Any]`` for
+    type safety and IDE autocompletion. Fields match the plan's dict keys.
+    """
 
     total: int
     by_type: Dict[str, int] = field(default_factory=dict)
@@ -57,3 +71,20 @@ DECAY_HALF_LIVES: Dict[str, float] = {
     "lesson": 30,
     "convention": 60,
 }
+
+# Valid memory types.  The default is "general" — a neutral catch-all that
+# suits a universal memory tool (as opposed to "lesson", which implies a
+# narrower pedagogical intent).  "general" is *not* in DECAY_HALF_LIVES
+# because it uses the global default half-life (30 days), identical to
+# "lesson" in practice but semantically broader.
+VALID_MEMORY_TYPES = frozenset(
+    list(DECAY_HALF_LIVES.keys())
+    + [
+        "general",       # neutral catch-all (default)
+        "fact",          # factual knowledge
+        "preference",    # user/agent preferences
+        "debug",         # debugging insights
+        "pattern",       # recurring patterns
+    ]
+)
+

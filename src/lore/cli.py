@@ -18,17 +18,29 @@ def _get_lore(db: Optional[str] = None) -> "Lore":  # noqa: F821
 
 
 def cmd_remember(args: argparse.Namespace) -> None:
+    from lore.exceptions import SecretBlockedError
+
     lore = _get_lore(args.db)
     tags: List[str] = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
-    mid = lore.remember(
-        content=args.content,
-        type=args.type,
-        context=getattr(args, "context", None),
-        tags=tags,
-        source=args.source,
-        ttl=args.ttl,
-        confidence=args.confidence,
-    )
+    metadata = None
+    if args.metadata:
+        metadata = json.loads(args.metadata)
+    try:
+        mid = lore.remember(
+            content=args.content,
+            type=args.type,
+            context=getattr(args, "context", None),
+            tags=tags,
+            metadata=metadata,
+            source=args.source,
+            project=args.project,
+            ttl=args.ttl,
+            confidence=args.confidence,
+        )
+    except SecretBlockedError as exc:
+        lore.close()
+        print(f"Blocked: {exc.finding_type} detected — remove the secret and retry.", file=sys.stderr)
+        sys.exit(1)
     lore.close()
     print(mid)
 
@@ -67,10 +79,11 @@ def cmd_memories(args: argparse.Namespace) -> None:
     if not memories:
         print("No memories.")
         return
-    print(f"{'ID':<28} {'Type':<12} {'Content':<60}")
-    print("-" * 100)
+    print(f"{'ID':<28} {'Type':<12} {'Created':<22} {'Content':<50}")
+    print("-" * 112)
     for m in memories:
-        print(f"{m.id:<28} {m.type:<12} {m.content[:60]:<60}")
+        created = m.created_at[:19] if m.created_at else ""
+        print(f"{m.id:<28} {m.type:<12} {created:<22} {m.content[:50]:<50}")
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -193,6 +206,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--ttl", type=int, default=None, help="Time-to-live in seconds")
     p.add_argument("--source", default=None)
     p.add_argument("--confidence", type=float, default=1.0)
+    p.add_argument("--project", default=None, help="Project namespace")
+    p.add_argument("--metadata", default=None, help="JSON metadata (e.g. '{\"key\": \"val\"}')")
 
     # recall
     p = sub.add_parser("recall", help="Search memories")
@@ -245,7 +260,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--auto-tag", action="store_true", default=False, dest="auto_tag",
-        help="Add 'stale' tag to stale/likely_stale memories",
+        help="Add 'stale' tag to memories with stale status",
     )
 
     # github-sync
@@ -369,7 +384,7 @@ def cmd_freshness(args: argparse.Namespace) -> None:
         lore = _get_lore(args.db)
         tagged = 0
         for r in results:
-            if r.status in ("stale", "likely_stale"):
+            if r.status == "stale":
                 mem = lore.get(r.memory_id)
                 if mem and "stale" not in mem.tags:
                     mem.tags.append("stale")

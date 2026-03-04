@@ -10,7 +10,7 @@ import pytest
 
 from lore import Lore
 from lore.store.memory import MemoryStore
-from lore.types import DECAY_HALF_LIVES
+from lore.types import DECAY_HALF_LIVES, VALID_MEMORY_TYPES
 
 _DIM = 384
 
@@ -267,3 +267,80 @@ class TestScoringBackwardCompatibility:
             decay_half_life_days=7,
         )
         assert lore._half_life_days == 7
+
+
+class TestTypeValidation:
+    """F1-S3d: Invalid type values are rejected."""
+
+    def test_invalid_type_rejected(self) -> None:
+        lore = _make_lore()
+        with pytest.raises(ValueError, match="invalid memory type"):
+            lore.remember("test", type="banana")
+
+    def test_empty_type_rejected(self) -> None:
+        lore = _make_lore()
+        with pytest.raises(ValueError, match="non-empty string"):
+            lore.remember("test", type="")
+
+    def test_whitespace_type_rejected(self) -> None:
+        lore = _make_lore()
+        with pytest.raises(ValueError, match="non-empty string"):
+            lore.remember("test", type="   ")
+
+    def test_all_valid_types_accepted(self) -> None:
+        lore = _make_lore()
+        for t in VALID_MEMORY_TYPES:
+            mid = lore.remember(f"test {t}", type=t)
+            assert mid
+
+
+class TestDecayScoringIntegration:
+    """F1-S4c: Integration test — decay scoring through the full stack.
+
+    Exercises remember → age manipulation → recall and verifies that the
+    decay formula produces the expected ranking across different types and
+    ages, end-to-end through the Lore SDK.
+    """
+
+    def test_full_stack_decay_ranking(self) -> None:
+        store = MemoryStore()
+        lore = Lore(store=store, embedding_fn=_fixed_embed)
+        now = datetime.now(timezone.utc)
+
+        # Store memories of different types
+        mid_code = lore.remember("fix: use retry on 429", type="code")
+        mid_conv = lore.remember("always use snake_case", type="convention")
+        mid_general = lore.remember("general note about APIs", type="general")
+
+        # Age all by 20 days
+        for mid in [mid_code, mid_conv, mid_general]:
+            m = store.get(mid)
+            assert m is not None
+            m.created_at = (now - timedelta(days=20)).isoformat()
+            store.save(m)
+
+        results = lore.recall("anything", limit=10)
+        scores = {r.memory.id: r.score for r in results}
+
+        # Convention (HL=60) decays slowest → highest freshness at 20 days
+        # General (HL=30) decays medium
+        # Code (HL=14) decays fastest → lowest freshness at 20 days
+        assert scores[mid_conv] > scores[mid_general] > scores[mid_code]
+
+    def test_fresh_memory_beats_stale_regardless_of_type(self) -> None:
+        """A brand-new code memory outscores a 90-day-old convention memory."""
+        store = MemoryStore()
+        lore = Lore(store=store, embedding_fn=_fixed_embed)
+        now = datetime.now(timezone.utc)
+
+        mid_fresh = lore.remember("fresh code tip", type="code")
+        mid_stale = lore.remember("old convention", type="convention")
+
+        m_stale = store.get(mid_stale)
+        assert m_stale is not None
+        m_stale.created_at = (now - timedelta(days=90)).isoformat()
+        store.save(m_stale)
+
+        results = lore.recall("anything", limit=10)
+        scores = {r.memory.id: r.score for r in results}
+        assert scores[mid_fresh] > scores[mid_stale]
