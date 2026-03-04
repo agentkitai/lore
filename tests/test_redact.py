@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import time
 
-from lore.redact.pipeline import RedactionPipeline, _luhn_check, redact
+from lore.redact.patterns import shannon_entropy
+from lore.redact.pipeline import Finding, RedactionPipeline, ScanResult, _luhn_check, redact
 
 
 class TestLuhn:
@@ -169,3 +170,187 @@ class TestPerformance:
             p.run(text)
         elapsed = (time.perf_counter() - start) / 100
         assert elapsed < 0.005, f"Redaction took {elapsed*1000:.2f}ms (> 5ms)"
+
+
+# ====================================================================
+# F2-S1: New L1 patterns
+# ====================================================================
+
+
+class TestJWTTokens:
+    def setup_method(self) -> None:
+        self.p = RedactionPipeline()
+
+    def test_jwt_detected(self) -> None:
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        result = self.p.run(f"token: {jwt}")
+        assert "[REDACTED:jwt_token]" in result
+
+    def test_jwt_short_segments_not_matched(self) -> None:
+        # Too short to be a real JWT
+        text = "eyJh.eyJz.abc"
+        assert self.p.run(text) == text
+
+    def test_jwt_in_header(self) -> None:
+        jwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJodHRwczovL2V4YW1wbGUuY29tIn0.signature1234567890abcdef"
+        result = self.p.run(f"Authorization: Bearer {jwt}")
+        assert "[REDACTED:jwt_token]" in result
+        assert "eyJ" not in result
+
+
+class TestPrivateKeys:
+    def setup_method(self) -> None:
+        self.p = RedactionPipeline()
+
+    def test_rsa_private_key(self) -> None:
+        text = "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIB..."
+        assert "[REDACTED:private_key]" in self.p.run(text)
+
+    def test_ec_private_key(self) -> None:
+        text = "-----BEGIN EC PRIVATE KEY-----\nMHQCAQ..."
+        assert "[REDACTED:private_key]" in self.p.run(text)
+
+    def test_generic_private_key(self) -> None:
+        text = "-----BEGIN PRIVATE KEY-----\nMIIEvQIB..."
+        assert "[REDACTED:private_key]" in self.p.run(text)
+
+    def test_public_key_not_matched(self) -> None:
+        text = "-----BEGIN PUBLIC KEY-----\nMIIBIjAN..."
+        assert self.p.run(text) == text
+
+    def test_openssh_private_key(self) -> None:
+        text = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC..."
+        assert "[REDACTED:private_key]" in self.p.run(text)
+
+
+class TestShannonEntropy:
+    def test_low_entropy_string(self) -> None:
+        assert shannon_entropy("aaaaaaaaaa") < 1.0
+
+    def test_high_entropy_hex(self) -> None:
+        # Random-looking hex string
+        assert shannon_entropy("a1b2c3d4e5f6a7b8c9d0") > 3.0
+
+    def test_empty(self) -> None:
+        assert shannon_entropy("") == 0.0
+
+    def test_max_entropy_binary(self) -> None:
+        # Perfectly balanced binary string
+        ent = shannon_entropy("01" * 50)
+        assert abs(ent - 1.0) < 0.01
+
+
+class TestHighEntropyStrings:
+    def setup_method(self) -> None:
+        self.p = RedactionPipeline()
+
+    def test_high_entropy_base64_detected(self) -> None:
+        # Base64-like string with mixed case and digits — high entropy (>4.5)
+        secret = "Zk9mXpL2vR8nQw4jY6tU0hC3bA7dE5fG"
+        result = self.p.run(f"key={secret}")
+        assert "[REDACTED:" in result
+
+    def test_low_entropy_hex_not_detected(self) -> None:
+        # Repetitive hex — low entropy
+        text = "value=00000000000000000000"
+        assert self.p.run(text) == text
+
+    def test_short_hex_not_detected(self) -> None:
+        # Below 20-char threshold
+        text = "hash=a1b2c3d4e5f6"
+        assert self.p.run(text) == text
+
+
+# ====================================================================
+# F2-S2: ScanResult and block action
+# ====================================================================
+
+
+class TestScanResult:
+    def test_scan_returns_findings(self) -> None:
+        p = RedactionPipeline()
+        result = p.scan("key: sk-abc123def456ghi789jkl012")
+        assert len(result.findings) > 0
+        assert result.action == "block"  # API keys trigger block
+
+    def test_scan_pii_masks(self) -> None:
+        p = RedactionPipeline()
+        result = p.scan("email: user@example.com")
+        assert result.action == "mask"
+        assert result.masked_text() == "email: [REDACTED:email]"
+
+    def test_scan_no_findings(self) -> None:
+        p = RedactionPipeline()
+        result = p.scan("just normal text")
+        assert result.action == "pass"
+        assert result.findings == []
+        assert result.masked_text() == "just normal text"
+
+    def test_scan_block_types(self) -> None:
+        p = RedactionPipeline()
+        result = p.scan("token: sk-abc123def456ghi789jkl012")
+        assert "api_key" in result.blocked_types
+
+    def test_jwt_triggers_block(self) -> None:
+        p = RedactionPipeline()
+        jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        result = p.scan(f"auth: {jwt}")
+        assert result.action == "block"
+
+    def test_private_key_triggers_block(self) -> None:
+        p = RedactionPipeline()
+        result = p.scan("-----BEGIN RSA PRIVATE KEY-----")
+        assert result.action == "block"
+
+
+class TestActionOverrides:
+    def test_override_api_key_to_mask(self) -> None:
+        p = RedactionPipeline(security_action_overrides={"api_key": "mask"})
+        result = p.scan("key: sk-abc123def456ghi789jkl012")
+        assert result.action == "mask"  # not block
+
+    def test_override_email_to_block(self) -> None:
+        p = RedactionPipeline(security_action_overrides={"email": "block"})
+        result = p.scan("user@example.com")
+        assert result.action == "block"
+
+
+class TestSecurityScanLevels:
+    def test_default_l1_only(self) -> None:
+        p = RedactionPipeline()
+        assert p._levels == {1}
+
+    def test_explicit_levels(self) -> None:
+        p = RedactionPipeline(security_scan_levels=[1, 2])
+        assert p._levels == {1, 2}
+
+    def test_l2_graceful_degradation(self) -> None:
+        """L2 should not crash even if detect-secrets is not installed."""
+        p = RedactionPipeline(security_scan_levels=[1, 2])
+        result = p.scan("some text with potential secrets")
+        # Should complete without error regardless of detect-secrets availability
+        assert result is not None
+
+    def test_l3_graceful_degradation(self) -> None:
+        """L3 should not crash even if spacy is not installed."""
+        p = RedactionPipeline(security_scan_levels=[1, 3])
+        result = p.scan("John Smith went to New York")
+        # Should complete without error regardless of spacy availability
+        assert result is not None
+
+
+class TestFindingDataclass:
+    def test_finding_fields(self) -> None:
+        f = Finding(type="email", value="test@test.com", start=0, end=13, action="mask")
+        assert f.type == "email"
+        assert f.action == "mask"
+
+    def test_scan_result_masked_text_multiple(self) -> None:
+        result = ScanResult(
+            text="hello world test",
+            findings=[
+                Finding(type="a", value="hello", start=0, end=5, action="mask"),
+                Finding(type="b", value="test", start=12, end=16, action="mask"),
+            ],
+        )
+        assert result.masked_text() == "[REDACTED:a] world [REDACTED:b]"

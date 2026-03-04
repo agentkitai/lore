@@ -17,5 +17,16 @@ class LoreAuthError(Exception):
     """Raised when the server rejects the API key (401/403)."""
 
 
+class SecretBlockedError(Exception):
+    """Raised when content contains a detected secret and storage is blocked."""
+
+    def __init__(self, finding_type: str) -> None:
+        self.finding_type = finding_type
+        super().__init__(
+            f"Blocked: content contains a secret ({finding_type} detected). "
+            "Remove the secret and retry."
+        )
+
+
 # Deprecated alias
 LessonNotFoundError = MemoryNotFoundError

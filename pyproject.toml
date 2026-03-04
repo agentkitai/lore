@@ -46,6 +46,12 @@ redis = [
 aws = [
     "boto3>=1.26.0",
 ]
+security = [
+    "detect-secrets>=1.4.0",
+]
+ner = [
+    "spacy>=3.5.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
