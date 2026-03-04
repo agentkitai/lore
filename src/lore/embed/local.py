@@ -41,8 +41,9 @@ PROSE_MODEL = _ModelSpec(
 
 CODE_MODEL = _ModelSpec(
     name="all-MiniLM-L6-v2-code",
-    hf_repo="flax-sentence-embeddings/st-codesearch-distilroberta-base",
+    hf_repo="sentence-transformers/all-MiniLM-L6-v2",
     onnx_subdir="onnx",
+    dim=384,
 )
 
 
@@ -212,16 +213,17 @@ class LocalEmbedder(Embedder):
         attention_mask = np.array(
             [e.attention_mask for e in encodings], dtype=np.int64
         )
-        token_type_ids = np.zeros_like(input_ids)
 
-        outputs = self._session.run(
-            None,
-            {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "token_type_ids": token_type_ids,
-            },
-        )
+        # Build inputs dict — only include token_type_ids if model accepts it
+        inputs: dict = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+        }
+        input_names = {inp.name for inp in self._session.get_inputs()}
+        if "token_type_ids" in input_names:
+            inputs["token_type_ids"] = np.zeros_like(input_ids)
+
+        outputs = self._session.run(None, inputs)
 
         # outputs[0] is token embeddings: (batch, seq_len, hidden_dim)
         token_embeddings = outputs[0]

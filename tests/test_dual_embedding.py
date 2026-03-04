@@ -69,9 +69,9 @@ class TestDetectContentType:
         start = time.perf_counter()
         for _ in range(1000):
             detect_content_type(text)
-        elapsed_ms = (time.perf_counter() - start)
-        per_call_ms = elapsed_ms  # 1000 calls total
-        assert per_call_ms < 100, f"1000 calls took {per_call_ms:.1f}ms"
+        elapsed_ms = (time.perf_counter() - start) * 1000  # total ms
+        per_call_ms = elapsed_ms / 1000
+        assert per_call_ms < 0.1, f"Per call: {per_call_ms:.4f}ms (> 0.1ms)"
 
     def test_empty_string(self) -> None:
         assert detect_content_type("") == "prose"

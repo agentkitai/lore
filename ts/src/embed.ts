@@ -64,4 +64,42 @@ export const DECAY_HALF_LIVES: Record<string, number> = {
   convention: 60,
 };
 
+/**
+ * Classify text as code or prose using lightweight heuristics.
+ * Port of Python lore.embed.router.detect_content_type.
+ */
+export function detectContentType(text: string): 'code' | 'prose' {
+  let indicators = 0;
+
+  // Syntax characters at end of lines: { } ; ( )
+  if (/[{};()]\s*$/m.test(text)) indicators += 2;
+
+  // Language keywords
+  const kwMatches = text.match(
+    /\b(def |function |class |import |from |const |let |var |return |if |elif |else:)/g,
+  );
+  if (kwMatches) {
+    indicators += 2;
+    if (kwMatches.length >= 3) indicators += 1;
+  }
+
+  // Operator patterns common in code
+  if (/=>|->|::|\.\./.test(text)) indicators += 1;
+
+  // Indentation-heavy
+  const lines = text.split('\n');
+  if (lines.length > 1) {
+    const indented = lines.filter(ln => ln.startsWith('  ') || ln.startsWith('\t')).length;
+    if (indented / lines.length > 0.4) indicators += 1;
+  }
+
+  // Fenced code blocks
+  if (/```/.test(text)) indicators += 2;
+
+  // Chained method calls
+  if (/\w+\.\w+\(/.test(text)) indicators += 1;
+
+  return indicators >= 3 ? 'code' : 'prose';
+}
+
 export { EMBEDDING_DIM };
