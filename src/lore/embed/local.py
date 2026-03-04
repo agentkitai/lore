@@ -2,34 +2,61 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 from urllib.request import Request, urlopen
 
 import numpy as np
 
 from lore.embed.base import Embedder
 
+logger = logging.getLogger(__name__)
+
 _MODEL_DIR = os.path.join(os.path.expanduser("~"), ".lore", "models")
-_MODEL_NAME = "all-MiniLM-L6-v2"
-
-# HuggingFace ONNX model files
-_HF_BASE = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx"
-_MODEL_FILES = {
-    "model.onnx": f"{_HF_BASE}/model.onnx",
-}
-
-# Tokenizer files from the repo root
-_HF_REPO = "https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main"
-_TOKENIZER_FILES = {
-    "tokenizer.json": f"{_HF_REPO}/tokenizer.json",
-    "tokenizer_config.json": f"{_HF_REPO}/tokenizer_config.json",
-    "special_tokens_map.json": f"{_HF_REPO}/special_tokens_map.json",
-}
 
 _EMBEDDING_DIM = 384
+
+
+# ---------------------------------------------------------------------------
+# Model registry — each entry describes how to download one ONNX model
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class _ModelSpec:
+    name: str
+    hf_repo: str
+    onnx_subdir: str  # subdir under the repo for model.onnx ("onnx" or "")
+    dim: int = _EMBEDDING_DIM
+
+
+PROSE_MODEL = _ModelSpec(
+    name="all-MiniLM-L6-v2",
+    hf_repo="sentence-transformers/all-MiniLM-L6-v2",
+    onnx_subdir="onnx",
+)
+
+CODE_MODEL = _ModelSpec(
+    name="all-MiniLM-L6-v2-code",
+    hf_repo="flax-sentence-embeddings/st-codesearch-distilroberta-base",
+    onnx_subdir="onnx",
+)
+
+
+def _hf_urls(spec: _ModelSpec) -> tuple[Dict[str, str], Dict[str, str]]:
+    """Return (model_files, tokenizer_files) URL dicts for a model spec."""
+    base = f"https://huggingface.co/{spec.hf_repo}/resolve/main"
+    onnx_base = f"{base}/{spec.onnx_subdir}" if spec.onnx_subdir else base
+    model_files = {"model.onnx": f"{onnx_base}/model.onnx"}
+    tokenizer_files = {
+        "tokenizer.json": f"{base}/tokenizer.json",
+        "tokenizer_config.json": f"{base}/tokenizer_config.json",
+        "special_tokens_map.json": f"{base}/special_tokens_map.json",
+    }
+    return model_files, tokenizer_files
 
 
 def _download_file(url: str, dest: str, desc: str) -> None:
@@ -73,10 +100,13 @@ def _download_file(url: str, dest: str, desc: str) -> None:
         raise
 
 
-def _ensure_model(model_dir: Optional[str] = None) -> str:
+def _ensure_model(
+    spec: _ModelSpec = PROSE_MODEL,
+    model_dir: Optional[str] = None,
+) -> str:
     """Ensure model files exist, downloading if needed. Returns model directory."""
     base = model_dir or _MODEL_DIR
-    model_path = os.path.join(base, _MODEL_NAME)
+    model_path = os.path.join(base, spec.name)
 
     # Check if model.onnx exists as readiness marker
     onnx_path = os.path.join(model_path, "model.onnx")
@@ -84,10 +114,11 @@ def _ensure_model(model_dir: Optional[str] = None) -> str:
         return model_path
 
     sys.stderr.write(
-        f"Lore: downloading embedding model ({_MODEL_NAME})...\n"
+        f"Lore: downloading embedding model ({spec.name})...\n"
     )
 
-    all_files = {**_MODEL_FILES, **_TOKENIZER_FILES}
+    model_files, tokenizer_files = _hf_urls(spec)
+    all_files = {**model_files, **tokenizer_files}
     for filename, url in all_files.items():
         dest = os.path.join(model_path, filename)
         if not os.path.exists(dest):
@@ -117,13 +148,26 @@ def _normalize(embeddings: np.ndarray) -> np.ndarray:
 
 
 class LocalEmbedder(Embedder):
-    """Local embedding engine using ONNX MiniLM-L6-v2.
+    """Local embedding engine using ONNX sentence-transformer models.
 
     Downloads the model on first use and caches it to ``~/.lore/models/``.
+
+    Parameters
+    ----------
+    model_dir:
+        Override the default model cache directory.
+    model_spec:
+        A ``_ModelSpec`` describing which model to use.  Defaults to
+        :data:`PROSE_MODEL` (``all-MiniLM-L6-v2``).
     """
 
-    def __init__(self, model_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        model_dir: Optional[str] = None,
+        model_spec: _ModelSpec = PROSE_MODEL,
+    ) -> None:
         self._model_dir = model_dir
+        self._model_spec = model_spec
         self._session = None
         self._tokenizer = None
 
@@ -135,7 +179,7 @@ class LocalEmbedder(Embedder):
         import onnxruntime as ort  # type: ignore[import-untyped]
         from tokenizers import Tokenizer  # type: ignore[import-untyped]
 
-        model_path = _ensure_model(self._model_dir)
+        model_path = _ensure_model(self._model_spec, self._model_dir)
 
         self._session = ort.InferenceSession(
             os.path.join(model_path, "model.onnx"),
@@ -144,7 +188,7 @@ class LocalEmbedder(Embedder):
         self._tokenizer = Tokenizer.from_file(
             os.path.join(model_path, "tokenizer.json")
         )
-        # MiniLM max sequence length
+        # Max sequence length
         self._tokenizer.enable_truncation(max_length=256)
         self._tokenizer.enable_padding(length=256)
 
@@ -185,3 +229,25 @@ class LocalEmbedder(Embedder):
         normalized = _normalize(pooled)
 
         return [vec.tolist() for vec in normalized]
+
+
+def make_code_embedder(
+    model_dir: Optional[str] = None,
+    fallback: Optional[Embedder] = None,
+) -> Embedder:
+    """Create a code-specialized embedder, falling back to *fallback* on error.
+
+    If the code model cannot be downloaded or loaded, returns *fallback*
+    (or a default prose :class:`LocalEmbedder`) so the system degrades
+    gracefully.
+    """
+    try:
+        embedder = LocalEmbedder(model_dir=model_dir, model_spec=CODE_MODEL)
+        # Force a load to verify the model works
+        embedder._load()
+        return embedder
+    except Exception:
+        logger.warning(
+            "Code embedding model unavailable — falling back to prose model."
+        )
+        return fallback or LocalEmbedder(model_dir=model_dir)
