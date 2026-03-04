@@ -57,7 +57,3 @@ DECAY_HALF_LIVES: Dict[str, float] = {
     "lesson": 30,
     "convention": 60,
 }
-
-# Deprecated aliases for backward compatibility
-Lesson = Memory
-QueryResult = RecallResult

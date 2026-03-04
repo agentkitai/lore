@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import warnings
 from typing import List, Optional, Sequence
 
 
@@ -86,41 +85,6 @@ def cmd_stats(args: argparse.Namespace) -> None:
         print(f"Oldest: {s.oldest}")
         print(f"Newest: {s.newest}")
 
-
-# ------------------------------------------------------------------
-# Deprecated legacy commands
-# ------------------------------------------------------------------
-
-def cmd_publish(args: argparse.Namespace) -> None:
-    print("Warning: 'publish' is deprecated, use 'remember' instead.", file=sys.stderr)
-    lore = _get_lore(args.db)
-    tags: List[str] = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        mid = lore.publish(
-            problem=args.problem,
-            resolution=args.resolution,
-            tags=tags,
-            confidence=args.confidence,
-        )
-    lore.close()
-    print(mid)
-
-
-def cmd_query(args: argparse.Namespace) -> None:
-    print("Warning: 'query' is deprecated, use 'recall' instead.", file=sys.stderr)
-    lore = _get_lore(args.db)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        results = lore.query(args.text, limit=args.limit)
-    lore.close()
-    if not results:
-        print("No results.")
-        return
-    for r in results:
-        print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type})")
-        print(f"  {r.memory.content[:200]}")
-        print()
 
 
 # ------------------------------------------------------------------
@@ -248,17 +212,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     # stats
     sub.add_parser("stats", help="Show memory statistics")
-
-    # --- Deprecated legacy commands ---
-    p = sub.add_parser("publish", help="(deprecated) Use 'remember' instead")
-    p.add_argument("problem", help="What went wrong")
-    p.add_argument("resolution", help="How to fix it")
-    p.add_argument("--tags", default=None, help="Comma-separated tags")
-    p.add_argument("--confidence", type=float, default=0.5)
-
-    p = sub.add_parser("query", help="(deprecated) Use 'recall' instead")
-    p.add_argument("text", help="Search query")
-    p.add_argument("--limit", type=int, default=5)
 
     # keys
     keys_parser = sub.add_parser("keys", help="Manage API keys (remote server)")
@@ -505,9 +458,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "forget": cmd_forget,
         "memories": cmd_memories,
         "stats": cmd_stats,
-        "publish": cmd_publish,
-        "query": cmd_query,
-        "freshness": cmd_freshness,
+"freshness": cmd_freshness,
         "github-sync": cmd_github_sync,
         "reindex": cmd_reindex,
         "mcp": cmd_mcp,

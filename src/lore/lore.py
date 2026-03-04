@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import os
 import struct
 import time
-import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -504,110 +502,6 @@ class Lore:
             self._last_cleanup = now
             self._last_cleanup_count = self._store.cleanup_expired()
 
-    # ------------------------------------------------------------------
-    # Deprecated methods (backward compat with pre-0.3 API)
-    # ------------------------------------------------------------------
-
-    def publish(
-        self,
-        problem: str,
-        resolution: str,
-        *,
-        context: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        confidence: float = 0.5,
-        source: Optional[str] = None,
-        project: Optional[str] = None,
-    ) -> str:
-        """Deprecated: use remember() instead."""
-        warnings.warn("publish() is deprecated, use remember()", DeprecationWarning, stacklevel=2)
-        content = f"{problem}\n\n{resolution}"
-        return self.remember(
-            content, type="lesson", context=context, tags=tags,
-            confidence=confidence, source=source, project=project,
-        )
-
-    def query(
-        self,
-        text: str,
-        *,
-        tags: Optional[List[str]] = None,
-        limit: int = 5,
-        min_confidence: float = 0.0,
-    ) -> List[RecallResult]:
-        """Deprecated: use recall() instead."""
-        warnings.warn("query() is deprecated, use recall()", DeprecationWarning, stacklevel=2)
-        return self.recall(text, tags=tags, limit=limit, min_confidence=min_confidence)
-
-    def delete(self, memory_id: str) -> bool:
-        """Deprecated: use forget() instead."""
-        warnings.warn("delete() is deprecated, use forget()", DeprecationWarning, stacklevel=2)
-        return self.forget(memory_id)
-
-    def export_lessons(self, path: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Deprecated: export memories as JSON-serializable dicts."""
-        warnings.warn("export_lessons() is deprecated", DeprecationWarning, stacklevel=2)
-        memories = self._store.list()
-        data = []
-        for m in memories:
-            d: Dict[str, Any] = {
-                "id": m.id,
-                "content": m.content,
-                "type": m.type,
-                "tags": m.tags,
-                "confidence": m.confidence,
-                "source": m.source,
-                "project": m.project,
-                "created_at": m.created_at,
-                "updated_at": m.updated_at,
-                "upvotes": m.upvotes,
-                "downvotes": m.downvotes,
-            }
-            if m.metadata:
-                d["metadata"] = m.metadata
-            if m.context:
-                d["context"] = m.context
-            data.append(d)
-        if path:
-            with open(path, "w") as f:
-                json.dump(data, f, indent=2)
-        return data
-
-    def import_lessons(
-        self,
-        path: Optional[str] = None,
-        data: Optional[List[Dict[str, Any]]] = None,
-    ) -> int:
-        """Deprecated: import memories from file or data. Skips duplicates."""
-        warnings.warn("import_lessons() is deprecated", DeprecationWarning, stacklevel=2)
-        if path:
-            with open(path) as f:
-                data = json.load(f)
-        if not data:
-            return 0
-        count = 0
-        for d in data:
-            mid = d.get("id", str(ULID()))
-            if self._store.get(mid) is not None:
-                continue
-            memory = Memory(
-                id=mid,
-                content=d.get("content", ""),
-                type=d.get("type", "general"),
-                context=d.get("context"),
-                tags=d.get("tags", []),
-                metadata=d.get("metadata"),
-                confidence=d.get("confidence", 1.0),
-                source=d.get("source"),
-                project=d.get("project"),
-                created_at=d.get("created_at", _utc_now_iso()),
-                updated_at=d.get("updated_at", _utc_now_iso()),
-                upvotes=d.get("upvotes", 0),
-                downvotes=d.get("downvotes", 0),
-            )
-            self._store.save(memory)
-            count += 1
-        return count
 
 
 def _utc_now_iso() -> str:

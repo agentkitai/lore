@@ -26,7 +26,3 @@ class SecretBlockedError(Exception):
             f"Blocked: content contains a secret ({finding_type} detected). "
             "Remove the secret and retry."
         )
-
-
-# Deprecated alias
-LessonNotFoundError = MemoryNotFoundError

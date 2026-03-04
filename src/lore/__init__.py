@@ -1,8 +1,8 @@
 """Lore SDK — cross-agent memory library."""
 
-from lore.exceptions import LessonNotFoundError, MemoryNotFoundError
+from lore.exceptions import MemoryNotFoundError
 from lore.lore import Lore
-from lore.types import Lesson, Memory, MemoryStats, QueryResult, RecallResult
+from lore.types import Memory, MemoryStats, RecallResult
 
 __all__ = [
     "Lore",
@@ -10,8 +10,4 @@ __all__ = [
     "RecallResult",
     "MemoryStats",
     "MemoryNotFoundError",
-    # Deprecated aliases
-    "Lesson",
-    "QueryResult",
-    "LessonNotFoundError",
 ]
