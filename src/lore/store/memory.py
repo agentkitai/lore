@@ -5,41 +5,54 @@ from __future__ import annotations
 from typing import Dict, List, Optional
 
 from lore.store.base import Store
-from lore.types import Lesson
+from lore.types import Memory
 
 
 class MemoryStore(Store):
     """In-memory store backed by a dict. Useful for testing."""
 
     def __init__(self) -> None:
-        self._lessons: Dict[str, Lesson] = {}
+        self._memories: Dict[str, Memory] = {}
 
-    def save(self, lesson: Lesson) -> None:
-        self._lessons[lesson.id] = lesson
+    def save(self, memory: Memory) -> None:
+        self._memories[memory.id] = memory
 
-    def get(self, lesson_id: str) -> Optional[Lesson]:
-        return self._lessons.get(lesson_id)
+    def get(self, memory_id: str) -> Optional[Memory]:
+        return self._memories.get(memory_id)
 
     def list(
         self,
         project: Optional[str] = None,
+        type: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> List[Lesson]:
-        lessons = list(self._lessons.values())
+    ) -> List[Memory]:
+        memories = list(self._memories.values())
         if project is not None:
-            lessons = [
-                item for item in lessons if item.project == project
-            ]
-        lessons.sort(key=lambda item: item.created_at, reverse=True)
+            memories = [m for m in memories if m.project == project]
+        if type is not None:
+            memories = [m for m in memories if m.type == type]
+        memories.sort(key=lambda m: m.created_at, reverse=True)
         if limit is not None:
-            lessons = lessons[:limit]
-        return lessons
+            memories = memories[:limit]
+        return memories
 
-    def update(self, lesson: Lesson) -> bool:
-        if lesson.id not in self._lessons:
+    def update(self, memory: Memory) -> bool:
+        if memory.id not in self._memories:
             return False
-        self._lessons[lesson.id] = lesson
+        self._memories[memory.id] = memory
         return True
 
-    def delete(self, lesson_id: str) -> bool:
-        return self._lessons.pop(lesson_id, None) is not None
+    def delete(self, memory_id: str) -> bool:
+        return self._memories.pop(memory_id, None) is not None
+
+    def count(
+        self,
+        project: Optional[str] = None,
+        type: Optional[str] = None,
+    ) -> int:
+        memories = list(self._memories.values())
+        if project is not None:
+            memories = [m for m in memories if m.project == project]
+        if type is not None:
+            memories = [m for m in memories if m.type == type]
+        return len(memories)

@@ -7,29 +7,29 @@ from typing import Any, Dict, List, Optional
 
 
 @dataclass
-class Lesson:
-    """A single lesson learned by an agent."""
+class Memory:
+    """A single memory stored by an agent."""
 
     id: str
-    problem: str
-    resolution: str
-    context: Optional[str] = None
+    content: str
+    type: str = "general"
     tags: List[str] = field(default_factory=list)
-    confidence: float = 0.5
+    metadata: Optional[Dict[str, Any]] = None
     source: Optional[str] = None
     project: Optional[str] = None
     embedding: Optional[bytes] = None
     created_at: str = ""
     updated_at: str = ""
+    ttl: Optional[int] = None
     expires_at: Optional[str] = None
+    confidence: float = 1.0
     upvotes: int = 0
     downvotes: int = 0
-    meta: Optional[Dict[str, Any]] = None
 
 
 @dataclass
-class QueryResult:
-    """A query result containing a lesson and its relevance score."""
+class RecallResult:
+    """A recall result containing a memory and its relevance score."""
 
-    lesson: Lesson
+    memory: Memory
     score: float

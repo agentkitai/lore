@@ -1,22 +1,22 @@
 """MCP server that wraps the Lore SDK.
 
-Exposes four tools over stdio transport:
-  - save_lesson: persist a lesson learned
-  - recall_lessons: semantic search for relevant lessons
-  - upvote_lesson: signal a lesson was helpful
-  - downvote_lesson: signal a lesson was unhelpful
+Exposes memory tools over stdio transport:
+  - remember: store a memory
+  - recall: semantic search for relevant memories
+  - forget: delete a memory
+  - list_memories: list stored memories
+  - stats: memory statistics
+  - upvote_memory: boost a memory's ranking
+  - downvote_memory: lower a memory's ranking
 
 Configure via environment variables:
-  LORE_STORE   — "local" (default) or "remote"
   LORE_PROJECT — default project scope
-  LORE_API_URL — required when LORE_STORE=remote
-  LORE_API_KEY — required when LORE_STORE=remote
 """
 
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 
@@ -35,20 +35,8 @@ def _get_lore() -> Lore:
     if _lore is not None:
         return _lore
 
-    store_type = os.environ.get("LORE_STORE", "local").lower()
     project = os.environ.get("LORE_PROJECT") or None
-
-    if store_type == "remote":
-        api_url = os.environ.get("LORE_API_URL")
-        api_key = os.environ.get("LORE_API_KEY")
-        if not api_url or not api_key:
-            raise RuntimeError(
-                "LORE_API_URL and LORE_API_KEY must be set when LORE_STORE=remote"
-            )
-        _lore = Lore(project=project, store="remote", api_url=api_url, api_key=api_key)
-    else:
-        _lore = Lore(project=project)
-
+    _lore = Lore(project=project)
     return _lore
 
 
@@ -59,51 +47,54 @@ def _get_lore() -> Lore:
 mcp = FastMCP(
     name="lore",
     instructions=(
-        "Lore is a cross-agent memory system. Use it to save lessons learned "
-        "from solving problems and to recall relevant lessons when facing new "
-        "problems. This helps avoid repeating mistakes and surfaces solutions "
-        "that worked before."
+        "Lore is a cross-agent memory system. Use it to remember knowledge, "
+        "recall relevant memories when facing problems, and forget outdated "
+        "information. Memories can be facts, lessons, preferences, context, "
+        "or any knowledge worth preserving across sessions."
     ),
 )
 
 
 @mcp.tool(
     description=(
-        "Save a lesson learned from solving a problem. "
+        "Save a memory — any knowledge worth preserving. "
         "USE THIS WHEN: you just solved a tricky bug, found a non-obvious fix, "
-        "discovered a workaround, or learned something that future agents (or "
-        "your future self) would benefit from knowing. "
-        "DO NOT save trivial things — only save lessons that would save someone "
+        "discovered a workaround, learned a user preference, or encountered "
+        "something that future agents (or your future self) would benefit from knowing. "
+        "DO NOT save trivial things — only save memories that would save someone "
         "real time or prevent a real mistake. "
-        "The problem should describe WHAT went wrong or was confusing. "
-        "The resolution should describe WHAT fixed it and WHY it works."
+        "The content should be a clear, self-contained piece of knowledge."
     ),
 )
-def save_lesson(
-    problem: str,
-    resolution: str,
-    context: Optional[str] = None,
+def remember(
+    content: str,
+    type: str = "general",
     tags: Optional[List[str]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+    source: Optional[str] = None,
     project: Optional[str] = None,
+    ttl: Optional[int] = None,
 ) -> str:
-    """Save a lesson to Lore memory."""
+    """Store a memory in Lore."""
     try:
         lore = _get_lore()
-        lesson_id = lore.publish(
-            problem=problem,
-            resolution=resolution,
-            context=context,
+        memory_id = lore.remember(
+            content=content,
+            type=type,
             tags=tags,
+            metadata=metadata,
+            source=source,
             project=project,
+            ttl=ttl,
         )
-        return f"✅ Lesson saved (ID: {lesson_id})"
+        return f"Memory saved (ID: {memory_id})"
     except Exception as e:
-        return f"❌ Failed to save lesson: {e}"
+        return f"Failed to save memory: {e}"
 
 
 @mcp.tool(
     description=(
-        "Search for relevant lessons from past experience. "
+        "Search for relevant memories from past experience. "
         "USE THIS WHEN: you're about to solve a problem, debug an error, "
         "or make a design decision — especially if you suspect someone has "
         "hit this before. Search with a natural-language description of "
@@ -113,73 +104,139 @@ def save_lesson(
         "BAD queries: 'help', 'error', 'fix this'. Be specific."
     ),
 )
-def recall_lessons(
+def recall(
     query: str,
     tags: Optional[List[str]] = None,
+    type: Optional[str] = None,
     limit: int = 5,
 ) -> str:
-    """Search Lore memory for relevant lessons."""
+    """Search Lore memory for relevant memories."""
     try:
         lore = _get_lore()
         limit = max(1, min(limit, 20))
-        results = lore.query(text=query, tags=tags, limit=limit)
+        results = lore.recall(query=query, tags=tags, type=type, limit=limit)
         if not results:
-            return "No relevant lessons found. Try a different query or broader terms."
+            return "No relevant memories found. Try a different query or broader terms."
 
-        lines: List[str] = [f"Found {len(results)} relevant lesson(s):\n"]
+        lines: List[str] = [f"Found {len(results)} relevant memory(ies):\n"]
         for i, r in enumerate(results, 1):
-            lesson = r.lesson
+            mem = r.memory
             lines.append(f"{'─' * 60}")
-            lines.append(f"Lesson {i}  (score: {r.score:.2f}, id: {lesson.id})")
-            lines.append(f"Problem:    {lesson.problem}")
-            lines.append(f"Resolution: {lesson.resolution}")
-            if lesson.context:
-                lines.append(f"Context:    {lesson.context}")
-            if lesson.tags:
-                lines.append(f"Tags:       {', '.join(lesson.tags)}")
-            if lesson.project:
-                lines.append(f"Project:    {lesson.project}")
+            lines.append(f"Memory {i}  (score: {r.score:.2f}, id: {mem.id}, type: {mem.type})")
+            lines.append(f"Content: {mem.content}")
+            if mem.tags:
+                lines.append(f"Tags:    {', '.join(mem.tags)}")
+            if mem.project:
+                lines.append(f"Project: {mem.project}")
             lines.append("")
 
         return "\n".join(lines)
     except Exception as e:
-        return f"❌ Failed to recall lessons: {e}"
+        return f"Failed to recall memories: {e}"
 
 
 @mcp.tool(
     description=(
-        "Upvote a lesson that was helpful. "
-        "USE THIS WHEN: you recalled a lesson and it actually helped solve "
-        "your problem. This boosts the lesson's ranking in future searches. "
-        "Pass the lesson ID from recall_lessons output."
+        "Delete a memory by its ID. "
+        "USE THIS WHEN: a memory is outdated, incorrect, or no longer relevant. "
+        "Pass the memory ID from recall output."
     ),
 )
-def upvote_lesson(lesson_id: str) -> str:
-    """Upvote a lesson to boost its ranking."""
+def forget(memory_id: str) -> str:
+    """Delete a memory from Lore."""
     try:
         lore = _get_lore()
-        lore.upvote(lesson_id)
-        return f"👍 Upvoted lesson {lesson_id}"
+        if lore.forget(memory_id):
+            return f"Memory {memory_id} forgotten."
+        return f"Memory {memory_id} not found."
     except Exception as e:
-        return f"❌ Failed to upvote: {e}"
+        return f"Failed to forget memory: {e}"
 
 
 @mcp.tool(
     description=(
-        "Downvote a lesson that was wrong or unhelpful. "
-        "USE THIS WHEN: you recalled a lesson but it was outdated, incorrect, "
-        "or misleading. This lowers the lesson's ranking so others don't waste "
-        "time on bad advice. Pass the lesson ID from recall_lessons output."
+        "List stored memories, optionally filtered by type or project."
     ),
 )
-def downvote_lesson(lesson_id: str) -> str:
-    """Downvote a lesson to lower its ranking."""
+def list_memories(
+    type: Optional[str] = None,
+    project: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> str:
+    """List memories in Lore."""
     try:
         lore = _get_lore()
-        lore.downvote(lesson_id)
-        return f"👎 Downvoted lesson {lesson_id}"
+        memories = lore.list_memories(type=type, project=project, limit=limit)
+        if not memories:
+            return "No memories found."
+
+        lines: List[str] = [f"Found {len(memories)} memory(ies):\n"]
+        for mem in memories:
+            lines.append(f"[{mem.id}] ({mem.type}) {mem.content[:100]}")
+            if mem.tags:
+                lines.append(f"  Tags: {', '.join(mem.tags)}")
+        return "\n".join(lines)
     except Exception as e:
-        return f"❌ Failed to downvote: {e}"
+        return f"Failed to list memories: {e}"
+
+
+@mcp.tool(
+    description="Return memory statistics: total count, count by type, oldest and newest.",
+)
+def stats(project: Optional[str] = None) -> str:
+    """Return memory statistics."""
+    try:
+        lore = _get_lore()
+        s = lore.stats(project=project)
+        lines = [
+            f"Total memories: {s['total']}",
+        ]
+        if s["by_type"]:
+            lines.append("By type:")
+            for t, count in sorted(s["by_type"].items()):
+                lines.append(f"  {t}: {count}")
+        if s.get("oldest"):
+            lines.append(f"Oldest: {s['oldest']}")
+            lines.append(f"Newest: {s['newest']}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to get stats: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Upvote a memory that was helpful. "
+        "USE THIS WHEN: you recalled a memory and it actually helped solve "
+        "your problem. This boosts the memory's ranking in future searches. "
+        "Pass the memory ID from recall output."
+    ),
+)
+def upvote_memory(memory_id: str) -> str:
+    """Upvote a memory to boost its ranking."""
+    try:
+        lore = _get_lore()
+        lore.upvote(memory_id)
+        return f"Upvoted memory {memory_id}"
+    except Exception as e:
+        return f"Failed to upvote: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Downvote a memory that was wrong or unhelpful. "
+        "USE THIS WHEN: you recalled a memory but it was outdated, incorrect, "
+        "or misleading. This lowers the memory's ranking so others don't waste "
+        "time on bad advice. Pass the memory ID from recall output."
+    ),
+)
+def downvote_memory(memory_id: str) -> str:
+    """Downvote a memory to lower its ranking."""
+    try:
+        lore = _get_lore()
+        lore.downvote(memory_id)
+        return f"Downvoted memory {memory_id}"
+    except Exception as e:
+        return f"Failed to downvote: {e}"
 
 
 def run_server() -> None:

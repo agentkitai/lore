@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import os
 import struct
-from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -14,12 +12,11 @@ from ulid import ULID
 
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder
-from lore.exceptions import LessonNotFoundError
-from lore.prompt import as_prompt as _as_prompt
+from lore.exceptions import MemoryNotFoundError
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
-from lore.types import Lesson, QueryResult
+from lore.types import Memory, RecallResult
 
 # Type alias for user-provided embedding functions
 EmbeddingFn = Callable[[str], List[float]]
@@ -61,8 +58,8 @@ class Lore:
     Usage::
 
         lore = Lore()
-        lesson_id = lore.publish(problem="...", resolution="...")
-        results = lore.query("how to handle rate limits")
+        memory_id = lore.remember("Always use exponential backoff for rate limits")
+        results = lore.recall("how to handle rate limits")
     """
 
     def __init__(
@@ -90,17 +87,20 @@ class Lore:
         else:
             self._redactor = None
 
+        if isinstance(store, str) and store != "remote":
+            raise ValueError(f"store must be a Store instance or 'remote', got {store!r}")
         if isinstance(store, str) and store == "remote":
             if not api_url or not api_key:
                 raise ValueError(
                     "api_url and api_key are required when store='remote'"
                 )
-            from lore.store.remote import RemoteStore
-            self._store: Store = RemoteStore(api_url=api_url, api_key=api_key)
+            # Remote store deferred to Phase B — raise clear error
+            raise ValueError(
+                "Remote store is not supported in this version. "
+                "Use a local store instead."
+            )
         elif isinstance(store, Store):
-            self._store = store
-        elif store is not None:
-            raise ValueError(f"store must be a Store instance or 'remote', got {store!r}")
+            self._store: Store = store
         else:
             if db_path is None:
                 db_path = os.path.join(
@@ -127,17 +127,19 @@ class Lore:
     def __exit__(self, *args: object) -> None:
         self.close()
 
-    def publish(
+    def remember(
         self,
-        problem: str,
-        resolution: str,
-        context: Optional[str] = None,
+        content: str,
+        *,
+        type: str = "general",
         tags: Optional[List[str]] = None,
-        confidence: float = 0.5,
+        metadata: Optional[Dict[str, Any]] = None,
         source: Optional[str] = None,
         project: Optional[str] = None,
+        ttl: Optional[int] = None,
+        confidence: float = 1.0,
     ) -> str:
-        """Publish a new lesson. Returns the lesson ID (ULID)."""
+        """Store a memory. Returns the memory ID (ULID)."""
         if not (0.0 <= confidence <= 1.0):
             raise ValueError(
                 f"confidence must be between 0.0 and 1.0, got {confidence}"
@@ -145,115 +147,96 @@ class Lore:
 
         # Redact sensitive data before storage
         if self._redactor is not None:
-            problem = self._redactor.run(problem)
-            resolution = self._redactor.run(resolution)
-            if context is not None:
-                context = self._redactor.run(context)
+            content = self._redactor.run(content)
 
-        # Build text for embedding
-        embed_text = f"{problem} {resolution}"
-        if context:
-            embed_text = f"{embed_text} {context}"
-        embedding_vec = self._embedder.embed(embed_text)
+        # Compute embedding
+        embedding_vec = self._embedder.embed(content)
         embedding_bytes = _serialize_embedding(embedding_vec)
 
         now = _utc_now_iso()
-        lesson = Lesson(
+
+        # Compute expires_at from ttl
+        expires_at = None
+        if ttl is not None:
+            expires_at = (
+                datetime.now(timezone.utc) + timedelta(seconds=ttl)
+            ).isoformat()
+
+        memory = Memory(
             id=str(ULID()),
-            problem=problem,
-            resolution=resolution,
-            context=context,
+            content=content,
+            type=type,
             tags=tags or [],
-            confidence=confidence,
+            metadata=metadata,
             source=source,
             project=project or self.project,
             embedding=embedding_bytes,
             created_at=now,
             updated_at=now,
+            ttl=ttl,
+            expires_at=expires_at,
+            confidence=confidence,
         )
-        self._store.save(lesson)
-        return lesson.id
+        self._store.save(memory)
+        return memory.id
 
-    def query(
+    def recall(
         self,
-        text: str,
+        query: str,
+        *,
         tags: Optional[List[str]] = None,
+        type: Optional[str] = None,
         limit: int = 5,
         min_confidence: float = 0.0,
-    ) -> List[QueryResult]:
-        """Query lessons by semantic similarity, optionally filtered by tags.
+    ) -> List[RecallResult]:
+        """Semantic search for memories.
 
-        Returns a list of QueryResult ordered by descending score
-        (cosine similarity * decay).
+        Returns a list of RecallResult ordered by descending score.
         """
-        # Embed query text
-        query_vec = self._embedder.embed(text)
-
-        # For remote stores, delegate search to the server
-        from lore.store.remote import RemoteStore
-        if isinstance(self._store, RemoteStore):
-            return self._query_remote(query_vec, tags=tags, limit=limit)
-
-        return self._query_local(query_vec, tags=tags, limit=limit, min_confidence=min_confidence)
-
-    def _query_remote(
-        self,
-        query_vec: List[float],
-        tags: Optional[List[str]] = None,
-        limit: int = 5,
-    ) -> List[QueryResult]:
-        """Delegate semantic search to the remote Lore server."""
-        from lore.store.remote import RemoteStore, _response_to_lesson
-        assert isinstance(self._store, RemoteStore)
-        raw_results = self._store.search(
-            embedding=query_vec,
-            limit=limit,
-            tags=tags,
-            project=self.project,
+        query_vec = self._embedder.embed(query)
+        return self._recall_local(
+            query_vec, tags=tags, type=type, limit=limit,
+            min_confidence=min_confidence,
         )
-        results: List[QueryResult] = []
-        for item in raw_results:
-            score = item.get("score", 0.0)
-            lesson = _response_to_lesson(item)
-            results.append(QueryResult(lesson=lesson, score=float(score)))
-        return results
 
-    def _query_local(
+    def _recall_local(
         self,
         query_vec: List[float],
+        *,
         tags: Optional[List[str]] = None,
+        type: Optional[str] = None,
         limit: int = 5,
         min_confidence: float = 0.0,
-    ) -> List[QueryResult]:
-        """Client-side semantic search for local (SQLite) stores."""
+    ) -> List[RecallResult]:
+        """Client-side semantic search for local stores."""
         now = datetime.now(timezone.utc)
 
-        # Get all candidates (scope to project if set)
-        all_lessons = self._store.list(project=self.project)
+        # Get all candidates (scope to project if set, optionally by type)
+        all_memories = self._store.list(project=self.project, type=type)
 
-        # Filter expired lessons
-        all_lessons = [
-            l for l in all_lessons
-            if l.expires_at is None
-            or datetime.fromisoformat(l.expires_at) > now
+        # Filter expired memories
+        all_memories = [
+            m for m in all_memories
+            if m.expires_at is None
+            or datetime.fromisoformat(m.expires_at) > now
         ]
 
         # Filter by tags
         if tags:
             tag_set = set(tags)
-            all_lessons = [
-                l for l in all_lessons
-                if tag_set.issubset(set(l.tags))
+            all_memories = [
+                m for m in all_memories
+                if tag_set.issubset(set(m.tags))
             ]
 
         # Filter by min_confidence
         if min_confidence > 0.0:
-            all_lessons = [
-                l for l in all_lessons if l.confidence >= min_confidence
+            all_memories = [
+                m for m in all_memories if m.confidence >= min_confidence
             ]
 
-        # Filter out lessons without embeddings
-        candidates = [l for l in all_lessons if l.embedding]
+        # Filter out memories without embeddings
+        candidates = [m for m in all_memories if m.embedding]
         if not candidates:
             return []
 
@@ -261,10 +244,9 @@ class Lore:
 
         # Vectorized cosine similarity
         embeddings = np.array(
-            [_deserialize_embedding(l.embedding) for l in candidates],  # type: ignore[arg-type]
+            [_deserialize_embedding(m.embedding) for m in candidates],  # type: ignore[arg-type]
             dtype=np.float32,
         )
-        # Normalize (embeddings should already be normalized, but be safe)
         query_norm = query_arr / max(np.linalg.norm(query_arr), 1e-9)
         emb_norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
         emb_norms = np.clip(emb_norms, 1e-9, None)
@@ -273,154 +255,74 @@ class Lore:
         cosine_scores = embeddings_normed @ query_norm
 
         # Apply decay: score *= confidence * time_factor * vote_factor
-        results: List[QueryResult] = []
-        for i, lesson in enumerate(candidates):
+        results: List[RecallResult] = []
+        for i, memory in enumerate(candidates):
             age_days = (
-                now - datetime.fromisoformat(lesson.created_at)
+                now - datetime.fromisoformat(memory.created_at)
             ).total_seconds() / 86400.0
             time_factor = 0.5 ** (age_days / self._half_life_days)
-            vote_factor = 1.0 + (lesson.upvotes - lesson.downvotes) * 0.1
+            vote_factor = 1.0 + (memory.upvotes - memory.downvotes) * 0.1
             vote_factor = max(vote_factor, 0.1)
-            decay = lesson.confidence * time_factor * vote_factor
+            decay = memory.confidence * time_factor * vote_factor
             final_score = float(cosine_scores[i]) * decay
-            results.append(QueryResult(lesson=lesson, score=final_score))
+            results.append(RecallResult(memory=memory, score=final_score))
 
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:limit]
 
-    def upvote(self, lesson_id: str) -> None:
-        """Increment upvotes for a lesson."""
-        lesson = self._store.get(lesson_id)
-        if lesson is None:
-            raise LessonNotFoundError(lesson_id)
-        lesson.upvotes += 1
-        lesson.updated_at = _utc_now_iso()
-        self._store.update(lesson)
+    def forget(self, memory_id: str) -> bool:
+        """Delete a memory by ID. Returns True if it existed."""
+        return self._store.delete(memory_id)
 
-    def downvote(self, lesson_id: str) -> None:
-        """Increment downvotes for a lesson."""
-        lesson = self._store.get(lesson_id)
-        if lesson is None:
-            raise LessonNotFoundError(lesson_id)
-        lesson.downvotes += 1
-        lesson.updated_at = _utc_now_iso()
-        self._store.update(lesson)
+    def get(self, memory_id: str) -> Optional[Memory]:
+        """Get a memory by ID."""
+        return self._store.get(memory_id)
 
-    def as_prompt(
+    def list_memories(
         self,
-        lessons: List[QueryResult],
-        max_tokens: int = 1000,
-    ) -> str:
-        """Format query results for system prompt injection."""
-        return _as_prompt(lessons, max_tokens=max_tokens)
-
-    def get(self, lesson_id: str) -> Optional[Lesson]:
-        """Get a lesson by ID."""
-        return self._store.get(lesson_id)
-
-    def list(
-        self,
+        *,
         project: Optional[str] = None,
+        type: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> List[Lesson]:
-        """List lessons, optionally filtered by project."""
-        return self._store.list(project=project, limit=limit)
+    ) -> List[Memory]:
+        """List memories with optional filters."""
+        return self._store.list(project=project, type=type, limit=limit)
 
-    def delete(self, lesson_id: str) -> bool:
-        """Delete a lesson by ID."""
-        return self._store.delete(lesson_id)
+    def stats(self, project: Optional[str] = None) -> Dict[str, Any]:
+        """Return memory statistics."""
+        all_memories = self._store.list(project=project)
+        if not all_memories:
+            return {"total": 0, "by_type": {}, "oldest": None, "newest": None}
 
-    def export_lessons(
-        self,
-        path: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
-        """Export all lessons as JSON-serializable dicts.
+        by_type: Dict[str, int] = {}
+        for m in all_memories:
+            by_type[m.type] = by_type.get(m.type, 0) + 1
 
-        If *path* is given, writes ``{"version": 1, "lessons": [...]}``
-        to that file and returns the lesson list.
-        """
-        lessons = self._store.list(project=self.project)
-        serialized: List[Dict[str, Any]] = []
-        for lesson in lessons:
-            d = asdict(lesson)
-            # embedding is bytes — drop it from export (not portable)
-            d.pop("embedding", None)
-            serialized.append(d)
+        # Memories are sorted by created_at desc, so newest is first
+        return {
+            "total": len(all_memories),
+            "by_type": by_type,
+            "oldest": all_memories[-1].created_at,
+            "newest": all_memories[0].created_at,
+        }
 
-        if path is not None:
-            payload: Dict[str, Any] = {
-                "version": 1,
-                "lessons": serialized,
-            }
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
+    def upvote(self, memory_id: str) -> None:
+        """Increment upvotes for a memory."""
+        memory = self._store.get(memory_id)
+        if memory is None:
+            raise MemoryNotFoundError(memory_id)
+        memory.upvotes += 1
+        memory.updated_at = _utc_now_iso()
+        self._store.update(memory)
 
-        return serialized
-
-    def import_lessons(
-        self,
-        path: Optional[str] = None,
-        data: Optional[Union[List[Dict[str, Any]], Dict[str, Any]]] = None,
-    ) -> int:
-        """Import lessons from a file or data structure.
-
-        Accepts either the wrapped format ``{"version": 1, "lessons": [...]}``
-        or a raw list of lesson dicts.  Skips duplicates (by ID).
-
-        Returns the number of lessons actually imported.
-        """
-        if path is not None:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-
-        if data is None:
-            raise ValueError("Either path or data must be provided")
-
-        # Unwrap versioned format
-        if isinstance(data, dict):
-            lessons_raw: List[Dict[str, Any]] = data.get("lessons", [])
-        else:
-            lessons_raw = data
-
-        # Gather existing IDs for duplicate check
-        existing_ids = {l.id for l in self._store.list()}
-
-        imported = 0
-        for item in lessons_raw:
-            lid = item.get("id")
-            if lid and lid in existing_ids:
-                continue
-
-            # Re-embed for vector search
-            embed_text = f"{item.get('problem', '')} {item.get('resolution', '')}"
-            ctx = item.get("context")
-            if ctx:
-                embed_text = f"{embed_text} {ctx}"
-            embedding_vec = self._embedder.embed(embed_text)
-            embedding_bytes = _serialize_embedding(embedding_vec)
-
-            lesson = Lesson(
-                id=item.get("id", str(ULID())),
-                problem=item.get("problem", ""),
-                resolution=item.get("resolution", ""),
-                context=item.get("context"),
-                tags=item.get("tags", []),
-                confidence=item.get("confidence", 0.5),
-                source=item.get("source"),
-                project=item.get("project"),
-                embedding=embedding_bytes,
-                created_at=item.get("created_at", _utc_now_iso()),
-                updated_at=item.get("updated_at", _utc_now_iso()),
-                expires_at=item.get("expires_at"),
-                upvotes=item.get("upvotes", 0),
-                downvotes=item.get("downvotes", 0),
-                meta=item.get("meta"),
-            )
-            self._store.save(lesson)
-            existing_ids.add(lesson.id)
-            imported += 1
-
-        return imported
+    def downvote(self, memory_id: str) -> None:
+        """Increment downvotes for a memory."""
+        memory = self._store.get(memory_id)
+        if memory is None:
+            raise MemoryNotFoundError(memory_id)
+        memory.downvotes += 1
+        memory.updated_at = _utc_now_iso()
+        self._store.update(memory)
 
 
 def _utc_now_iso() -> str:

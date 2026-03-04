@@ -17,65 +17,69 @@ def _get_lore(db: Optional[str] = None) -> "Lore":  # noqa: F821
     return Lore(**kwargs)
 
 
-def cmd_publish(args: argparse.Namespace) -> None:
+def cmd_remember(args: argparse.Namespace) -> None:
     lore = _get_lore(args.db)
     tags: List[str] = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
-    lid = lore.publish(
-        problem=args.problem,
-        resolution=args.resolution,
-        context=args.context,
+    mid = lore.remember(
+        content=args.content,
+        type=args.type,
         tags=tags,
-        confidence=args.confidence,
         source=args.source,
+        ttl=args.ttl,
+        confidence=args.confidence,
     )
     lore.close()
-    print(lid)
+    print(mid)
 
 
-def cmd_query(args: argparse.Namespace) -> None:
+def cmd_recall(args: argparse.Namespace) -> None:
     lore = _get_lore(args.db)
-    results = lore.query(args.text, limit=args.limit)
+    results = lore.recall(args.query, type=args.type, limit=args.limit)
     lore.close()
     if not results:
         print("No results.")
         return
     for r in results:
-        print(f"[{r.score:.3f}] {r.lesson.id}")
-        print(f"  Problem:    {r.lesson.problem}")
-        print(f"  Resolution: {r.lesson.resolution}")
+        print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type})")
+        print(f"  {r.memory.content[:200]}")
+        if r.memory.tags:
+            print(f"  Tags: {', '.join(r.memory.tags)}")
         print()
 
 
-def cmd_list(args: argparse.Namespace) -> None:
+def cmd_forget(args: argparse.Namespace) -> None:
     lore = _get_lore(args.db)
-    lessons = lore.list(limit=args.limit)
-    lore.close()
-    if not lessons:
-        print("No lessons.")
-        return
-    # Simple table
-    print(f"{'ID':<28} {'Problem':<50} {'Resolution':<50}")
-    print("-" * 80)
-    for l in lessons:
-        print(f"{l.id:<28} {l.problem[:50]:<50} {l.resolution[:50]:<50}")
-
-
-def cmd_export(args: argparse.Namespace) -> None:
-    lore = _get_lore(args.db)
-    lessons = lore.export_lessons(path=args.output)
-    lore.close()
-    if args.output:
-        print(f"Exported {len(lessons)} lessons to {args.output}")
+    if lore.forget(args.id):
+        print(f"Forgotten: {args.id}")
     else:
-        payload = {"version": 1, "lessons": lessons}
-        print(json.dumps(payload, indent=2, ensure_ascii=False))
-
-
-def cmd_import(args: argparse.Namespace) -> None:
-    lore = _get_lore(args.db)
-    count = lore.import_lessons(path=args.file)
+        print(f"Not found: {args.id}")
     lore.close()
-    print(f"Imported {count} lessons from {args.file}")
+
+
+def cmd_memories(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    memories = lore.list_memories(type=args.type, limit=args.limit)
+    lore.close()
+    if not memories:
+        print("No memories.")
+        return
+    print(f"{'ID':<28} {'Type':<12} {'Content':<60}")
+    print("-" * 100)
+    for m in memories:
+        print(f"{m.id:<28} {m.type:<12} {m.content[:60]:<60}")
+
+
+def cmd_stats(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    s = lore.stats()
+    lore.close()
+    print(f"Total: {s['total']}")
+    if s["by_type"]:
+        for t, count in sorted(s["by_type"].items()):
+            print(f"  {t}: {count}")
+    if s.get("oldest"):
+        print(f"Oldest: {s['oldest']}")
+        print(f"Newest: {s['newest']}")
 
 
 def _get_api_config(args: argparse.Namespace) -> tuple:
@@ -137,8 +141,6 @@ def cmd_keys_create(args: argparse.Namespace) -> None:
     print(f"  Name:    {result['name']}")
     print(f"  Project: {result.get('project') or '(all)'}")
     print(f"  Key:     {result['key']}")
-    print()
-    print("⚠️  Save this key now — it will not be shown again.")
 
 
 def cmd_keys_list(args: argparse.Namespace) -> None:
@@ -173,31 +175,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="command")
 
-    # publish
-    p = sub.add_parser("publish", help="Publish a new lesson")
-    p.add_argument("--problem", required=True)
-    p.add_argument("--resolution", required=True)
-    p.add_argument("--context", default=None)
+    # remember
+    p = sub.add_parser("remember", help="Store a new memory")
+    p.add_argument("content", help="The memory content")
+    p.add_argument("--type", default="general", help="Memory type (general, lesson, fact, preference, context)")
     p.add_argument("--tags", default=None, help="Comma-separated tags")
-    p.add_argument("--confidence", type=float, default=0.5)
+    p.add_argument("--ttl", type=int, default=None, help="Time-to-live in seconds")
     p.add_argument("--source", default=None)
+    p.add_argument("--confidence", type=float, default=1.0)
 
-    # query
-    p = sub.add_parser("query", help="Query lessons")
-    p.add_argument("text", help="Search text")
+    # recall
+    p = sub.add_parser("recall", help="Search memories")
+    p.add_argument("query", help="Search query")
+    p.add_argument("--type", default=None, help="Filter by memory type")
     p.add_argument("--limit", type=int, default=5)
 
-    # list
-    p = sub.add_parser("list", help="List lessons")
+    # forget
+    p = sub.add_parser("forget", help="Delete a memory")
+    p.add_argument("id", help="Memory ID to delete")
+
+    # memories (list)
+    p = sub.add_parser("memories", help="List memories")
+    p.add_argument("--type", default=None, help="Filter by memory type")
     p.add_argument("--limit", type=int, default=None)
 
-    # export
-    p = sub.add_parser("export", help="Export lessons to JSON")
-    p.add_argument("-o", "--output", default=None, help="Output file path")
-
-    # import
-    p = sub.add_parser("import", help="Import lessons from JSON")
-    p.add_argument("file", help="JSON file to import")
+    # stats
+    sub.add_parser("stats", help="Show memory statistics")
 
     # keys
     keys_parser = sub.add_parser("keys", help="Manage API keys (remote server)")
@@ -244,7 +247,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     if args.command == "keys":
         if not args.keys_command:
-            # Re-parse to get the keys subparser for help
             parser.parse_args(["keys", "--help"])
             return
         keys_handlers = {
@@ -256,11 +258,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         return
 
     handlers = {
-        "publish": cmd_publish,
-        "query": cmd_query,
-        "list": cmd_list,
-        "export": cmd_export,
-        "import": cmd_import,
+        "remember": cmd_remember,
+        "recall": cmd_recall,
+        "forget": cmd_forget,
+        "memories": cmd_memories,
+        "stats": cmd_stats,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

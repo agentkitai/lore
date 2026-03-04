@@ -1,9 +1,6 @@
-"""Tests for CLI (Story 8)."""
+"""Tests for CLI."""
 
 from __future__ import annotations
-
-import json
-import os
 
 import pytest
 
@@ -16,85 +13,88 @@ def db_path(tmp_path):
 
 
 class TestCLIParsing:
-    def test_publish_args(self):
+    def test_remember_args(self):
         parser = build_parser()
-        args = parser.parse_args(["publish", "--problem", "p", "--resolution", "r"])
-        assert args.command == "publish"
-        assert args.problem == "p"
+        args = parser.parse_args(["remember", "some knowledge"])
+        assert args.command == "remember"
+        assert args.content == "some knowledge"
 
-    def test_query_args(self):
+    def test_remember_with_type(self):
         parser = build_parser()
-        args = parser.parse_args(["query", "search text"])
-        assert args.command == "query"
-        assert args.text == "search text"
+        args = parser.parse_args(["remember", "test", "--type", "lesson"])
+        assert args.type == "lesson"
 
-    def test_list_args(self):
+    def test_recall_args(self):
         parser = build_parser()
-        args = parser.parse_args(["list", "--limit", "10"])
-        assert args.command == "list"
+        args = parser.parse_args(["recall", "search text"])
+        assert args.command == "recall"
+        assert args.query == "search text"
+
+    def test_forget_args(self):
+        parser = build_parser()
+        args = parser.parse_args(["forget", "abc123"])
+        assert args.command == "forget"
+        assert args.id == "abc123"
+
+    def test_memories_args(self):
+        parser = build_parser()
+        args = parser.parse_args(["memories", "--limit", "10"])
+        assert args.command == "memories"
         assert args.limit == 10
 
-    def test_export_args(self):
+    def test_stats_args(self):
         parser = build_parser()
-        args = parser.parse_args(["export", "-o", "out.json"])
-        assert args.command == "export"
-        assert args.output == "out.json"
-
-    def test_import_args(self):
-        parser = build_parser()
-        args = parser.parse_args(["import", "data.json"])
-        assert args.command == "import"
-        assert args.file == "data.json"
+        args = parser.parse_args(["stats"])
+        assert args.command == "stats"
 
     def test_db_override(self):
         parser = build_parser()
-        args = parser.parse_args(["--db", "/tmp/x.db", "list"])
+        args = parser.parse_args(["--db", "/tmp/x.db", "memories"])
         assert args.db == "/tmp/x.db"
 
 
 class TestCLIIntegration:
-    def test_publish_and_list(self, db_path, capsys):
-        main(["--db", db_path, "publish", "--problem", "test prob", "--resolution", "test res"])
+    def test_remember_and_memories(self, db_path, capsys):
+        main(["--db", db_path, "remember", "test knowledge"])
         out = capsys.readouterr().out.strip()
         assert len(out) == 26  # ULID length
 
-        main(["--db", db_path, "list"])
+        main(["--db", db_path, "memories"])
         out = capsys.readouterr().out
-        assert "test prob" in out
+        assert "test knowledge" in out
 
-    def test_query(self, db_path, capsys):
-        main(["--db", db_path, "publish", "--problem", "rate limiting", "--resolution", "backoff"])
+    def test_recall(self, db_path, capsys):
+        main(["--db", db_path, "remember", "rate limiting requires backoff"])
         capsys.readouterr()
-        main(["--db", db_path, "query", "rate limit"])
+        main(["--db", db_path, "recall", "rate limit"])
         out = capsys.readouterr().out
         assert "rate limiting" in out
 
-    def test_export_import_roundtrip(self, db_path, tmp_path, capsys):
-        main(["--db", db_path, "publish", "--problem", "p1", "--resolution", "r1"])
-        capsys.readouterr()
-
-        export_path = str(tmp_path / "export.json")
-        main(["--db", db_path, "export", "-o", export_path])
-        assert os.path.exists(export_path)
-
-        db2 = str(tmp_path / "test2.db")
-        main(["--db", db2, "import", export_path])
+    def test_forget(self, db_path, capsys):
+        main(["--db", db_path, "remember", "to forget"])
+        mid = capsys.readouterr().out.strip()
+        main(["--db", db_path, "forget", mid])
         out = capsys.readouterr().out
-        assert "Imported 1" in out
+        assert "Forgotten" in out
 
-    def test_export_to_stdout(self, db_path, capsys):
-        main(["--db", db_path, "publish", "--problem", "p1", "--resolution", "r1"])
+    def test_stats(self, db_path, capsys):
+        main(["--db", db_path, "remember", "test1"])
+        main(["--db", db_path, "remember", "test2", "--type", "lesson"])
         capsys.readouterr()
-        main(["--db", db_path, "export"])
+        main(["--db", db_path, "stats"])
         out = capsys.readouterr().out
-        data = json.loads(out)
-        assert data["version"] == 1
+        assert "Total: 2" in out
 
     def test_no_command_exits(self):
         with pytest.raises(SystemExit):
             main([])
 
-    def test_list_empty(self, db_path, capsys):
-        main(["--db", db_path, "list"])
+    def test_memories_empty(self, db_path, capsys):
+        main(["--db", db_path, "memories"])
         out = capsys.readouterr().out
-        assert "No lessons" in out
+        assert "No memories" in out
+
+    def test_remember_with_tags(self, db_path, capsys):
+        main(["--db", db_path, "remember", "tagged memory", "--tags", "api,stripe"])
+        mid = capsys.readouterr().out.strip()
+        assert len(mid) == 26

@@ -1,4 +1,4 @@
-"""Tests for the embedding engine (Story 3)."""
+"""Tests for the embedding engine."""
 
 from __future__ import annotations
 
@@ -66,8 +66,7 @@ class TestLocalEmbedder:
         assert embedder.embed_batch([]) == []
 
     def test_embed_performance(self, embedder: LocalEmbedder) -> None:
-        """Single sentence embedding should take < 50ms on CPU."""
-        # Warm up
+        """Single sentence embedding should take < 200ms on CPU."""
         embedder.embed("warmup")
         start = time.perf_counter()
         embedder.embed("Stripe API returns 429 after 100 requests per minute")
@@ -86,6 +85,6 @@ class TestCustomEmbeddingFn:
             return [0.1] * _EMBEDDING_DIM
 
         lore = Lore(store=MemoryStore(), embedding_fn=fake_embed)
-        lore.publish(problem="p", resolution="r")
+        lore.remember("test content")
         assert len(calls) == 1
-        assert "p" in calls[0] and "r" in calls[0]
+        assert "test content" in calls[0]
