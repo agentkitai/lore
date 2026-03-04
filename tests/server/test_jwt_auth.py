@@ -75,7 +75,7 @@ async def test_api_key_rejected_in_oidc_required_mode(client):
     with patch("lore.server.auth.settings", settings_patch), \
          patch("lore.server.auth.get_pool", return_value=mock_pool):
         resp = await client.get(
-            "/v1/lessons",
+            "/v1/memories",
             headers={"Authorization": f"Bearer {RAW_KEY}"},
         )
     assert resp.status_code == 401
@@ -92,7 +92,7 @@ async def test_jwt_rejected_in_api_key_only_mode(client):
 
     with patch("lore.server.auth.settings", settings_patch):
         resp = await client.get(
-            "/v1/lessons",
+            "/v1/memories",
             headers={"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.fake.token"},
         )
     assert resp.status_code == 401
@@ -119,9 +119,9 @@ async def test_jwt_valid_in_dual_mode(client):
 
     with patch("lore.server.auth.settings", settings_patch), \
          patch("lore.server.auth.get_oidc_validator", return_value=mock_validator), \
-         patch("lore.server.routes.lessons.get_pool", return_value=mock_pool):
+         patch("lore.server.routes.memories.get_pool", return_value=mock_pool):
         resp = await client.get(
-            "/v1/lessons",
+            "/v1/memories",
             headers={"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.fake.token"},
         )
     assert resp.status_code == 200
@@ -147,7 +147,7 @@ async def test_jwt_missing_org_claim(client):
     with patch("lore.server.auth.settings", settings_patch), \
          patch("lore.server.auth.get_oidc_validator", return_value=mock_validator):
         resp = await client.get(
-            "/v1/lessons",
+            "/v1/memories",
             headers={"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.fake.token"},
         )
     assert resp.status_code == 403
@@ -168,7 +168,7 @@ async def test_jwt_invalid_returns_401(client):
     with patch("lore.server.auth.settings", settings_patch), \
          patch("lore.server.auth.get_oidc_validator", return_value=mock_validator):
         resp = await client.get(
-            "/v1/lessons",
+            "/v1/memories",
             headers={"Authorization": "Bearer bad.jwt.token"},
         )
     assert resp.status_code == 401
@@ -197,9 +197,9 @@ async def test_api_key_works_in_dual_mode(client):
 
     with patch("lore.server.auth.settings", settings_patch), \
          patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.lessons.get_pool", return_value=mock_pool):
+         patch("lore.server.routes.memories.get_pool", return_value=mock_pool):
         resp = await client.get(
-            "/v1/lessons",
+            "/v1/memories",
             headers={"Authorization": f"Bearer {RAW_KEY}"},
         )
     assert resp.status_code == 200
@@ -215,7 +215,7 @@ async def test_jwt_without_oidc_configured(client):
 
     with patch("lore.server.auth.settings", settings_patch):
         resp = await client.get(
-            "/v1/lessons",
+            "/v1/memories",
             headers={"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.fake.token"},
         )
     assert resp.status_code == 401
@@ -241,10 +241,10 @@ async def test_jwt_unknown_role_defaults_to_reader(client):
 
     with patch("lore.server.auth.settings", settings_patch), \
          patch("lore.server.auth.get_oidc_validator", return_value=mock_validator):
-        # Reader can't create lessons
+        # Reader can't create memories
         resp = await client.post(
-            "/v1/lessons",
-            json={"problem": "test", "resolution": "test"},
+            "/v1/memories",
+            json={"content": "test memory"},
             headers={"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.fake.token"},
         )
     assert resp.status_code == 403

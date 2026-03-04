@@ -33,10 +33,8 @@ from lore.server.db import close_pool, get_pool, init_pool, run_migrations
 from lore.server.logging_config import setup_logging
 from lore.server.middleware import install_middleware
 from lore.server.routes.keys import router as keys_router
-from lore.server.routes.lessons import router as lessons_router
 from lore.server.routes.memories import router as memories_router
 from lore.server.routes.memories import stats_router
-from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
 
 setup_logging()
@@ -104,9 +102,7 @@ app = FastAPI(
 
 
 app.include_router(keys_router)
-app.include_router(lessons_router)
 app.include_router(sharing_router)
-app.include_router(rate_router)
 
 # Lore memory endpoints
 app.include_router(memories_router)

@@ -10,7 +10,6 @@ import pytest
 from lore import Lore
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder
-from lore.store.memory import MemoryStore
 
 _EMBEDDING_DIM = 384
 
@@ -78,14 +77,15 @@ class TestLocalEmbedder:
 class TestCustomEmbeddingFn:
     """Test that Lore accepts a custom embedding function."""
 
-    def test_custom_fn_used(self) -> None:
+    def test_custom_fn_used(self, tmp_path) -> None:
         calls: List[str] = []
 
         def fake_embed(text: str) -> List[float]:
             calls.append(text)
             return [0.1] * _EMBEDDING_DIM
 
-        lore = Lore(store=MemoryStore(), embedding_fn=fake_embed)
-        lore.publish(problem="p", resolution="r")
+        lore = Lore(db_path=str(tmp_path / "test.db"), embedding_fn=fake_embed, redact=False)
+        lore.remember(content="test memory")
+        lore.close()
         assert len(calls) == 1
-        assert "p" in calls[0] and "r" in calls[0]
+        assert "test memory" in calls[0]

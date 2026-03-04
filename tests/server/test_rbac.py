@@ -91,16 +91,16 @@ class TestRoleMapping:
 
 
 @pytest.mark.asyncio
-async def test_reader_cannot_create_lesson(client):
-    """Reader role gets 403 on POST /v1/lessons."""
+async def test_reader_cannot_create_memory(client):
+    """Reader role gets 403 on POST /v1/memories."""
     row = _key_row(role="reader", is_root=False)
     mock_pool, _ = _make_mock_pool_with_key(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
     with patch("lore.server.auth.get_pool", return_value=mock_pool):
         resp = await client.post(
-            "/v1/lessons",
-            json={"problem": "test", "resolution": "test"},
+            "/v1/memories",
+            json={"content": "test"},
             headers=headers,
         )
     assert resp.status_code == 403
@@ -142,8 +142,8 @@ async def test_admin_can_list_keys(client):
 
 
 @pytest.mark.asyncio
-async def test_reader_can_list_lessons(client):
-    """Reader role can access GET /v1/lessons."""
+async def test_reader_can_list_memories(client):
+    """Reader role can access GET /v1/memories."""
     row = _key_row(role="reader", is_root=False)
     mock_pool, mock_conn = _make_mock_pool_with_key(key_row=row)
     mock_conn.fetchval = AsyncMock(return_value=0)
@@ -151,8 +151,8 @@ async def test_reader_can_list_lessons(client):
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
     with patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.lessons.get_pool", return_value=mock_pool):
-        resp = await client.get("/v1/lessons", headers=headers)
+         patch("lore.server.routes.memories.get_pool", return_value=mock_pool):
+        resp = await client.get("/v1/memories", headers=headers)
     assert resp.status_code == 200
 
 

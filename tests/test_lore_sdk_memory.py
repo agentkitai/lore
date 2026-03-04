@@ -222,34 +222,3 @@ class TestStatsAlias:
         assert stats.total_count == 1
 
 
-class TestListDeprecation:
-    """list() emits a deprecation warning."""
-
-    def test_list_warns(self, client: Lore) -> None:
-        with pytest.warns(DeprecationWarning, match="list_memories"):
-            client.list()
-
-
-class TestBackwardCompatibility:
-    """Old publish/query API still works alongside new memory API."""
-
-    def test_publish_still_works(self, client: Lore) -> None:
-        lid = client.publish(problem="rate limiting", resolution="use backoff")
-        assert isinstance(lid, str)
-        lesson = client.get(lid)
-        assert lesson is not None
-        assert "rate limiting" in lesson.problem
-
-    def test_both_apis_independent(self, client: Lore) -> None:
-        # Old API
-        client.publish(problem="old lesson", resolution="old resolution")
-        # New API
-        client.remember(content="new memory")
-
-        # Old API doesn't see new memories
-        old_results = client.query("memory")
-        assert all(hasattr(r.lesson, "problem") for r in old_results)
-
-        # New API doesn't see old lessons
-        new_results = client.recall("lesson")
-        assert all(isinstance(r.memory, Memory) for r in new_results)
