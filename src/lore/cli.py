@@ -276,10 +276,194 @@ def build_parser() -> argparse.ArgumentParser:
     kr = keys_sub.add_parser("revoke", help="Revoke an API key")
     kr.add_argument("key_id", help="Key ID to revoke")
 
+    # freshness
+    p = sub.add_parser("freshness", help="Check memories for staleness against git history")
+    p.add_argument("--repo", default=".", help="Path to git repository (default: .)")
+    p.add_argument("--project", default=None, help="Filter to specific project")
+    p.add_argument(
+        "--format", choices=["table", "json"], default="table",
+        help="Output format (default: table)",
+    )
+    p.add_argument(
+        "--min-staleness",
+        choices=["possibly_stale", "likely_stale", "stale"],
+        default=None, dest="min_staleness",
+        help="Only show results at or above this staleness level",
+    )
+    p.add_argument(
+        "--auto-tag", action="store_true", default=False, dest="auto_tag",
+        help="Add 'stale' tag to stale/likely_stale memories",
+    )
+
+    # github-sync
+    gs = sub.add_parser("github-sync", help="Sync GitHub repo data as memories")
+    gs.add_argument("--repo", required=False, help="GitHub owner/repo (e.g. octocat/Hello-World)")
+    gs.add_argument(
+        "--types",
+        default=None,
+        help="Comma-separated entity types to sync (prs,issues,commits,releases). Default: all",
+    )
+    gs.add_argument("--since", default=None, help="ISO-8601 date to start sync from")
+    gs.add_argument("--full", action="store_true", help="Ignore saved state and do a full re-sync")
+    gs.add_argument("--dry-run", action="store_true", help="Show what would be synced without storing")
+    gs.add_argument("--list", action="store_true", dest="list_repos", help="List all synced repos")
+    gs.add_argument("--project", default=None, help="Project namespace for synced memories")
+
+    # reindex
+    p = sub.add_parser("reindex", help="Re-embed memories with current embedding model")
+    p.add_argument(
+        "--dual", action="store_true", default=False,
+        help="Use dual embedding (code + prose models)",
+    )
+    p.add_argument(
+        "--dry-run", action="store_true", default=False, dest="dry_run",
+        help="Show what would change without modifying data",
+    )
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
     return parser
+
+
+def cmd_github_sync(args: argparse.Namespace) -> None:
+    from lore.github.state import list_synced_repos
+    from lore.github.syncer import GitHubCLIError, GitHubSyncer
+
+    # --list mode
+    if args.list_repos:
+        repos = list_synced_repos()
+        if not repos:
+            print("No synced repos.")
+            return
+        print(f"{'Repo':<40} {'Last Sync'}")
+        print("-" * 70)
+        for repo, state in sorted(repos.items()):
+            print(f"{repo:<40} {state.get('last_sync', 'unknown')}")
+        return
+
+    if not args.repo:
+        print("Error: --repo is required (unless using --list)", file=sys.stderr)
+        sys.exit(1)
+
+    lore = _get_lore(args.db)
+    syncer = GitHubSyncer(lore)
+
+    types = None
+    if args.types:
+        types = [t.strip() for t in args.types.split(",") if t.strip()]
+
+    try:
+        result = syncer.sync(
+            args.repo,
+            types=types,
+            since=args.since,
+            full=args.full,
+            dry_run=args.dry_run,
+            project=args.project,
+        )
+    except GitHubCLIError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        lore.close()
+        sys.exit(1)
+
+    lore.close()
+    prefix = "[dry-run] " if args.dry_run else ""
+    print(f"{prefix}{result.summary()}")
+    if result.errors:
+        sys.exit(1)
+
+
+def cmd_freshness(args: argparse.Namespace) -> None:
+    from lore.freshness.detector import FreshnessDetector
+    from lore.freshness.git_ops import GitError
+
+    try:
+        FreshnessDetector.validate_repo(args.repo)
+    except GitError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    lore = _get_lore(args.db)
+    memories = lore.list_memories(project=args.project)
+    lore.close()
+
+    if not memories:
+        print("No memories to check.")
+        return
+
+    detector = FreshnessDetector(args.repo)
+    results = detector.check_many(memories)
+
+    # Filter by min-staleness
+    status_order = ["fresh", "possibly_stale", "likely_stale", "stale"]
+    if args.min_staleness:
+        min_idx = status_order.index(args.min_staleness)
+        results = [
+            r for r in results
+            if r.status != "unknown"
+            and status_order.index(r.status) >= min_idx
+        ]
+
+    if args.format == "json":
+        import dataclasses
+        print(json.dumps([dataclasses.asdict(r) for r in results], indent=2))
+    else:
+        print(FreshnessDetector.format_report(results, args.repo))
+
+    # Auto-tag stale memories
+    if args.auto_tag:
+        lore = _get_lore(args.db)
+        tagged = 0
+        for r in results:
+            if r.status in ("stale", "likely_stale"):
+                mem = lore.get(r.memory_id)
+                if mem and "stale" not in mem.tags:
+                    mem.tags.append("stale")
+                    from datetime import datetime, timezone
+                    mem.updated_at = datetime.now(timezone.utc).isoformat()
+                    lore._store.update(mem)
+                    tagged += 1
+        lore.close()
+        if tagged:
+            print(f"\nTagged {tagged} memory(ies) as stale.")
+
+    # Exit code: 1 if any stale found
+    has_stale = any(r.status == "stale" for r in results)
+    if has_stale:
+        sys.exit(1)
+
+
+def cmd_reindex(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    kwargs: dict = {}
+    if args.db:
+        kwargs["db_path"] = args.db
+    if args.dual:
+        kwargs["dual_embedding"] = True
+
+    lore = Lore(**kwargs)
+    total_memories = len(lore.list_memories())
+    if total_memories == 0:
+        print("No memories to reindex.")
+        lore.close()
+        return
+
+    def progress(done: int, total: int) -> None:
+        if sys.stderr.isatty():
+            pct = done * 100 // total
+            sys.stderr.write(f"\rReindexing: {done}/{total} ({pct}%)")
+            sys.stderr.flush()
+
+    updated = lore.reindex(dry_run=args.dry_run, progress_fn=progress)
+    lore.close()
+
+    if sys.stderr.isatty():
+        sys.stderr.write("\n")
+
+    prefix = "[dry-run] " if args.dry_run else ""
+    print(f"{prefix}Reindexed {updated}/{total_memories} memories.")
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:
@@ -323,6 +507,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "stats": cmd_stats,
         "publish": cmd_publish,
         "query": cmd_query,
+        "freshness": cmd_freshness,
+        "github-sync": cmd_github_sync,
+        "reindex": cmd_reindex,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

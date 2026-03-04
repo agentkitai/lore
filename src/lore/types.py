@@ -34,6 +34,7 @@ class RecallResult:
 
     memory: Memory
     score: float
+    staleness: Any = None  # Optional StalenessResult, set when check_freshness=True
 
 
 @dataclass
@@ -46,6 +47,16 @@ class MemoryStats:
     newest: Optional[str] = None
     expired_cleaned: int = 0
 
+
+# Type-specific decay half-lives (in days).
+# Memories with a matching ``type`` decay at the rate below.
+# Types not listed here fall back to the default (30 days).
+DECAY_HALF_LIVES: Dict[str, float] = {
+    "code": 14,
+    "note": 21,
+    "lesson": 30,
+    "convention": 60,
+}
 
 # Deprecated aliases for backward compatibility
 Lesson = Memory

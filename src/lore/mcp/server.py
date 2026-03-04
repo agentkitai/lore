@@ -109,12 +109,16 @@ def recall(
     tags: Optional[List[str]] = None,
     type: Optional[str] = None,
     limit: int = 5,
+    repo_path: Optional[str] = None,
 ) -> str:
     """Search Lore memory for relevant memories."""
     try:
         lore = _get_lore()
         limit = max(1, min(limit, 20))
-        results = lore.recall(query=query, tags=tags, type=type, limit=limit)
+        results = lore.recall(
+            query=query, tags=tags, type=type, limit=limit,
+            check_freshness=bool(repo_path), repo_path=repo_path,
+        )
         if not results:
             return "No relevant memories found. Try a different query or broader terms."
 
@@ -122,7 +126,16 @@ def recall(
         for i, r in enumerate(results, 1):
             mem = r.memory
             lines.append(f"{'─' * 60}")
-            lines.append(f"Memory {i}  (score: {r.score:.2f}, id: {mem.id}, type: {mem.type})")
+            staleness_badge = ""
+            if r.staleness and r.staleness.status not in ("fresh", "unknown"):
+                staleness_badge = (
+                    f" [POSSIBLY STALE - {r.staleness.commits_since} "
+                    f"commits since memory]"
+                )
+            lines.append(
+                f"Memory {i}  (score: {r.score:.2f}, id: {mem.id}, "
+                f"type: {mem.type}){staleness_badge}"
+            )
             lines.append(f"Content: {mem.content}")
             if mem.tags:
                 lines.append(f"Tags:    {', '.join(mem.tags)}")
@@ -237,6 +250,79 @@ def downvote_memory(memory_id: str) -> str:
         return f"Downvoted memory {memory_id}"
     except Exception as e:
         return f"Failed to downvote: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Check if stored memories are still fresh against current git state. "
+        "USE THIS WHEN: you want to verify that code-pattern memories are "
+        "still relevant before acting on them. Compares memories with "
+        "file_path metadata against the git commit history to detect staleness."
+    ),
+)
+def check_freshness(
+    repo_path: str,
+    project: Optional[str] = None,
+) -> str:
+    """Check memory freshness against git history."""
+    try:
+        from lore.freshness.detector import FreshnessDetector
+        from lore.freshness.git_ops import GitError
+
+        try:
+            FreshnessDetector.validate_repo(repo_path)
+        except GitError as e:
+            return f"Error: {e}"
+
+        lore = _get_lore()
+        memories = lore.list_memories(project=project)
+        if not memories:
+            return "No memories to check."
+
+        detector = FreshnessDetector(repo_path)
+        results = detector.check_many(memories)
+
+        report = FreshnessDetector.format_report(results, repo_path)
+
+        stale = [r for r in results if r.status in ("stale", "likely_stale")]
+        if stale:
+            ids = ", ".join(r.memory_id[:12] + "..." for r in stale[:5])
+            report += (
+                f"\n\nFound {len(stale)} stale/likely stale memory(ies). "
+                f"Consider reviewing: {ids}"
+            )
+
+        return report
+    except Exception as e:
+        return f"Failed to check freshness: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Sync GitHub repository data (PRs, issues, commits, releases) into Lore as memories. "
+        "USE THIS WHEN: you want to ingest tribal knowledge from a GitHub repo so it's searchable. "
+        "Requires the `gh` CLI to be installed and authenticated."
+    ),
+)
+def github_sync(
+    repo: str,
+    types: Optional[str] = None,
+    since: Optional[str] = None,
+    project: Optional[str] = None,
+) -> str:
+    """Sync GitHub repo data into Lore memories."""
+    try:
+        from lore.github.syncer import GitHubCLIError, GitHubSyncer
+
+        lore = _get_lore()
+        syncer = GitHubSyncer(lore)
+        type_list = [t.strip() for t in types.split(",") if t.strip()] if types else None
+        result = syncer.sync(repo, types=type_list, since=since, project=project)
+        return result.summary()
+    except GitHubCLIError as e:
+        return f"GitHub sync failed: {e}"
+    except Exception as e:
+        return f"Failed to sync: {e}"
 
 
 def run_server() -> None:
