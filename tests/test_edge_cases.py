@@ -151,7 +151,14 @@ class TestRedactionEdgeCases:
         assert memory.content == ""
 
     def test_redact_only_pii(self, lore_redact):
-        mid = lore_redact.remember("test@example.com sk-abc123def456ghi789jkl012mno")
+        # PII (email) should be masked, not blocked
+        mid = lore_redact.remember("test@example.com is a contact")
         memory = lore_redact.get(mid)
         assert "test@example.com" not in memory.content
-        assert "sk-abc123" not in memory.content
+
+    def test_block_api_key(self, lore_redact):
+        # API keys trigger a block action (SecretBlockedError)
+        from lore.exceptions import SecretBlockedError
+
+        with pytest.raises(SecretBlockedError):
+            lore_redact.remember("sk-abc123def456ghi789jkl012mno")

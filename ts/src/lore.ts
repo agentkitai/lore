@@ -21,6 +21,7 @@ import {
   cosineSimilarity,
   decayFactor,
   voteFactor,
+  DECAY_HALF_LIVES,
 } from './embed.js';
 import { RedactionPipeline } from './redact.js';
 import { asPrompt as _asPrompt } from './prompt.js';
@@ -39,6 +40,9 @@ export interface LoreOptions {
   redact?: boolean;
   redactPatterns?: RedactPattern[];
   decayHalfLifeDays?: number;
+  decayHalfLives?: Record<string, number>;
+  decaySimilarityWeight?: number;
+  decayFreshnessWeight?: number;
 }
 
 function utcNowIso(): string {
@@ -54,12 +58,18 @@ export class Lore {
   private embeddingFn: EmbeddingFn | undefined;
   private redactor: RedactionPipeline | null;
   private halfLifeDays: number;
+  private halfLives: Record<string, number>;
+  private similarityWeight: number;
+  private freshnessWeight: number;
   private lastCleanup: number = 0;
   private lastCleanupCount: number = 0;
 
   constructor(options?: LoreOptions) {
     this.project = options?.project;
     this.halfLifeDays = options?.decayHalfLifeDays ?? DEFAULT_HALF_LIFE_DAYS;
+    this.halfLives = { ...DECAY_HALF_LIVES, ...options?.decayHalfLives };
+    this.similarityWeight = options?.decaySimilarityWeight ?? 0.7;
+    this.freshnessWeight = options?.decayFreshnessWeight ?? 0.3;
 
     // Embedding
     this.embeddingFn = options?.embeddingFn;
@@ -195,7 +205,7 @@ export class Lore {
     // Embed query
     const queryVec = await this.embeddingFn(query);
 
-    // Score each candidate
+    // Weighted additive scoring: similarity + freshness
     const results: RecallResult[] = [];
     for (const memory of candidates) {
       const memVec = deserializeEmbedding(memory.embedding!);
@@ -203,10 +213,12 @@ export class Lore {
 
       const ageDays =
         (now.getTime() - new Date(memory.createdAt).getTime()) / (86400 * 1000);
-      const timeFactor = decayFactor(ageDays, this.halfLifeDays);
+      const halfLife = this.halfLives[memory.type] ?? this.halfLifeDays;
+      const freshness = decayFactor(ageDays, halfLife);
       const vFactor = voteFactor(memory.upvotes, memory.downvotes);
-      const decay = memory.confidence * timeFactor * vFactor;
-      const finalScore = cosine * decay;
+      const similarity = cosine * memory.confidence * vFactor;
+      const finalScore =
+        this.similarityWeight * similarity + this.freshnessWeight * freshness;
 
       results.push({ memory, score: finalScore });
     }

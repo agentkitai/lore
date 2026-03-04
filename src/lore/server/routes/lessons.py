@@ -125,8 +125,8 @@ async def create_lesson(
 
 # ── Search ─────────────────────────────────────────────────────────
 
-# Decay constant (lambda). Default 0.01 ≈ 69-day half-life.
-_DECAY_LAMBDA = 0.01
+# Type-specific decay half-lives (days), matching DECAY_HALF_LIVES in types.py.
+_HALF_LIFE_DEFAULT = 30
 
 
 @router.post("/search", response_model=LessonSearchResponse)
@@ -134,10 +134,12 @@ async def search_lessons(
     body: LessonSearchRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> LessonSearchResponse:
-    """Semantic search with pgvector cosine similarity and decay scoring.
+    """Semantic search with pgvector cosine similarity and weighted additive scoring.
 
-    Score = cosine_similarity × confidence × exp(-λ × days) × vote_factor
-    where vote_factor = max(1.0 + (upvotes - downvotes) × 0.1, 0.1)
+    Score = 0.7 * (cosine_similarity * confidence * vote_factor)
+          + 0.3 * power(0.5, age_days / half_life)
+    where vote_factor = max(1.0 + (upvotes - downvotes) * 0.1, 0.1)
+    and half_life is resolved from meta->>'type' with type-specific values.
     """
     # Build WHERE clause
     where_parts: list[str] = ["org_id = $1"]
@@ -172,18 +174,30 @@ async def search_lessons(
     params.append(body.limit)
     limit_idx = len(params)
 
-    # SQL: compute score in DB for efficiency
-    # cosine_similarity = 1 - (embedding <=> query_vector)
-    # decay = confidence * exp(-lambda * age_days) * vote_factor
-    # vote_factor = GREATEST(1.0 + (upvotes - downvotes) * 0.1, 0.1)
+    # SQL: weighted additive scoring
+    # similarity = cosine * confidence * vote_factor
+    # freshness  = 0.5 ^ (age_days / half_life)
+    # score      = 0.7 * similarity + 0.3 * freshness
+    # half_life resolved from meta->>'type' via CASE
     query = f"""
         SELECT id, problem, resolution, context, tags, confidence,
                source, project, created_at, updated_at, expires_at,
                upvotes, downvotes, meta,
-               (1 - (embedding <=> ${emb_idx}::vector)) *
-               confidence *
-               exp(-{_DECAY_LAMBDA} * EXTRACT(EPOCH FROM (now() - updated_at)) / 86400.0) *
-               GREATEST(1.0 + (upvotes - downvotes) * 0.1, 0.1)
+               0.7 * (
+                   (1 - (embedding <=> ${emb_idx}::vector)) *
+                   confidence *
+                   GREATEST(1.0 + (upvotes - downvotes) * 0.1, 0.1)
+               ) +
+               0.3 * power(0.5,
+                   EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0
+                   / (CASE meta->>'type'
+                       WHEN 'code' THEN 14
+                       WHEN 'note' THEN 21
+                       WHEN 'lesson' THEN 30
+                       WHEN 'convention' THEN 60
+                       ELSE {_HALF_LIFE_DEFAULT}
+                     END)
+               )
                AS score
         FROM lessons
         WHERE {where_sql}

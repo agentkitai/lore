@@ -56,4 +56,12 @@ export function voteFactor(upvotes: number, downvotes: number): number {
   return Math.max(1.0 + (upvotes - downvotes) * 0.1, 0.1);
 }
 
+/** Type-specific decay half-lives (days). */
+export const DECAY_HALF_LIVES: Record<string, number> = {
+  code: 14,
+  note: 21,
+  lesson: 30,
+  convention: 60,
+};
+
 export { EMBEDDING_DIM };
