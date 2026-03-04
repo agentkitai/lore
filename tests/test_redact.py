@@ -405,6 +405,13 @@ class TestAWSSecretKeys:
         types2 = [f.type for f in result2.findings]
         assert "aws_secret_key" in types2
 
+    def test_aws_secret_with_equals_suffix(self) -> None:
+        # 40-char base64 secret ending with '=' on same line as AKIA
+        text = "AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKE="
+        result = self.p.scan(text)
+        types = [f.type for f in result.findings]
+        assert "aws_secret_key" in types
+
     def test_normal_base64_not_flagged(self) -> None:
         # Short base64 strings (< 20 chars of alphanumeric) should not be flagged
         text = "data=SGVsbG8gV29y"

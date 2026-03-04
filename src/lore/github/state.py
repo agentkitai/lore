@@ -11,7 +11,6 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
-
 _STATE_FILE = os.path.join(os.path.expanduser("~"), ".lore", "sync_state.json")
 
 

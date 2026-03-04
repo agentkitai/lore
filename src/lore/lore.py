@@ -364,6 +364,7 @@ class Lore:
                 now - datetime.fromisoformat(memory.created_at)
             ).total_seconds() / 86400.0
             half_life = self._half_lives.get(memory.type, self._half_life_days)
+            half_life = max(half_life, 0.001)
             freshness = 0.5 ** (age_days / half_life)
             vote_factor = 1.0 + (memory.upvotes - memory.downvotes) * 0.1
             vote_factor = max(vote_factor, 0.1)
