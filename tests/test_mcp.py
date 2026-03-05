@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+mcp = pytest.importorskip("mcp", reason="mcp not installed")
+
 from unittest.mock import patch
 
 import pytest

@@ -856,6 +856,8 @@ class TestLazyImport:
 
 # ---------------------------------------------------------------------------
 # Story 5: MCP server _get_lore() configuration tests
+_has_mcp = pytest.importorskip("mcp", reason="mcp not installed")
+
 # ---------------------------------------------------------------------------
 
 class TestMcpGetLore:

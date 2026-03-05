@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+mcp = pytest.importorskip("mcp", reason="mcp not installed")
+
 import json
 import subprocess
 from unittest.mock import MagicMock, patch
