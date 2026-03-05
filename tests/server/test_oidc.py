@@ -232,7 +232,9 @@ class TestOidcValidator:
         """JWKS cache-bust-on-miss: force re-fetch when kid not found."""
         from jwt import PyJWKClientError
         validator = OidcValidator(issuer="https://idp.example.com")
-        validator._last_force_fetch = 0.0  # ensure not throttled
+        validator._last_force_fetch = 0.0  # ensure not throttled (must be far enough from monotonic())
+        # On fresh CI containers, monotonic() can be < 60s, so force it far back
+        validator._last_force_fetch = time.monotonic() - 120
 
         # Replace _jwk_client entirely to avoid version-dependent behavior
         mock_client = MagicMock()
