@@ -232,17 +232,20 @@ class TestOidcValidator:
         """JWKS cache-bust-on-miss: force re-fetch when kid not found."""
         from jwt import PyJWKClientError
         validator = OidcValidator(issuer="https://idp.example.com")
+        validator._last_force_fetch = 0.0  # ensure not throttled
 
-        # First call fails (kid not found), second call after re-fetch succeeds
+        # Replace _jwk_client entirely to avoid version-dependent behavior
+        mock_client = MagicMock()
         mock_key = MagicMock()
-        validator._jwk_client.get_signing_key_from_jwt = MagicMock(
+        mock_client.get_signing_key_from_jwt = MagicMock(
             side_effect=[PyJWKClientError("kid not found"), mock_key]
         )
-        validator._jwk_client.get_jwk_set = MagicMock()
+        mock_client.get_jwk_set = MagicMock()
+        validator._jwk_client = mock_client
 
         result = validator._get_signing_key("some.token")
         assert result == mock_key
-        validator._jwk_client.get_jwk_set.assert_called_once_with(refresh=True)
+        mock_client.get_jwk_set.assert_called_once_with(refresh=True)
 
     def test_cache_bust_throttled(self):
         """Cache bust is throttled to once per minute."""
