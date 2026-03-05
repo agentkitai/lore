@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 import pytest
+
 mcp = pytest.importorskip("mcp", reason="mcp not installed")
 
-import json
-import subprocess
-from unittest.mock import MagicMock, patch
+import json  # noqa: E402
+import subprocess  # noqa: E402
+from unittest.mock import MagicMock, patch  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
-from lore import Lore
-from lore.github.state import get_sync_state, list_synced_repos, update_sync_state
-from lore.github.syncer import (
+from lore import Lore  # noqa: E402
+from lore.github.state import get_sync_state, list_synced_repos, update_sync_state  # noqa: E402
+from lore.github.syncer import (  # noqa: E402
     GitHubCLIError,
     GitHubSyncer,
     SyncResult,
@@ -23,13 +24,13 @@ from lore.github.syncer import (
     fetch_notable_commits,
     fetch_releases,
 )
-from lore.github.transforms import (
+from lore.github.transforms import (  # noqa: E402
     commit_to_memory_kwargs,
     issue_to_memory_kwargs,
     pr_to_memory_kwargs,
     release_to_memory_kwargs,
 )
-from lore.store.memory import MemoryStore
+from lore.store.memory import MemoryStore  # noqa: E402
 
 
 def _stub_embed(text: str):

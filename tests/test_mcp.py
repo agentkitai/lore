@@ -3,14 +3,15 @@
 from __future__ import annotations
 
 import pytest
+
 mcp = pytest.importorskip("mcp", reason="mcp not installed")
 
-from unittest.mock import patch
+from unittest.mock import patch  # noqa: E402
 
-import pytest
+import pytest  # noqa: E402
 
-from lore import Lore
-from lore.store.memory import MemoryStore
+from lore import Lore  # noqa: E402
+from lore.store.memory import MemoryStore  # noqa: E402
 
 
 def _stub_embed(text: str):
