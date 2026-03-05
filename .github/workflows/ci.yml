@@ -21,7 +21,11 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev,mcp]"
+          if python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"; then
+            pip install -e ".[dev,mcp]"
+          else
+            pip install -e ".[dev]"
+          fi
       - name: Lint
         run: ruff check src/ tests/
       - name: Test
