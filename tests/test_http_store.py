@@ -12,7 +12,6 @@ from lore.exceptions import LoreAuthError, LoreConnectionError
 from lore.store.http import HttpStore
 from lore.types import Memory
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -91,8 +90,8 @@ class TestConstructor:
 
 class TestHealthCheck:
     def test_health_check_success(self):
-        with patch("httpx.Client") as MockClient:
-            mock_client = MockClient.return_value
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
             mock_client.get.return_value = _mock_response(200)
             mock_client.headers = {"Authorization": "Bearer lore_sk_testkey123"}
 
@@ -104,8 +103,8 @@ class TestHealthCheck:
                 mock_client.get.assert_called_once_with("/health", timeout=5.0)
 
     def test_health_check_connect_error(self):
-        with patch("httpx.Client") as MockClient:
-            mock_client = MockClient.return_value
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
             mock_client.get.side_effect = httpx.ConnectError("refused")
 
             with patch.object(HttpStore, "__init__", lambda self, **kw: None):
@@ -116,8 +115,8 @@ class TestHealthCheck:
                     store._check_health()
 
     def test_health_check_timeout(self):
-        with patch("httpx.Client") as MockClient:
-            mock_client = MockClient.return_value
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
             mock_client.get.side_effect = httpx.ReadTimeout("timeout")
 
             with patch.object(HttpStore, "__init__", lambda self, **kw: None):
@@ -128,8 +127,8 @@ class TestHealthCheck:
                     store._check_health()
 
     def test_health_check_http_error(self):
-        with patch("httpx.Client") as MockClient:
-            mock_client = MockClient.return_value
+        with patch("httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value
             resp = _mock_response(503)
             mock_client.get.return_value = resp
 
@@ -669,8 +668,8 @@ class TestRecallDispatch:
         store.close()
 
     def test_recall_uses_local_for_stores_without_search(self):
-        from lore.store.memory import MemoryStore
         from lore.lore import Lore
+        from lore.store.memory import MemoryStore
 
         mem_store = MemoryStore()
 
@@ -696,8 +695,8 @@ class TestRecallDispatch:
         store = _make_store()
         store.search = MagicMock(return_value=[])
 
-        from lore.lore import Lore
         from lore.embed.router import EmbeddingRouter
+        from lore.lore import Lore
 
         with patch.object(Lore, "__init__", lambda self, **kw: None):
             lore = Lore.__new__(Lore)
@@ -753,8 +752,10 @@ class TestLoreRemoteInit:
         lore.close()
 
     def test_default_store_unchanged(self):
+        import os
+        import tempfile
+
         from lore.lore import Lore
-        import tempfile, os
         with tempfile.TemporaryDirectory() as td:
             db = os.path.join(td, "test.db")
             lore = Lore(db_path=db)
@@ -787,8 +788,8 @@ class TestUpvoteDownvoteDispatch:
         store.close()
 
     def test_upvote_falls_back_for_stores_without_method(self):
-        from lore.store.memory import MemoryStore
         from lore.lore import Lore
+        from lore.store.memory import MemoryStore
         from lore.types import Memory
 
         mem_store = MemoryStore()

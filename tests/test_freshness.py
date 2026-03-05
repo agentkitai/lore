@@ -21,7 +21,6 @@ from lore.freshness.git_ops import (
 from lore.freshness.types import StalenessResult
 from lore.types import Memory
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import List
 
 import numpy as np
 import pytest
@@ -74,7 +74,7 @@ class TestWeightedAdditiveScoring:
         store = MemoryStore()
         lore = Lore(store=store, embedding_fn=_fixed_embed)
 
-        mid = lore.remember("test content", type="lesson", confidence=1.0)
+        lore.remember("test content", type="lesson", confidence=1.0)
         # Memory is brand new (age ~0), so freshness ≈ 1.0
         results = lore.recall("anything", limit=1)
         assert len(results) == 1
@@ -93,7 +93,7 @@ class TestWeightedAdditiveScoring:
             decay_similarity_weight=0.5,
             decay_freshness_weight=0.5,
         )
-        mid = lore.remember("test content", type="lesson")
+        lore.remember("test content", type="lesson")
         results = lore.recall("anything", limit=1)
         assert len(results) == 1
         # With cosine=1.0, freshness≈1.0: score ≈ 0.5 + 0.5 = 1.0

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from typing import List
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -219,10 +218,12 @@ class TestLoreDualEmbedding:
     def test_legacy_memories_without_embed_model(self, lore_dual: Lore) -> None:
         """Memories without embed_model metadata should be treated as prose."""
         # Manually store a memory without embed_model
-        from lore.types import Memory
-        from ulid import ULID
-        from datetime import datetime, timezone
         import struct
+        from datetime import datetime, timezone
+
+        from ulid import ULID
+
+        from lore.types import Memory
 
         vec = [0.5] * _DIM
         emb_bytes = struct.pack(f"{_DIM}f", *vec)

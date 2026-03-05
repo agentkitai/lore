@@ -398,7 +398,7 @@ class TestAWSSecretKeys:
         text = "aws_access_key_id AKIAIOSFODNN7EXAMPLE\naws_secret_access_key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
         # AKIA is on a different line, so secret should NOT be detected on second line
         result = self.p.scan(text)
-        types = [f.type for f in result.findings]
+        [f.type for f in result.findings]
         # But test with AKIA on same line as secret:
         text2 = "creds: AKIAIOSFODNN7EXAMPLE wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY extra-text"
         result2 = self.p.scan(text2)
@@ -477,6 +477,7 @@ class TestPrivateKeyNegatives:
 class TestCLISecretBlocked:
     def test_cli_remember_blocked_secret(self, capsys) -> None:
         import pytest
+
         from lore.cli import main
 
         with pytest.raises(SystemExit) as exc_info:
@@ -505,7 +506,7 @@ class TestL2DetectSecrets:
         l1_types = [f.type for f in result_l1.findings]
 
         result_l2 = p_l1l2.scan(f"key: {secret}")
-        l2_types = [f.type for f in result_l2.findings]
+        [f.type for f in result_l2.findings]
 
         # L1 should NOT catch this (contains +/= which breaks \b boundary)
         assert "high_entropy_string" not in l1_types
