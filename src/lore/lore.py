@@ -114,14 +114,8 @@ class Lore:
         if isinstance(store, str) and store != "remote":
             raise ValueError(f"store must be a Store instance or 'remote', got {store!r}")
         if isinstance(store, str) and store == "remote":
-            if not api_url or not api_key:
-                raise ValueError(
-                    "api_url and api_key are required when store='remote'"
-                )
-            raise ValueError(
-                "Remote store is not supported in this version. "
-                "Use a local store instead."
-            )
+            from lore.store.http import HttpStore
+            self._store: Store = HttpStore(api_url=api_url, api_key=api_key)
         elif isinstance(store, Store):
             self._store: Store = store
         else:
@@ -268,11 +262,21 @@ class Lore:
         else:
             query_vec = self._embedder.embed(query)
 
-        results = self._recall_local(
-            query_vec, tags=tags, type=type, limit=limit,
-            min_confidence=min_confidence,
-            query_vecs=query_vecs,
-        )
+        # Remote store: delegate search to server
+        if hasattr(self._store, 'search'):
+            results = self._store.search(
+                embedding=query_vec,
+                tags=tags,
+                project=self.project,
+                limit=limit,
+                min_confidence=min_confidence,
+            )
+        else:
+            results = self._recall_local(
+                query_vec, tags=tags, type=type, limit=limit,
+                min_confidence=min_confidence,
+                query_vecs=query_vecs,
+            )
 
         if check_freshness and repo_path:
             from lore.freshness.detector import FreshnessDetector
@@ -429,6 +433,9 @@ class Lore:
 
     def upvote(self, memory_id: str) -> None:
         """Increment upvotes for a memory."""
+        if hasattr(self._store, 'upvote'):
+            self._store.upvote(memory_id)
+            return
         memory = self._store.get(memory_id)
         if memory is None:
             raise MemoryNotFoundError(memory_id)
@@ -438,6 +445,9 @@ class Lore:
 
     def downvote(self, memory_id: str) -> None:
         """Increment downvotes for a memory."""
+        if hasattr(self._store, 'downvote'):
+            self._store.downvote(memory_id)
+            return
         memory = self._store.get(memory_id)
         if memory is None:
             raise MemoryNotFoundError(memory_id)

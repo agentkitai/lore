@@ -36,7 +36,23 @@ def _get_lore() -> Lore:
         return _lore
 
     project = os.environ.get("LORE_PROJECT") or None
-    _lore = Lore(project=project)
+    store_type = os.environ.get("LORE_STORE", "local")
+
+    if store_type == "remote":
+        _lore = Lore(
+            project=project,
+            store="remote",
+            api_url=os.environ.get("LORE_API_URL"),
+            api_key=os.environ.get("LORE_API_KEY"),
+        )
+    elif store_type == "local":
+        _lore = Lore(project=project)
+    else:
+        raise ValueError(
+            f"Invalid LORE_STORE value: {store_type!r}. "
+            "Must be 'local' or 'remote'."
+        )
+
     return _lore
 
 
