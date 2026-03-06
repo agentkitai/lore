@@ -46,7 +46,13 @@ def _get_lore() -> Lore:
             api_key=os.environ.get("LORE_API_KEY"),
         )
     elif store_type == "local":
-        _lore = Lore(project=project)
+        enrichment = os.environ.get("LORE_ENRICHMENT_ENABLED", "").lower() in ("true", "1", "yes")
+        enrichment_model = os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
+        _lore = Lore(
+            project=project,
+            enrichment=enrichment,
+            enrichment_model=enrichment_model,
+        )
     else:
         raise ValueError(
             f"Invalid LORE_STORE value: {store_type!r}. "
@@ -132,6 +138,13 @@ def recall(
     tier: Optional[str] = None,
     limit: int = 5,
     repo_path: Optional[str] = None,
+    intent: Optional[str] = None,
+    domain: Optional[str] = None,
+    emotion: Optional[str] = None,
+    topic: Optional[str] = None,
+    sentiment: Optional[str] = None,
+    entity: Optional[str] = None,
+    category: Optional[str] = None,
 ) -> str:
     """Search Lore memory for relevant memories."""
     try:
@@ -140,6 +153,8 @@ def recall(
         results = lore.recall(
             query=query, tags=tags, type=type, tier=tier, limit=limit,
             check_freshness=bool(repo_path), repo_path=repo_path,
+            intent=intent, domain=domain, emotion=emotion,
+            topic=topic, sentiment=sentiment, entity=entity, category=category,
         )
         if not results:
             return "No relevant memories found. Try a different query or broader terms."
@@ -154,14 +169,36 @@ def recall(
                     f" [POSSIBLY STALE - {r.staleness.commits_since} "
                     f"commits since memory]"
                 )
+            # Classification badge
+            cls_badge = ""
+            cls_data = (mem.metadata or {}).get("classification")
+            if cls_data:
+                cls_badge = (
+                    f" [{cls_data.get('intent', '?')}, "
+                    f"{cls_data.get('domain', '?')}, "
+                    f"{cls_data.get('emotion', '?')}]"
+                )
             lines.append(
                 f"Memory {i}  (importance: {mem.importance_score:.2f}, "
                 f"score: {r.score:.2f}, id: {mem.id}, "
-                f"type: {mem.type}, tier: {mem.tier}){staleness_badge}"
+                f"type: {mem.type}, tier: {mem.tier}){staleness_badge}{cls_badge}"
             )
             lines.append(f"Content: {mem.content}")
             if mem.tags:
                 lines.append(f"Tags:    {', '.join(mem.tags)}")
+            enrichment = (mem.metadata or {}).get("enrichment", {})
+            if enrichment:
+                if enrichment.get("topics"):
+                    parts = [f"Topics: {', '.join(enrichment['topics'])}"]
+                    if enrichment.get("sentiment"):
+                        s = enrichment["sentiment"]
+                        parts.append(f"Sentiment: {s['label']} ({s['score']:+.1f})")
+                    lines.append(" | ".join(parts))
+                if enrichment.get("entities"):
+                    ents = [f"{e['name']} ({e['type']})" for e in enrichment["entities"]]
+                    lines.append(f"Entities: {', '.join(ents)}")
+                if enrichment.get("categories"):
+                    lines.append(f"Categories: {', '.join(enrichment['categories'])}")
             if mem.project:
                 lines.append(f"Project: {mem.project}")
             lines.append("")
@@ -388,6 +425,175 @@ def github_sync(
         return f"GitHub sync failed: {e}"
     except Exception as e:
         return f"Failed to sync: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Classify a piece of text by intent, domain, and emotion. "
+        "Returns structured classification without storing anything. "
+        "USE THIS WHEN: you want to understand the nature of a piece of text "
+        "before storing it, or to analyze conversation patterns."
+    ),
+)
+def classify(text: str) -> str:
+    """Classify text without storing it."""
+    try:
+        lore = _get_lore()
+        result = lore.classify(text)
+        return (
+            f"Intent: {result.intent} ({result.confidence.get('intent', 0):.0%})\n"
+            f"Domain: {result.domain} ({result.confidence.get('domain', 0):.0%})\n"
+            f"Emotion: {result.emotion} ({result.confidence.get('emotion', 0):.0%})"
+        )
+    except Exception as e:
+        return f"Failed to classify: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Enrich memories with LLM-extracted metadata (topics, sentiment, entities, categories). "
+        "USE THIS WHEN: you want to add structured metadata to existing memories for better filtering. "
+        "Requires enrichment to be enabled in Lore config with a valid LLM API key."
+    ),
+)
+def enrich(
+    memory_id: Optional[str] = None,
+    all: bool = False,
+    project: Optional[str] = None,
+    force: bool = False,
+) -> str:
+    """Enrich memories with LLM-extracted metadata."""
+    try:
+        lore = _get_lore()
+        if memory_id:
+            result = lore.enrich_memories(memory_ids=[memory_id], force=force)
+        elif all:
+            result = lore.enrich_memories(project=project, force=force)
+        else:
+            return "Provide memory_id or set all=True."
+
+        return (
+            f"Enrichment complete: {result['enriched']} enriched, "
+            f"{result['skipped']} skipped, {result['failed']} failed."
+        )
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Enrichment failed: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Extract structured facts from text without storing them. "
+        "Returns atomic (subject, predicate, object) triples with confidence scores. "
+        "USE THIS WHEN: you need to understand what facts are contained in a piece of text, "
+        "or to preview what facts would be extracted before remembering."
+    ),
+)
+def extract_facts(text: str) -> str:
+    """Extract facts from text, return formatted list."""
+    try:
+        lore = _get_lore()
+        facts = lore.extract_facts(text)
+        if not facts:
+            if not lore._fact_extraction_enabled:
+                return (
+                    "Fact extraction requires an LLM provider. "
+                    "Configure llm_provider and set fact_extraction=True."
+                )
+            return "No facts extracted."
+
+        lines = [f"Extracted {len(facts)} fact(s):\n"]
+        for i, f in enumerate(facts, 1):
+            lines.append(
+                f"{i}. ({f.subject}, {f.predicate}, {f.object}) "
+                f"[confidence: {f.confidence:.2f}]"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to extract facts: {e}"
+
+
+@mcp.tool(
+    description=(
+        "List active (non-invalidated) facts from the knowledge base. "
+        "USE THIS WHEN: you want to see what structured facts Lore knows "
+        "about a subject, or to review all known facts."
+    ),
+)
+def list_facts(
+    subject: Optional[str] = None,
+    limit: int = 50,
+) -> str:
+    """List active facts."""
+    try:
+        lore = _get_lore()
+        facts = lore.get_active_facts(subject=subject, limit=limit)
+        if not facts:
+            return "No active facts found."
+
+        lines = [f"Active facts ({len(facts)}):\n"]
+        lines.append(f"{'Subject':<20} {'Predicate':<20} {'Object':<30} {'Confidence':<12} {'Source'}")
+        lines.append("-" * 95)
+        for f in facts:
+            lines.append(
+                f"{f.subject:<20} {f.predicate:<20} {f.object:<30} "
+                f"{f.confidence:<12.2f} {f.memory_id[:12]}..."
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list facts: {e}"
+
+
+@mcp.tool(
+    description=(
+        "List recent fact conflicts detected during memory ingestion. "
+        "Shows what facts were superseded, merged, or flagged as contradictions. "
+        "USE THIS WHEN: you want to review knowledge changes, audit what facts "
+        "were updated, or resolve flagged contradictions."
+    ),
+)
+def conflicts(
+    resolution: Optional[str] = None,
+    limit: int = 10,
+) -> str:
+    """List recent conflicts."""
+    try:
+        lore = _get_lore()
+        entries = lore.list_conflicts(resolution=resolution, limit=limit)
+        if not entries:
+            return "No conflicts found."
+
+        lines = [f"Recent conflicts ({len(entries)} total):\n"]
+        for i, c in enumerate(entries, 1):
+            if c.resolution == "SUPERSEDE":
+                lines.append(
+                    f"{i}. [SUPERSEDE] {c.subject}/{c.predicate}: "
+                    f"\"{c.old_value}\" -> \"{c.new_value}\""
+                )
+            elif c.resolution == "CONTRADICT":
+                lines.append(
+                    f"{i}. [CONTRADICT] {c.subject}/{c.predicate}: "
+                    f"\"{c.old_value}\" vs \"{c.new_value}\""
+                )
+            elif c.resolution == "MERGE":
+                lines.append(
+                    f"{i}. [MERGE] {c.subject}/{c.predicate}: "
+                    f"\"{c.old_value}\" + \"{c.new_value}\""
+                )
+            else:
+                lines.append(
+                    f"{i}. [{c.resolution}] {c.subject}/{c.predicate}: "
+                    f"\"{c.old_value}\" / \"{c.new_value}\""
+                )
+            lines.append(f"   Memory: {c.new_memory_id[:12]}... ({c.resolved_at[:10]})")
+            reasoning = (c.metadata or {}).get("reasoning", "")
+            if reasoning:
+                lines.append(f"   Reason: {reasoning}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list conflicts: {e}"
 
 
 def run_server() -> None:

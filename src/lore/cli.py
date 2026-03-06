@@ -52,7 +52,13 @@ def cmd_recall(args: argparse.Namespace) -> None:
     if getattr(args, "tags", None):
         tags = [t.strip() for t in args.tags.split(",") if t.strip()]
     tier = getattr(args, "tier", None)
-    results = lore.recall(args.query, type=args.type, tier=tier, tags=tags, limit=args.limit)
+    results = lore.recall(
+        args.query, type=args.type, tier=tier, tags=tags, limit=args.limit,
+        topic=getattr(args, "topic", None),
+        sentiment=getattr(args, "sentiment", None),
+        entity=getattr(args, "entity", None),
+        category=getattr(args, "category", None),
+    )
     lore.close()
     if not results:
         print("No results.")
@@ -60,6 +66,9 @@ def cmd_recall(args: argparse.Namespace) -> None:
     for r in results:
         print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type}, {r.memory.tier})")
         print(f"  {r.memory.content[:200]}")
+        enrichment = (r.memory.metadata or {}).get("enrichment", {})
+        if enrichment.get("topics"):
+            print(f"  Topics: {', '.join(enrichment['topics'])}")
         if r.memory.tags:
             print(f"  Tags: {', '.join(r.memory.tags)}")
         print()
@@ -85,13 +94,15 @@ def cmd_memories(args: argparse.Namespace) -> None:
     sort_key = getattr(args, "sort", "created")
     if sort_key == "importance":
         memories.sort(key=lambda m: m.importance_score, reverse=True)
-    print(f"{'ID':<28} {'Tier':<10} {'Type':<12} {'Importance':<12} {'Created':<22} {'Content':<50}")
-    print("-" * 134)
+    print(f"{'ID':<28} {'Tier':<10} {'Type':<12} {'Importance':<12} {'Created':<22} {'Topics':<30} {'Content':<40}")
+    print("-" * 154)
     for m in memories:
         created = m.created_at[:19] if m.created_at else ""
+        enrichment = (m.metadata or {}).get("enrichment", {})
+        topics = ", ".join(enrichment.get("topics", [])) if enrichment else "-"
         print(
             f"{m.id:<28} {m.tier:<10} {m.type:<12} {m.importance_score:<12.2f} "
-            f"{created:<22} {m.content[:50]:<50}"
+            f"{created:<22} {topics:<30} {m.content[:40]:<40}"
         )
 
 
@@ -237,6 +248,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--tags", default=None, help="Comma-separated tags to filter by")
     p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--topic", default=None, help="Filter by enrichment topic")
+    p.add_argument(
+        "--sentiment", default=None, choices=["positive", "negative", "neutral"],
+        help="Filter by sentiment label",
+    )
+    p.add_argument("--entity", default=None, help="Filter by entity name")
+    p.add_argument("--category", default=None, help="Filter by category")
 
     # forget
     p = sub.add_parser("forget", help="Delete a memory")
@@ -330,6 +348,38 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", default=False, dest="dry_run",
         help="Show what would change without modifying data",
     )
+
+    # enrich
+    p = sub.add_parser("enrich", help="Enrich memories with LLM-extracted metadata")
+    p.add_argument("memory_id", nargs="?", default=None, help="Memory ID to enrich")
+    p.add_argument("--all", action="store_true", help="Enrich all unenriched memories")
+    p.add_argument("--project", default=None, help="Filter to project (with --all)")
+    p.add_argument("--force", action="store_true", help="Re-enrich already enriched memories")
+    p.add_argument(
+        "--model", default=None,
+        help="LLM model for enrichment (default: gpt-4o-mini)",
+    )
+
+    # classify
+    p = sub.add_parser("classify", help="Classify text by intent, domain, and emotion")
+    p.add_argument("text", help="Text to classify")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Output as JSON")
+
+    # facts
+    p = sub.add_parser("facts", help="Show facts for a memory or list active facts")
+    p.add_argument("memory_id", nargs="?", default=None, help="Memory ID (omit to list all active facts)")
+    p.add_argument("--subject", default=None, help="Filter by subject")
+    p.add_argument("--limit", type=int, default=50)
+
+    # conflicts
+    p = sub.add_parser("conflicts", help="Show conflict log")
+    p.add_argument("--resolution", default=None, help="Filter by resolution (SUPERSEDE, MERGE, CONTRADICT)")
+    p.add_argument("--limit", type=int, default=20)
+
+    # backfill-facts
+    p = sub.add_parser("backfill-facts", help="Extract facts from existing memories")
+    p.add_argument("--project", default=None, help="Filter to project")
+    p.add_argument("--limit", type=int, default=100)
 
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
@@ -498,6 +548,119 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     print(f"{prefix}Reindexed {updated}/{total_memories} memories.")
 
 
+def cmd_enrich(args: argparse.Namespace) -> None:
+    import os
+    from lore import Lore
+
+    model = args.model or os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
+    kwargs = {"enrichment": True, "enrichment_model": model}
+    if args.db:
+        kwargs["db_path"] = args.db
+    lore = Lore(**kwargs)
+
+    if args.memory_id:
+        result = lore.enrich_memories(memory_ids=[args.memory_id], force=args.force)
+    elif getattr(args, "all", False):
+        result = lore.enrich_memories(project=args.project, force=args.force)
+    else:
+        print("Provide a memory ID or use --all", file=sys.stderr)
+        lore.close()
+        sys.exit(1)
+
+    lore.close()
+    print(
+        f"Enriched: {result['enriched']}, "
+        f"Skipped: {result['skipped']}, "
+        f"Failed: {result['failed']}"
+    )
+    if result["errors"]:
+        for err in result["errors"]:
+            print(f"  Error: {err}", file=sys.stderr)
+
+
+def cmd_classify(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    result = lore.classify(args.text)
+    lore.close()
+    if args.as_json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        intent_pct = result.confidence.get("intent", 0) * 100
+        domain_pct = result.confidence.get("domain", 0) * 100
+        emotion_pct = result.confidence.get("emotion", 0) * 100
+        print(f"Intent:   {result.intent:<12} ({intent_pct:.0f}%)")
+        print(f"Domain:   {result.domain:<12} ({domain_pct:.0f}%)")
+        print(f"Emotion:  {result.emotion:<12} ({emotion_pct:.0f}%)")
+
+
+def cmd_facts(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    if args.memory_id:
+        facts = lore.get_facts(args.memory_id)
+        lore.close()
+        if not facts:
+            print(f"No facts for memory {args.memory_id}.")
+            return
+        print(f"Facts for memory {args.memory_id}:\n")
+        print(f"{'Subject':<20} {'Predicate':<20} {'Object':<30} {'Confidence':<12} {'Status'}")
+        print("-" * 95)
+        for f in facts:
+            status = "invalidated" if f.invalidated_by else "active"
+            print(
+                f"{f.subject:<20} {f.predicate:<20} {f.object:<30} "
+                f"{f.confidence:<12.2f} {status}"
+            )
+    else:
+        facts = lore.get_active_facts(subject=args.subject, limit=args.limit)
+        lore.close()
+        if not facts:
+            print("No active facts found.")
+            return
+        filter_msg = f" (filtered by subject: {args.subject})" if args.subject else ""
+        print(f"Active facts{filter_msg}:\n")
+        print(f"{'Subject':<20} {'Predicate':<20} {'Object':<30} {'Confidence':<12} {'Source Memory'}")
+        print("-" * 105)
+        for f in facts:
+            print(
+                f"{f.subject:<20} {f.predicate:<20} {f.object:<30} "
+                f"{f.confidence:<12.2f} {f.memory_id[:12]}..."
+            )
+
+
+def cmd_conflicts(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    entries = lore.list_conflicts(resolution=args.resolution, limit=args.limit)
+    lore.close()
+    if not entries:
+        print("No conflicts found.")
+        return
+    for i, c in enumerate(entries, 1):
+        print(f"{i}. [{c.resolution}] {c.subject}/{c.predicate}: \"{c.old_value}\" -> \"{c.new_value}\"")
+        print(f"   Memory: {c.new_memory_id[:12]}... ({c.resolved_at[:10]})")
+        reasoning = (c.metadata or {}).get("reasoning", "")
+        if reasoning:
+            print(f"   Reason: {reasoning}")
+        print()
+
+
+def cmd_backfill_facts(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = _get_lore(args.db)
+    if not lore._fact_extraction_enabled:
+        lore.close()
+        print(
+            "Error: Fact extraction not enabled. "
+            "Configure llm_provider, llm_api_key, and set fact_extraction=True.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    count = lore.backfill_facts(project=args.project, limit=args.limit)
+    lore.close()
+    print(f"Extracted {count} fact(s) from existing memories.")
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -541,6 +704,11 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 "freshness": cmd_freshness,
         "github-sync": cmd_github_sync,
         "reindex": cmd_reindex,
+        "classify": cmd_classify,
+        "enrich": cmd_enrich,
+        "facts": cmd_facts,
+        "conflicts": cmd_conflicts,
+        "backfill-facts": cmd_backfill_facts,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

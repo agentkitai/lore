@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import struct
 import time
@@ -11,6 +12,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 from ulid import ULID
 
+from lore.classify.base import Classification, Classifier
+from lore.classify.llm import LLMClassifier
+from lore.classify.rules import RuleBasedClassifier
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder, make_code_embedder
 from lore.embed.router import EmbeddingRouter
@@ -24,7 +28,9 @@ from lore.importance import (
     time_adjusted_importance,
 )
 from lore.types import (
+    ConflictEntry,
     DECAY_HALF_LIVES,
+    Fact,
     TIER_DEFAULT_TTL,
     TIER_RECALL_WEIGHT,
     VALID_MEMORY_TYPES,
@@ -43,6 +49,12 @@ RedactPattern = Tuple[str, str]
 _EMBEDDING_DIM = 384
 _DEFAULT_HALF_LIFE_DAYS = 30
 _CLEANUP_INTERVAL_SECONDS = 60
+
+logger = logging.getLogger(__name__)
+
+
+def _env_bool(name: str) -> bool:
+    return os.environ.get(name, "").lower() in ("true", "1", "yes")
 
 
 def _serialize_embedding(vec: List[float]) -> bytes:
@@ -100,6 +112,17 @@ class Lore:
         importance_threshold: float = 0.05,
         decay_config: Optional[Dict[Tuple[str, str], float]] = None,
         tier_recall_weights: Optional[Dict[str, float]] = None,
+        classify: bool = False,
+        classification_confidence_threshold: float = 0.5,
+        llm_provider: Optional[str] = None,
+        llm_model: Optional[str] = None,
+        llm_api_key: Optional[str] = None,
+        llm_base_url: Optional[str] = None,
+        enrichment: bool = False,
+        enrichment_model: str = "gpt-4o-mini",
+        enrichment_provider: Optional[str] = None,
+        fact_extraction: bool = False,
+        fact_confidence_threshold: float = 0.3,
     ) -> None:
         self.project = project
         self._tier_weights = tier_recall_weights or dict(TIER_RECALL_WEIGHT)
@@ -161,6 +184,72 @@ class Lore:
             self._embedder = EmbeddingRouter(prose_embedder=prose, code_embedder=code)
         else:
             self._embedder = LocalEmbedder()
+
+        # Classification setup
+        self._classifier: Optional[Classifier] = None
+        self._classification_threshold = classification_confidence_threshold
+
+        if classify or _env_bool("LORE_CLASSIFY"):
+            llm_prov = llm_provider or os.environ.get("LORE_LLM_PROVIDER")
+            llm_key = llm_api_key or os.environ.get("LORE_LLM_API_KEY")
+            llm_mod = llm_model or os.environ.get("LORE_LLM_MODEL", "gpt-4o-mini")
+            llm_url = llm_base_url or os.environ.get("LORE_LLM_BASE_URL")
+
+            if llm_prov and llm_key:
+                from lore.llm import create_provider
+                provider = create_provider(
+                    provider=llm_prov, model=llm_mod,
+                    api_key=llm_key, base_url=llm_url,
+                )
+                self._classifier = LLMClassifier(provider)
+            else:
+                self._classifier = RuleBasedClassifier()
+
+        # Enrichment pipeline (optional)
+        self._enrichment_pipeline = None
+        enrichment = (
+            _env_bool("LORE_ENRICHMENT_ENABLED") or enrichment
+        )
+        enrichment_model = os.environ.get("LORE_ENRICHMENT_MODEL", enrichment_model)
+        if enrichment:
+            from lore.enrichment.llm import LLMClient
+            from lore.enrichment.pipeline import EnrichmentPipeline
+
+            llm = LLMClient(model=enrichment_model, provider=enrichment_provider)
+            self._enrichment_pipeline = EnrichmentPipeline(llm)
+
+        # Fact extraction (optional)
+        self._fact_extractor = None
+        self._conflict_resolver = None
+        self._fact_extraction_enabled = False
+        fact_extraction = fact_extraction or _env_bool("LORE_FACT_EXTRACTION")
+        if fact_extraction:
+            llm_prov = llm_provider or os.environ.get("LORE_LLM_PROVIDER")
+            llm_key = llm_api_key or os.environ.get("LORE_LLM_API_KEY")
+            llm_mod = llm_model or os.environ.get("LORE_LLM_MODEL", "gpt-4o-mini")
+            llm_url = llm_base_url or os.environ.get("LORE_LLM_BASE_URL")
+
+            if llm_prov and llm_key:
+                from lore.extract.extractor import FactExtractor
+                from lore.extract.resolver import ConflictResolver
+                from lore.llm import create_provider
+
+                provider = create_provider(
+                    provider=llm_prov, model=llm_mod,
+                    api_key=llm_key, base_url=llm_url,
+                )
+                self._fact_extractor = FactExtractor(
+                    llm_client=lambda prompt, _p=provider: _p.complete(prompt, max_tokens=2000),
+                    store=self._store,
+                    confidence_threshold=fact_confidence_threshold,
+                )
+                self._conflict_resolver = ConflictResolver(store=self._store)
+                self._fact_extraction_enabled = True
+            else:
+                logger.warning(
+                    "fact_extraction=True but no LLM provider configured. "
+                    "Set llm_provider and llm_api_key to enable."
+                )
 
     def close(self) -> None:
         """Close underlying store if it supports closing."""
@@ -231,6 +320,37 @@ class Lore:
             meta["embed_model"] = self._embedder.last_embed_model
             metadata = meta
 
+        # Classification (after redaction, before save)
+        if self._classifier:
+            try:
+                cls = self._classifier.classify(content)
+                meta = dict(metadata) if metadata else {}
+                cls_dict: Dict[str, Any] = {
+                    "intent": cls.intent,
+                    "domain": cls.domain,
+                    "emotion": cls.emotion,
+                    "confidence": cls.confidence,
+                }
+                min_conf = min(cls.confidence.values()) if cls.confidence else 0.0
+                if min_conf < self._classification_threshold:
+                    cls_dict["low_confidence"] = True
+                meta["classification"] = cls_dict
+                metadata = meta
+            except Exception:
+                logger.warning("Classification failed, storing without classification", exc_info=True)
+
+        # Enrichment (after redaction, before save)
+        if self._enrichment_pipeline:
+            try:
+                enrichment_data = self._enrichment_pipeline.enrich(
+                    content, context=context
+                )
+                if metadata is None:
+                    metadata = {}
+                metadata["enrichment"] = enrichment_data
+            except Exception as e:
+                logger.warning("Enrichment failed, saving without: %s", e)
+
         now = _utc_now_iso()
 
         # Tier provides default TTL when no explicit TTL given
@@ -261,6 +381,20 @@ class Lore:
             confidence=confidence,
         )
         self._store.save(memory)
+
+        # Fact extraction (after save, so memory exists for FK)
+        if self._fact_extraction_enabled and self._fact_extractor and self._conflict_resolver:
+            try:
+                enrichment_ctx = (metadata or {}).get("enrichment")
+                extracted = self._fact_extractor.extract(
+                    memory_id=memory.id,
+                    content=content,
+                    enrichment_context=enrichment_ctx,
+                )
+                self._conflict_resolver.resolve_all(extracted, memory_id=memory.id)
+            except Exception:
+                logger.warning("Fact extraction failed, memory saved without facts", exc_info=True)
+
         return memory.id
 
     def recall(
@@ -274,6 +408,14 @@ class Lore:
         min_confidence: float = 0.0,
         check_freshness: bool = False,
         repo_path: Optional[str] = None,
+        intent: Optional[str] = None,
+        domain: Optional[str] = None,
+        emotion: Optional[str] = None,
+        topic: Optional[str] = None,
+        sentiment: Optional[str] = None,
+        entity: Optional[str] = None,
+        category: Optional[str] = None,
+        use_facts: bool = False,
     ) -> List[RecallResult]:
         """Semantic search for memories.
 
@@ -283,7 +425,11 @@ class Lore:
         Args:
             check_freshness: If True, attach staleness info to each result.
                 Requires repo_path.
-            repo_path: Path to git repo for freshness checks.
+            topic: Filter by enrichment topic.
+            sentiment: Filter by sentiment label.
+            entity: Filter by entity name.
+            category: Filter by category.
+            use_facts: If True, supplement vector results with fact-based matches.
         """
         self._maybe_cleanup_expired()
 
@@ -311,7 +457,15 @@ class Lore:
                 query_vec, tags=tags, type=type, tier=tier, limit=limit,
                 min_confidence=min_confidence,
                 query_vecs=query_vecs,
+                intent=intent, domain=domain, emotion=emotion,
+                topic=topic, sentiment=sentiment,
+                entity=entity, category=category,
             )
+
+        # Fact-aware recall: supplement with fact-based matches
+        if use_facts and self._fact_extraction_enabled:
+            fact_results = self._recall_by_facts(query)
+            results = self._merge_results(results, fact_results)
 
         if check_freshness and repo_path:
             from lore.freshness.detector import FreshnessDetector
@@ -332,6 +486,13 @@ class Lore:
         limit: int = 5,
         min_confidence: float = 0.0,
         query_vecs: Optional[Dict[str, List[float]]] = None,
+        intent: Optional[str] = None,
+        domain: Optional[str] = None,
+        emotion: Optional[str] = None,
+        topic: Optional[str] = None,
+        sentiment: Optional[str] = None,
+        entity: Optional[str] = None,
+        category: Optional[str] = None,
     ) -> List[RecallResult]:
         """Client-side semantic search for local stores."""
         now = datetime.now(timezone.utc)
@@ -411,7 +572,27 @@ class Lore:
             results.append(RecallResult(memory=memory, score=final_score))
 
         results.sort(key=lambda r: r.score, reverse=True)
-        top_results = results[:limit]
+
+        # Classification post-filter
+        if intent or domain or emotion:
+            results = [
+                r for r in results
+                if self._matches_classification(r.memory, intent, domain, emotion)
+            ]
+
+        # Enrichment post-filter
+        has_enrichment_filters = any([topic, sentiment, entity, category])
+        if has_enrichment_filters:
+            pool = results[:limit * 3]
+            filtered = [
+                r for r in pool
+                if self._matches_enrichment_filters(
+                    r.memory, topic, sentiment, entity, category
+                )
+            ]
+            top_results = filtered[:limit]
+        else:
+            top_results = results[:limit]
 
         # Access tracking: update returned memories
         access_now = _utc_now_iso()
@@ -423,6 +604,31 @@ class Lore:
             self._store.update(memory)
 
         return top_results
+
+    def classify(self, text: str) -> Classification:
+        """Classify text by intent, domain, and emotion.
+
+        Works regardless of whether classification is enabled on remember().
+        Uses LLM if configured, falls back to rule-based classification.
+        """
+        if self._classifier:
+            return self._classifier.classify(text)
+        return RuleBasedClassifier().classify(text)
+
+    def _matches_classification(
+        self, memory: Memory, intent: Optional[str], domain: Optional[str], emotion: Optional[str]
+    ) -> bool:
+        """Check if memory's classification matches the given filters."""
+        cls = (memory.metadata or {}).get("classification", {})
+        if not cls:
+            return False
+        if intent and cls.get("intent") != intent:
+            return False
+        if domain and cls.get("domain") != domain:
+            return False
+        if emotion and cls.get("emotion") != emotion:
+            return False
+        return True
 
     def as_prompt(
         self,
@@ -480,6 +686,9 @@ class Lore:
         type: Optional[str] = None,
         tier: Optional[str] = None,
         limit: Optional[int] = None,
+        intent: Optional[str] = None,
+        domain: Optional[str] = None,
+        emotion: Optional[str] = None,
     ) -> List[Memory]:
         """List memories with optional filters. Excludes expired memories."""
         now = datetime.now(timezone.utc)
@@ -489,6 +698,11 @@ class Lore:
             if m.expires_at is None
             or datetime.fromisoformat(m.expires_at) > now
         ]
+        if intent or domain or emotion:
+            memories = [
+                m for m in memories
+                if self._matches_classification(m, intent, domain, emotion)
+            ]
         if limit is not None:
             memories = memories[:limit]
         return memories
@@ -543,6 +757,83 @@ class Lore:
         memory.importance_score = compute_importance(memory)
         memory.updated_at = _utc_now_iso()
         self._store.update(memory)
+
+    def _matches_enrichment_filters(
+        self,
+        memory: Memory,
+        topic: Optional[str],
+        sentiment: Optional[str],
+        entity: Optional[str],
+        category: Optional[str],
+    ) -> bool:
+        """Check if memory matches enrichment filters."""
+        enrichment = (memory.metadata or {}).get("enrichment", {})
+        if not enrichment:
+            return False  # Unenriched memories excluded when filters active
+
+        if topic and topic.lower() not in [t.lower() for t in enrichment.get("topics", [])]:
+            return False
+        if sentiment and enrichment.get("sentiment", {}).get("label") != sentiment:
+            return False
+        if entity and entity.lower() not in [
+            e["name"].lower() for e in enrichment.get("entities", [])
+        ]:
+            return False
+        if category and category.lower() not in [
+            c.lower() for c in enrichment.get("categories", [])
+        ]:
+            return False
+        return True
+
+    def enrich_memories(
+        self,
+        memory_ids: Optional[List[str]] = None,
+        *,
+        project: Optional[str] = None,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """Batch-enrich existing memories.
+
+        Args:
+            memory_ids: Specific IDs to enrich. If None, enrich all unenriched.
+            project: Filter to project (when memory_ids is None).
+            force: Re-enrich memories that already have enrichment data.
+
+        Returns:
+            {"enriched": int, "skipped": int, "failed": int, "errors": [str]}
+        """
+        if not self._enrichment_pipeline:
+            raise RuntimeError(
+                "Enrichment not enabled. Set enrichment=True in Lore config."
+            )
+
+        if memory_ids:
+            memories = [self._store.get(mid) for mid in memory_ids]
+            memories = [m for m in memories if m is not None]
+        else:
+            memories = self._store.list(project=project, limit=10000)
+
+        results: Dict[str, Any] = {"enriched": 0, "skipped": 0, "failed": 0, "errors": []}
+
+        for memory in memories:
+            if not force and (memory.metadata or {}).get("enrichment"):
+                results["skipped"] += 1
+                continue
+
+            try:
+                enrichment_data = self._enrichment_pipeline.enrich(
+                    memory.content, context=memory.context
+                )
+                if memory.metadata is None:
+                    memory.metadata = {}
+                memory.metadata["enrichment"] = enrichment_data
+                self._store.update(memory)
+                results["enriched"] += 1
+            except Exception as e:
+                results["failed"] += 1
+                results["errors"].append(f"{memory.id}: {e}")
+
+        return results
 
     # ------------------------------------------------------------------
     # Reindexing
@@ -655,6 +946,105 @@ class Lore:
             self._last_cleanup = now
             self._last_cleanup_count = self.cleanup_expired()
 
+    # ------------------------------------------------------------------
+    # Fact-aware recall helpers
+    # ------------------------------------------------------------------
+
+    def _recall_by_facts(self, query: str) -> List[RecallResult]:
+        """Look up facts matching keywords from the query and return source memories."""
+        # Simple keyword-based subject extraction from query
+        words = [w.strip().lower() for w in query.split() if len(w.strip()) > 2]
+        seen_memory_ids: set = set()
+        results: List[RecallResult] = []
+
+        for word in words:
+            facts = self._store.get_active_facts(subject=word, limit=10)
+            for fact in facts:
+                if fact.memory_id in seen_memory_ids:
+                    continue
+                seen_memory_ids.add(fact.memory_id)
+                memory = self._store.get(fact.memory_id)
+                if memory is not None:
+                    results.append(RecallResult(memory=memory, score=fact.confidence))
+
+        return results
+
+    @staticmethod
+    def _merge_results(
+        vector_results: List[RecallResult],
+        fact_results: List[RecallResult],
+    ) -> List[RecallResult]:
+        """Merge vector and fact results, deduplicating by memory_id."""
+        by_id: Dict[str, RecallResult] = {}
+        for r in vector_results:
+            by_id[r.memory.id] = r
+        for r in fact_results:
+            if r.memory.id in by_id:
+                # Keep max score
+                existing = by_id[r.memory.id]
+                if r.score > existing.score:
+                    by_id[r.memory.id] = r
+            else:
+                by_id[r.memory.id] = r
+        merged = list(by_id.values())
+        merged.sort(key=lambda r: r.score, reverse=True)
+        return merged
+
+    # ------------------------------------------------------------------
+    # Fact extraction public API
+    # ------------------------------------------------------------------
+
+    def extract_facts(self, text: str) -> List[Fact]:
+        """Extract facts from text without storing them (preview)."""
+        if not self._fact_extraction_enabled or not self._fact_extractor:
+            return []
+        return self._fact_extractor.extract_preview(text)
+
+    def get_facts(self, memory_id: str) -> List[Fact]:
+        """Get all facts extracted from a specific memory."""
+        return self._store.get_facts(memory_id)
+
+    def get_active_facts(
+        self,
+        subject: Optional[str] = None,
+        predicate: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Fact]:
+        """Get active (non-invalidated) facts, optionally filtered."""
+        return self._store.get_active_facts(subject=subject, predicate=predicate, limit=limit)
+
+    def list_conflicts(
+        self,
+        resolution: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[ConflictEntry]:
+        """List recent conflict log entries."""
+        return self._store.list_conflicts(resolution=resolution, limit=limit)
+
+    def backfill_facts(self, project: Optional[str] = None, limit: int = 100) -> int:
+        """Extract facts from existing memories that have no facts yet."""
+        if not self._fact_extraction_enabled or not self._fact_extractor or not self._conflict_resolver:
+            return 0
+
+        memories = self._store.list(project=project, limit=limit)
+        count = 0
+        for memory in memories:
+            existing_facts = self._store.get_facts(memory.id)
+            if existing_facts:
+                continue
+            try:
+                enrichment_ctx = (memory.metadata or {}).get("enrichment")
+                extracted = self._fact_extractor.extract(
+                    memory_id=memory.id,
+                    content=memory.content,
+                    enrichment_context=enrichment_ctx,
+                )
+                result = self._conflict_resolver.resolve_all(extracted, memory_id=memory.id)
+                count += len(result.saved_facts)
+            except Exception:
+                logger.warning("Backfill failed for memory %s", memory.id, exc_info=True)
+
+        return count
 
 
 def _utc_now_iso() -> str:
