@@ -351,6 +351,14 @@ class HttpStore(Store):
         for item in data.get("lessons", []):
             memory = self._lesson_to_memory(item)
             results.append(RecallResult(memory=memory, score=item.get("score", 0.0)))
+
+        # Record access for returned results (fire-and-forget, best effort)
+        for r in results:
+            try:
+                self._request("POST", f"/v1/lessons/{r.memory.id}/access")
+            except Exception:
+                pass
+
         return results
 
     # ------------------------------------------------------------------
