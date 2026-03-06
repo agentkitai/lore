@@ -52,6 +52,9 @@ security = [
 ner = [
     "spacy>=3.5.0",
 ]
+enrichment = [
+    "litellm>=1.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
