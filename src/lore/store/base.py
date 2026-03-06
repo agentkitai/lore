@@ -24,9 +24,10 @@ class Store(ABC):
         self,
         project: Optional[str] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Memory]:
-        """List memories, optionally filtered by project/type, ordered by created_at desc."""
+        """List memories, optionally filtered by project/type/tier, ordered by created_at desc."""
 
     @abstractmethod
     def update(self, memory: Memory) -> bool:
@@ -41,8 +42,9 @@ class Store(ABC):
         self,
         project: Optional[str] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
     ) -> int:
-        """Count memories, optionally filtered by project/type."""
+        """Count memories, optionally filtered by project/type/tier."""
 
     @abstractmethod
     def cleanup_expired(self) -> int:

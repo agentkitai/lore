@@ -140,6 +140,7 @@ class HttpStore(Store):
     def _memory_to_lesson(memory: Memory) -> Dict[str, Any]:
         meta = dict(memory.metadata) if memory.metadata else {}
         meta["type"] = memory.type
+        meta["tier"] = memory.tier
 
         # Deserialize embedding bytes -> List[float]
         embedding: Optional[List[float]] = None
@@ -179,8 +180,9 @@ class HttpStore(Store):
             meta = json.loads(meta)
         meta = dict(meta)
 
-        # Extract type from meta, default to "general"
+        # Extract type and tier from meta
         mem_type = meta.pop("type", "general")
+        mem_tier = meta.pop("tier", "long")
 
         # Store resolution in metadata if different from problem
         problem = data.get("problem", "")
@@ -202,6 +204,7 @@ class HttpStore(Store):
             id=data.get("id", ""),
             content=problem,
             type=mem_type,
+            tier=mem_tier,
             context=data.get("context"),
             tags=data.get("tags") or [],
             metadata=metadata,
@@ -215,6 +218,9 @@ class HttpStore(Store):
             confidence=data.get("confidence", 1.0),
             upvotes=data.get("upvotes", 0),
             downvotes=data.get("downvotes", 0),
+            importance_score=data.get("importance_score", 1.0),
+            access_count=data.get("access_count", 0),
+            last_accessed_at=data.get("last_accessed_at"),
         )
 
     # ------------------------------------------------------------------
@@ -237,6 +243,7 @@ class HttpStore(Store):
         self,
         project: Optional[str] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Memory]:
         params: Dict[str, Any] = {}
@@ -250,9 +257,11 @@ class HttpStore(Store):
         lessons = data.get("lessons", [])
         memories = [self._lesson_to_memory(l) for l in lessons]
 
-        # Client-side post-filter by type (stored in meta.type)
+        # Client-side post-filter by type and tier (stored in meta)
         if type is not None:
             memories = [m for m in memories if m.type == type]
+        if tier is not None:
+            memories = [m for m in memories if m.tier == tier]
 
         return memories
 
@@ -264,6 +273,7 @@ class HttpStore(Store):
             payload["tags"] = memory.tags
         meta = dict(memory.metadata) if memory.metadata else {}
         meta["type"] = memory.type
+        meta["tier"] = memory.tier
         payload["meta"] = meta
 
         resp = self._request("PATCH", f"/v1/lessons/{memory.id}", json=payload)
@@ -277,6 +287,7 @@ class HttpStore(Store):
         self,
         project: Optional[str] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
     ) -> int:
         params: Dict[str, Any] = {"limit": 1}
         if project is not None:
@@ -318,6 +329,7 @@ class HttpStore(Store):
         *,
         tags: Optional[List[str]] = None,
         project: Optional[str] = None,
+        tier: Optional[str] = None,
         limit: int = 5,
         min_confidence: float = 0.0,
     ) -> List[RecallResult]:
@@ -330,6 +342,8 @@ class HttpStore(Store):
             payload["tags"] = tags
         if project:
             payload["project"] = project
+        if tier is not None:
+            payload["tier"] = tier
 
         resp = self._request("POST", "/v1/lessons/search", json=payload)
         data = resp.json()

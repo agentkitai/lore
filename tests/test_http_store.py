@@ -658,8 +658,9 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._similarity_weight = 0.7
-            lore._freshness_weight = 0.3
+            lore._importance_threshold = 0.05
+            lore._decay_config = None
+            lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
 
             results = lore.recall("test query")
             store.search.assert_called_once()
@@ -683,8 +684,9 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._similarity_weight = 0.7
-            lore._freshness_weight = 0.3
+            lore._importance_threshold = 0.05
+            lore._decay_config = None
+            lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
 
             # MemoryStore has no search() method
             assert not hasattr(mem_store, 'search')
@@ -712,8 +714,9 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._similarity_weight = 0.7
-            lore._freshness_weight = 0.3
+            lore._importance_threshold = 0.05
+            lore._decay_config = None
+            lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
             lore._dual_embedding = True
 
             lore.recall("test query")

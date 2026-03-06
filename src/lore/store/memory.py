@@ -25,6 +25,7 @@ class MemoryStore(Store):
         self,
         project: Optional[str] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Memory]:
         memories = list(self._memories.values())
@@ -32,6 +33,8 @@ class MemoryStore(Store):
             memories = [m for m in memories if m.project == project]
         if type is not None:
             memories = [m for m in memories if m.type == type]
+        if tier is not None:
+            memories = [m for m in memories if m.tier == tier]
         memories.sort(key=lambda m: m.created_at, reverse=True)
         if limit is not None:
             memories = memories[:limit]
@@ -50,12 +53,15 @@ class MemoryStore(Store):
         self,
         project: Optional[str] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
     ) -> int:
         memories = list(self._memories.values())
         if project is not None:
             memories = [m for m in memories if m.project == project]
         if type is not None:
             memories = [m for m in memories if m.type == type]
+        if tier is not None:
+            memories = [m for m in memories if m.tier == tier]
         return len(memories)
 
     def cleanup_expired(self) -> int:

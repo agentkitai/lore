@@ -53,7 +53,7 @@ class TestMCPTools:
         from lore.mcp.server import forget, remember
         result = remember("ephemeral")
         # Extract ID from result
-        mid = result.split("ID: ")[1].rstrip(")")
+        mid = result.split("ID: ")[1].split(",")[0].rstrip(")")
         result = forget(mid)
         assert "forgotten" in result
 
@@ -83,13 +83,13 @@ class TestMCPTools:
     def test_upvote(self, mock_lore) -> None:
         from lore.mcp.server import remember, upvote_memory
         result = remember("test")
-        mid = result.split("ID: ")[1].rstrip(")")
+        mid = result.split("ID: ")[1].split(",")[0].rstrip(")")
         result = upvote_memory(mid)
         assert "Upvoted" in result
 
     def test_downvote(self, mock_lore) -> None:
         from lore.mcp.server import downvote_memory, remember
         result = remember("test")
-        mid = result.split("ID: ")[1].rstrip(")")
+        mid = result.split("ID: ")[1].split(",")[0].rstrip(")")
         result = downvote_memory(mid)
         assert "Downvoted" in result

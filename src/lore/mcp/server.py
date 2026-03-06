@@ -79,12 +79,16 @@ mcp = FastMCP(
         "something that future agents (or your future self) would benefit from knowing. "
         "DO NOT save trivial things — only save memories that would save someone "
         "real time or prevent a real mistake. "
-        "The content should be a clear, self-contained piece of knowledge."
+        "The content should be a clear, self-contained piece of knowledge. "
+        "Optionally set tier: 'working' (auto-expires in 1h, for scratch context), "
+        "'short' (auto-expires in 7d, for session learnings), "
+        "or 'long' (default, no expiry, for lasting knowledge)."
     ),
 )
 def remember(
     content: str,
     type: str = "general",
+    tier: str = "long",
     tags: Optional[List[str]] = None,
     metadata: Optional[Dict[str, Any]] = None,
     source: Optional[str] = None,
@@ -97,13 +101,14 @@ def remember(
         memory_id = lore.remember(
             content=content,
             type=type,
+            tier=tier,
             tags=tags,
             metadata=metadata,
             source=source,
             project=project,
             ttl=ttl,
         )
-        return f"Memory saved (ID: {memory_id})"
+        return f"Memory saved (ID: {memory_id}, tier: {tier})"
     except Exception as e:
         return f"Failed to save memory: {e}"
 
@@ -124,6 +129,7 @@ def recall(
     query: str,
     tags: Optional[List[str]] = None,
     type: Optional[str] = None,
+    tier: Optional[str] = None,
     limit: int = 5,
     repo_path: Optional[str] = None,
 ) -> str:
@@ -132,7 +138,7 @@ def recall(
         lore = _get_lore()
         limit = max(1, min(limit, 20))
         results = lore.recall(
-            query=query, tags=tags, type=type, limit=limit,
+            query=query, tags=tags, type=type, tier=tier, limit=limit,
             check_freshness=bool(repo_path), repo_path=repo_path,
         )
         if not results:
@@ -149,8 +155,9 @@ def recall(
                     f"commits since memory]"
                 )
             lines.append(
-                f"Memory {i}  (score: {r.score:.2f}, id: {mem.id}, "
-                f"type: {mem.type}){staleness_badge}"
+                f"Memory {i}  (importance: {mem.importance_score:.2f}, "
+                f"score: {r.score:.2f}, id: {mem.id}, "
+                f"type: {mem.type}, tier: {mem.tier}){staleness_badge}"
             )
             lines.append(f"Content: {mem.content}")
             if mem.tags:
@@ -184,24 +191,28 @@ def forget(memory_id: str) -> str:
 
 @mcp.tool(
     description=(
-        "List stored memories, optionally filtered by type or project."
+        "List stored memories, optionally filtered by type, tier, or project."
     ),
 )
 def list_memories(
     type: Optional[str] = None,
+    tier: Optional[str] = None,
     project: Optional[str] = None,
     limit: Optional[int] = None,
 ) -> str:
     """List memories in Lore."""
     try:
         lore = _get_lore()
-        memories = lore.list_memories(type=type, project=project, limit=limit)
+        memories = lore.list_memories(type=type, tier=tier, project=project, limit=limit)
         if not memories:
             return "No memories found."
 
         lines: List[str] = [f"Found {len(memories)} memory(ies):\n"]
         for mem in memories:
-            lines.append(f"[{mem.id}] ({mem.type}) {mem.content[:100]}")
+            lines.append(
+                f"[{mem.id}] ({mem.type}, importance: {mem.importance_score:.2f}) "
+                f"{mem.content[:100]}"
+            )
             if mem.tags:
                 lines.append(f"  Tags: {', '.join(mem.tags)}")
         return "\n".join(lines)
@@ -223,6 +234,10 @@ def stats(project: Optional[str] = None) -> str:
         if s.by_type:
             lines.append("By type:")
             for t, count in sorted(s.by_type.items()):
+                lines.append(f"  {t}: {count}")
+        if s.by_tier:
+            lines.append("By tier:")
+            for t, count in sorted(s.by_tier.items()):
                 lines.append(f"  {t}: {count}")
         if s.oldest:
             lines.append(f"Oldest: {s.oldest}")

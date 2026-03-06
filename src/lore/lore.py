@@ -25,7 +25,10 @@ from lore.importance import (
 )
 from lore.types import (
     DECAY_HALF_LIVES,
+    TIER_DEFAULT_TTL,
+    TIER_RECALL_WEIGHT,
     VALID_MEMORY_TYPES,
+    VALID_TIERS,
     Memory,
     MemoryStats,
     RecallResult,
@@ -96,8 +99,10 @@ class Lore:
         api_key: Optional[str] = None,
         importance_threshold: float = 0.05,
         decay_config: Optional[Dict[Tuple[str, str], float]] = None,
+        tier_recall_weights: Optional[Dict[str, float]] = None,
     ) -> None:
         self.project = project
+        self._tier_weights = tier_recall_weights or dict(TIER_RECALL_WEIGHT)
         self._half_life_days = decay_half_life_days
         self._half_lives: Dict[str, float] = {**DECAY_HALF_LIVES}
         if decay_half_lives:
@@ -177,6 +182,7 @@ class Lore:
         content: str,
         *,
         type: str = "general",
+        tier: str = "long",
         context: Optional[str] = None,
         tags: Optional[List[str]] = None,
         metadata: Optional[Dict[str, Any]] = None,
@@ -186,6 +192,10 @@ class Lore:
         confidence: float = 1.0,
     ) -> str:
         """Store a memory. Returns the memory ID (ULID)."""
+        if tier not in VALID_TIERS:
+            raise ValueError(
+                f"invalid tier {tier!r}, must be one of: {VALID_TIERS}"
+            )
         if not type or not isinstance(type, str) or not type.strip():
             raise ValueError("type must be a non-empty string")
         if type not in VALID_MEMORY_TYPES:
@@ -223,17 +233,21 @@ class Lore:
 
         now = _utc_now_iso()
 
-        # Compute expires_at from ttl
+        # Tier provides default TTL when no explicit TTL given
+        effective_ttl = ttl if ttl is not None else TIER_DEFAULT_TTL[tier]
+
+        # Compute expires_at from effective TTL
         expires_at = None
-        if ttl is not None:
+        if effective_ttl is not None:
             expires_at = (
-                datetime.now(timezone.utc) + timedelta(seconds=ttl)
+                datetime.now(timezone.utc) + timedelta(seconds=effective_ttl)
             ).isoformat()
 
         memory = Memory(
             id=str(ULID()),
             content=content,
             type=type,
+            tier=tier,
             context=context,
             tags=tags or [],
             metadata=metadata,
@@ -242,7 +256,7 @@ class Lore:
             embedding=embedding_bytes,
             created_at=now,
             updated_at=now,
-            ttl=ttl,
+            ttl=effective_ttl,
             expires_at=expires_at,
             confidence=confidence,
         )
@@ -255,6 +269,7 @@ class Lore:
         *,
         tags: Optional[List[str]] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
         limit: int = 5,
         min_confidence: float = 0.0,
         check_freshness: bool = False,
@@ -287,12 +302,13 @@ class Lore:
                 embedding=query_vec,
                 tags=tags,
                 project=self.project,
+                tier=tier,
                 limit=limit,
                 min_confidence=min_confidence,
             )
         else:
             results = self._recall_local(
-                query_vec, tags=tags, type=type, limit=limit,
+                query_vec, tags=tags, type=type, tier=tier, limit=limit,
                 min_confidence=min_confidence,
                 query_vecs=query_vecs,
             )
@@ -312,6 +328,7 @@ class Lore:
         *,
         tags: Optional[List[str]] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
         limit: int = 5,
         min_confidence: float = 0.0,
         query_vecs: Optional[Dict[str, List[float]]] = None,
@@ -319,8 +336,8 @@ class Lore:
         """Client-side semantic search for local stores."""
         now = datetime.now(timezone.utc)
 
-        # Get all candidates (scope to project if set, optionally by type)
-        all_memories = self._store.list(project=self.project, type=type)
+        # Get all candidates (scope to project if set, optionally by type/tier)
+        all_memories = self._store.list(project=self.project, type=type, tier=tier)
 
         # Filter expired memories
         all_memories = [
@@ -384,12 +401,13 @@ class Lore:
                 cosine_score = float(cosine_prose[i])
 
             half_life = resolve_half_life(
-                getattr(memory, "tier", None),
+                memory.tier,
                 memory.type,
                 overrides=self._decay_config,
             )
             tai = time_adjusted_importance(memory, half_life, now=now)
-            final_score = cosine_score * tai
+            tier_weight = self._tier_weights.get(memory.tier, 1.0)
+            final_score = cosine_score * tai * tier_weight
             results.append(RecallResult(memory=memory, score=final_score))
 
         results.sort(key=lambda r: r.score, reverse=True)
@@ -460,11 +478,12 @@ class Lore:
         *,
         project: Optional[str] = None,
         type: Optional[str] = None,
+        tier: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Memory]:
         """List memories with optional filters. Excludes expired memories."""
         now = datetime.now(timezone.utc)
-        memories = self._store.list(project=project, type=type, limit=None)
+        memories = self._store.list(project=project, type=type, tier=tier, limit=None)
         memories = [
             m for m in memories
             if m.expires_at is None
@@ -484,13 +503,16 @@ class Lore:
             )
 
         by_type: Dict[str, int] = {}
+        by_tier: Dict[str, int] = {}
         for m in all_memories:
             by_type[m.type] = by_type.get(m.type, 0) + 1
+            by_tier[m.tier] = by_tier.get(m.tier, 0) + 1
 
         # Memories are sorted by created_at desc, so newest is first
         return MemoryStats(
             total=len(all_memories),
             by_type=by_type,
+            by_tier=by_tier,
             oldest=all_memories[-1].created_at,
             newest=all_memories[0].created_at,
             expired_cleaned=self._last_cleanup_count,

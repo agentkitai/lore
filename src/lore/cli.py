@@ -29,6 +29,7 @@ def cmd_remember(args: argparse.Namespace) -> None:
         mid = lore.remember(
             content=args.content,
             type=args.type,
+            tier=args.tier,
             context=getattr(args, "context", None),
             tags=tags,
             metadata=metadata,
@@ -50,13 +51,14 @@ def cmd_recall(args: argparse.Namespace) -> None:
     tags = None
     if getattr(args, "tags", None):
         tags = [t.strip() for t in args.tags.split(",") if t.strip()]
-    results = lore.recall(args.query, type=args.type, tags=tags, limit=args.limit)
+    tier = getattr(args, "tier", None)
+    results = lore.recall(args.query, type=args.type, tier=tier, tags=tags, limit=args.limit)
     lore.close()
     if not results:
         print("No results.")
         return
     for r in results:
-        print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type})")
+        print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type}, {r.memory.tier})")
         print(f"  {r.memory.content[:200]}")
         if r.memory.tags:
             print(f"  Tags: {', '.join(r.memory.tags)}")
@@ -74,16 +76,23 @@ def cmd_forget(args: argparse.Namespace) -> None:
 
 def cmd_memories(args: argparse.Namespace) -> None:
     lore = _get_lore(args.db)
-    memories = lore.list_memories(type=args.type, limit=args.limit)
+    tier = getattr(args, "tier", None)
+    memories = lore.list_memories(type=args.type, tier=tier, limit=args.limit)
     lore.close()
     if not memories:
         print("No memories.")
         return
-    print(f"{'ID':<28} {'Type':<12} {'Created':<22} {'Content':<50}")
-    print("-" * 112)
+    sort_key = getattr(args, "sort", "created")
+    if sort_key == "importance":
+        memories.sort(key=lambda m: m.importance_score, reverse=True)
+    print(f"{'ID':<28} {'Tier':<10} {'Type':<12} {'Importance':<12} {'Created':<22} {'Content':<50}")
+    print("-" * 134)
     for m in memories:
         created = m.created_at[:19] if m.created_at else ""
-        print(f"{m.id:<28} {m.type:<12} {created:<22} {m.content[:50]:<50}")
+        print(
+            f"{m.id:<28} {m.tier:<10} {m.type:<12} {m.importance_score:<12.2f} "
+            f"{created:<22} {m.content[:50]:<50}"
+        )
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -92,7 +101,12 @@ def cmd_stats(args: argparse.Namespace) -> None:
     lore.close()
     print(f"Total: {s.total}")
     if s.by_type:
+        print("By type:")
         for t, count in sorted(s.by_type.items()):
+            print(f"  {t}: {count}")
+    if s.by_tier:
+        print("By tier:")
+        for t, count in sorted(s.by_tier.items()):
             print(f"  {t}: {count}")
     if s.oldest:
         print(f"Oldest: {s.oldest}")
@@ -201,6 +215,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("remember", help="Store a new memory")
     p.add_argument("content", help="The memory content")
     p.add_argument("--type", default="general", help="Memory type (general, lesson, fact, preference, context)")
+    p.add_argument(
+        "--tier", choices=["working", "short", "long"], default="long",
+        help="Memory tier: working (1h), short (7d), long (permanent)",
+    )
     p.add_argument("--tags", default=None, help="Comma-separated tags")
     p.add_argument("--context", default=None, help="Additional context for the memory")
     p.add_argument("--ttl", type=int, default=None, help="Time-to-live in seconds")
@@ -213,6 +231,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("recall", help="Search memories")
     p.add_argument("query", help="Search query")
     p.add_argument("--type", default=None, help="Filter by memory type")
+    p.add_argument(
+        "--tier", choices=["working", "short", "long"], default=None,
+        help="Filter by memory tier",
+    )
     p.add_argument("--tags", default=None, help="Comma-separated tags to filter by")
     p.add_argument("--limit", type=int, default=5)
 
@@ -223,7 +245,15 @@ def build_parser() -> argparse.ArgumentParser:
     # memories (list)
     p = sub.add_parser("memories", help="List memories")
     p.add_argument("--type", default=None, help="Filter by memory type")
+    p.add_argument(
+        "--tier", choices=["working", "short", "long"], default=None,
+        help="Filter by memory tier",
+    )
     p.add_argument("--limit", type=int, default=None)
+    p.add_argument(
+        "--sort", type=str, choices=["created", "importance"],
+        default="created", help="Sort order (default: created)",
+    )
 
     # stats
     sub.add_parser("stats", help="Show memory statistics")
