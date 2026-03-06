@@ -134,12 +134,11 @@ async def search_lessons(
     body: LessonSearchRequest,
     auth: AuthContext = Depends(get_auth_context),
 ) -> LessonSearchResponse:
-    """Semantic search with pgvector cosine similarity and weighted additive scoring.
+    """Semantic search with multiplicative scoring.
 
-    Score = 0.7 * (cosine_similarity * confidence * vote_factor)
-          + 0.3 * power(0.5, age_days / half_life)
-    where vote_factor = max(1.0 + (upvotes - downvotes) * 0.1, 0.1)
-    and half_life is resolved from meta->>'type' with type-specific values.
+    Score = cosine_similarity * time_adjusted_importance
+    where time_adjusted_importance = importance_score * 0.5^(effective_age / half_life)
+    and effective_age = LEAST(age_since_created, age_since_last_accessed).
     """
     # Build WHERE clause
     where_parts: list[str] = ["org_id = $1"]
@@ -174,22 +173,26 @@ async def search_lessons(
     params.append(body.limit)
     limit_idx = len(params)
 
-    # SQL: weighted additive scoring
-    # similarity = cosine * confidence * vote_factor
-    # freshness  = 0.5 ^ (age_days / half_life)
-    # score      = 0.7 * similarity + 0.3 * freshness
-    # half_life resolved from meta->>'type' via CASE
+    # SQL: multiplicative scoring
+    # cosine = 1 - (embedding <=> query)
+    # effective_age = LEAST(age_since_created, age_since_last_accessed)
+    # tai = importance_score * 0.5^(effective_age / half_life)
+    # score = cosine * tai
     query = f"""
         SELECT id, problem, resolution, context, tags, confidence,
                source, project, created_at, updated_at, expires_at,
                upvotes, downvotes, meta,
-               0.7 * (
-                   (1 - (embedding <=> ${emb_idx}::vector)) *
-                   confidence *
-                   GREATEST(1.0 + (upvotes - downvotes) * 0.1, 0.1)
-               ) +
-               0.3 * power(0.5,
-                   EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0
+               importance_score, access_count, last_accessed_at,
+               (1 - (embedding <=> ${emb_idx}::vector)) *
+               COALESCE(importance_score, 1.0) *
+               power(0.5,
+                   LEAST(
+                       EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0,
+                       COALESCE(
+                           EXTRACT(EPOCH FROM (now() - last_accessed_at)) / 86400.0,
+                           EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0
+                       )
+                   )
                    / (CASE meta->>'type'
                        WHEN 'code' THEN 14
                        WHEN 'note' THEN 21
@@ -209,11 +212,15 @@ async def search_lessons(
     async with pool.acquire() as conn:
         rows = await conn.fetch(query, *params)
 
-    # Filter by min_confidence after scoring (decay applied)
+    # Filter by min_confidence after scoring
     results = []
     for r in rows:
         rd = dict(r)
         score = float(rd.pop("score", 0.0))
+        # Remove extra columns not in _row_to_response
+        rd.pop("importance_score", None)
+        rd.pop("access_count", None)
+        rd.pop("last_accessed_at", None)
         if score < body.min_confidence:
             continue
         lesson_resp = _row_to_response(rd)
@@ -223,6 +230,47 @@ async def search_lessons(
         ))
 
     return LessonSearchResponse(lessons=results)
+
+
+# ── Access tracking ────────────────────────────────────────────────
+
+
+@router.post("/{lesson_id}/access", status_code=200)
+async def record_access(
+    lesson_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+) -> dict:
+    """Record an access event: increment access_count, set last_accessed_at,
+    and recompute importance_score server-side."""
+    scope_sql, scope_params = _scope_filter(auth)
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            f"""UPDATE lessons SET
+                    access_count = COALESCE(access_count, 0) + 1,
+                    last_accessed_at = now(),
+                    importance_score = (
+                        confidence
+                        * GREATEST(0.1, 1.0 + (upvotes - downvotes) * 0.1)
+                        * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
+                    ),
+                    updated_at = now()
+                WHERE id = ${len(scope_params) + 1} AND {scope_sql}
+                RETURNING id, access_count, last_accessed_at, importance_score""",
+            *scope_params,
+            lesson_id,
+        )
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+
+    return {
+        "id": row["id"],
+        "access_count": row["access_count"],
+        "last_accessed_at": row["last_accessed_at"].isoformat() if row["last_accessed_at"] else None,
+        "importance_score": float(row["importance_score"]),
+    }
 
 
 # ── Read ───────────────────────────────────────────────────────────

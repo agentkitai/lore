@@ -600,13 +600,17 @@ class TestSearch:
         )
         query_vec = [0.1] * 384
         results = store.search(embedding=query_vec, limit=5)
-        call_args = store._client.request.call_args
-        assert call_args[0] == ("POST", "/v1/lessons/search")
-        body = call_args[1]["json"]
+        # First call is the search POST, subsequent calls are access tracking
+        search_call = store._client.request.call_args_list[0]
+        assert search_call[0] == ("POST", "/v1/lessons/search")
+        body = search_call[1]["json"]
         assert len(body["embedding"]) == 384
         assert len(results) == 1
         assert results[0].score == 0.85
         assert results[0].memory.content == "use retries"
+        # Verify access tracking was called
+        access_call = store._client.request.call_args_list[1]
+        assert access_call[0] == ("POST", "/v1/lessons/s1/access")
         store.close()
 
     def test_search_with_filters(self):
@@ -646,6 +650,7 @@ class TestRecallDispatch:
     def test_recall_delegates_to_search_when_available(self):
         store = _make_store()
         store.search = MagicMock(return_value=[])
+        store.list = MagicMock(return_value=[])
 
         from lore.lore import Lore
         with patch.object(Lore, "__init__", lambda self, **kw: None):
@@ -658,8 +663,9 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._similarity_weight = 0.7
-            lore._freshness_weight = 0.3
+            lore._importance_threshold = 0.05
+            lore._decay_config = None
+            lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
 
             results = lore.recall("test query")
             store.search.assert_called_once()
@@ -683,8 +689,9 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._similarity_weight = 0.7
-            lore._freshness_weight = 0.3
+            lore._importance_threshold = 0.05
+            lore._decay_config = None
+            lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
 
             # MemoryStore has no search() method
             assert not hasattr(mem_store, 'search')
@@ -694,6 +701,7 @@ class TestRecallDispatch:
     def test_recall_uses_prose_vec_for_search(self):
         store = _make_store()
         store.search = MagicMock(return_value=[])
+        store.list = MagicMock(return_value=[])
 
         from lore.embed.router import EmbeddingRouter
         from lore.lore import Lore
@@ -712,8 +720,9 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._similarity_weight = 0.7
-            lore._freshness_weight = 0.3
+            lore._importance_threshold = 0.05
+            lore._decay_config = None
+            lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
             lore._dual_embedding = True
 
             lore.recall("test query")

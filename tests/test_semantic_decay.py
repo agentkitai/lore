@@ -66,38 +66,42 @@ class TestDecayHalfLivesConstant:
             assert lore._half_lives[type_name] == expected_hl
 
 
-class TestWeightedAdditiveScoring:
-    """F1-S2: Weighted additive scoring formula."""
+class TestMultiplicativeScoring:
+    """F5: Multiplicative scoring formula (replaces additive)."""
 
     def test_formula_components(self) -> None:
-        """Verify score = 0.7 * similarity + 0.3 * freshness."""
+        """Verify score = cosine * time_adjusted_importance * tier_weight."""
         store = MemoryStore()
         lore = Lore(store=store, embedding_fn=_fixed_embed)
 
         lore.remember("test content", type="lesson", confidence=1.0)
-        # Memory is brand new (age ~0), so freshness ≈ 1.0
+        # Memory is brand new (age ~0), so TAI ≈ importance (1.0)
+        # Long tier weight = 1.2
         results = lore.recall("anything", limit=1)
         assert len(results) == 1
         score = results[0].score
-        # With cosine=1.0 (same embed), confidence=1.0, vote_factor=1.0:
-        # similarity = 1.0, freshness ≈ 1.0
-        # score ≈ 0.7 * 1.0 + 0.3 * 1.0 = 1.0
-        assert 0.95 < score <= 1.0
+        # cosine ≈ 1.0, importance ≈ 1.0, decay ≈ 1.0, tier_weight = 1.2
+        assert 1.15 < score <= 1.25
 
-    def test_configurable_weights(self) -> None:
-        """Custom similarity/freshness weights work."""
+    def test_deprecated_weights_emit_warning(self) -> None:
+        """Custom similarity/freshness weights trigger deprecation warning."""
+        import warnings
         store = MemoryStore()
-        lore = Lore(
-            store=store,
-            embedding_fn=_fixed_embed,
-            decay_similarity_weight=0.5,
-            decay_freshness_weight=0.5,
-        )
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            lore = Lore(
+                store=store,
+                embedding_fn=_fixed_embed,
+                decay_similarity_weight=0.5,
+                decay_freshness_weight=0.5,
+            )
+            deprecation_warnings = [x for x in w if issubclass(x.category, DeprecationWarning)]
+            assert len(deprecation_warnings) == 1
+        # Score still works with multiplicative model
         lore.remember("test content", type="lesson")
         results = lore.recall("anything", limit=1)
         assert len(results) == 1
-        # With cosine=1.0, freshness≈1.0: score ≈ 0.5 + 0.5 = 1.0
-        assert 0.95 < results[0].score <= 1.0
+        assert results[0].score > 0
 
     def test_recent_lesson_outranks_old_same_similarity(self) -> None:
         """1-day-old memory with 0.6 sim outranks 60-day-old with 0.65 sim (type=code)."""
@@ -187,10 +191,11 @@ class TestWeightedAdditiveScoring:
 
         results = lore.recall("anything", limit=1)
         assert len(results) == 1
-        # At 30 days with HL=30: freshness = 0.5
-        # similarity ≈ 1.0 (same embed)
-        # score ≈ 0.7 * 1.0 + 0.3 * 0.5 = 0.85
-        assert 0.80 < results[0].score < 0.90
+        # Multiplicative model: score = cosine * importance * decay * tier_weight
+        # At 30 days with HL=30: decay = 0.5
+        # cosine ≈ 1.0, importance = 1.0, tier_weight = 1.2 (long)
+        # score ≈ 1.0 * 1.0 * 0.5 * 1.2 = 0.6
+        assert 0.55 < results[0].score < 0.65
 
 
 class TestScoringBackwardCompatibility:

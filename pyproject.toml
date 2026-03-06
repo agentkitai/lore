@@ -4,19 +4,26 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lore-sdk"
-version = "0.5.1"
-description = "Cross-agent memory SDK — store, recall, and share knowledge across AI agents"
+version = "0.6.0"
+description = "Cross-agent semantic memory with knowledge graphs, fact extraction, and MCP integration"
 readme = "README.md"
 license = "MIT"
 authors = [{ name = "Amit Paz", email = "amit.paz@gmail.com" }]
-keywords = ["agent", "memory", "lore", "knowledge"]
+keywords = [
+    "agent", "memory", "lore", "knowledge",
+    "knowledge-graph", "fact-extraction", "memory-consolidation",
+    "mcp", "model-context-protocol",
+    "cognitive-memory", "ai-memory", "semantic-memory", "agent-memory",
+]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 requires-python = ">=3.9"
 dependencies = [
@@ -52,6 +59,9 @@ security = [
 ner = [
     "spacy>=3.5.0",
 ]
+enrichment = [
+    "litellm>=1.0",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21.0",
@@ -65,6 +75,7 @@ lore = "lore.cli:main"
 [project.urls]
 Homepage = "https://github.com/amitpaz1/lore"
 Repository = "https://github.com/amitpaz1/lore"
+Documentation = "https://github.com/amitpaz1/lore/tree/main/docs"
 Issues = "https://github.com/amitpaz1/lore/issues"
 Changelog = "https://github.com/amitpaz1/lore/blob/main/CHANGELOG.md"
 

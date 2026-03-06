@@ -29,6 +29,7 @@ def cmd_remember(args: argparse.Namespace) -> None:
         mid = lore.remember(
             content=args.content,
             type=args.type,
+            tier=args.tier,
             context=getattr(args, "context", None),
             tags=tags,
             metadata=metadata,
@@ -50,14 +51,24 @@ def cmd_recall(args: argparse.Namespace) -> None:
     tags = None
     if getattr(args, "tags", None):
         tags = [t.strip() for t in args.tags.split(",") if t.strip()]
-    results = lore.recall(args.query, type=args.type, tags=tags, limit=args.limit)
+    tier = getattr(args, "tier", None)
+    results = lore.recall(
+        args.query, type=args.type, tier=tier, tags=tags, limit=args.limit,
+        topic=getattr(args, "topic", None),
+        sentiment=getattr(args, "sentiment", None),
+        entity=getattr(args, "entity", None),
+        category=getattr(args, "category", None),
+    )
     lore.close()
     if not results:
         print("No results.")
         return
     for r in results:
-        print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type})")
+        print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type}, {r.memory.tier})")
         print(f"  {r.memory.content[:200]}")
+        enrichment = (r.memory.metadata or {}).get("enrichment", {})
+        if enrichment.get("topics"):
+            print(f"  Topics: {', '.join(enrichment['topics'])}")
         if r.memory.tags:
             print(f"  Tags: {', '.join(r.memory.tags)}")
         print()
@@ -74,16 +85,25 @@ def cmd_forget(args: argparse.Namespace) -> None:
 
 def cmd_memories(args: argparse.Namespace) -> None:
     lore = _get_lore(args.db)
-    memories = lore.list_memories(type=args.type, limit=args.limit)
+    tier = getattr(args, "tier", None)
+    memories = lore.list_memories(type=args.type, tier=tier, limit=args.limit)
     lore.close()
     if not memories:
         print("No memories.")
         return
-    print(f"{'ID':<28} {'Type':<12} {'Created':<22} {'Content':<50}")
-    print("-" * 112)
+    sort_key = getattr(args, "sort", "created")
+    if sort_key == "importance":
+        memories.sort(key=lambda m: m.importance_score, reverse=True)
+    print(f"{'ID':<28} {'Tier':<10} {'Type':<12} {'Importance':<12} {'Created':<22} {'Topics':<30} {'Content':<40}")
+    print("-" * 154)
     for m in memories:
         created = m.created_at[:19] if m.created_at else ""
-        print(f"{m.id:<28} {m.type:<12} {created:<22} {m.content[:50]:<50}")
+        enrichment = (m.metadata or {}).get("enrichment", {})
+        topics = ", ".join(enrichment.get("topics", [])) if enrichment else "-"
+        print(
+            f"{m.id:<28} {m.tier:<10} {m.type:<12} {m.importance_score:<12.2f} "
+            f"{created:<22} {topics:<30} {m.content[:40]:<40}"
+        )
 
 
 def cmd_stats(args: argparse.Namespace) -> None:
@@ -92,7 +112,12 @@ def cmd_stats(args: argparse.Namespace) -> None:
     lore.close()
     print(f"Total: {s.total}")
     if s.by_type:
+        print("By type:")
         for t, count in sorted(s.by_type.items()):
+            print(f"  {t}: {count}")
+    if s.by_tier:
+        print("By tier:")
+        for t, count in sorted(s.by_tier.items()):
             print(f"  {t}: {count}")
     if s.oldest:
         print(f"Oldest: {s.oldest}")
@@ -201,6 +226,10 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("remember", help="Store a new memory")
     p.add_argument("content", help="The memory content")
     p.add_argument("--type", default="general", help="Memory type (general, lesson, fact, preference, context)")
+    p.add_argument(
+        "--tier", choices=["working", "short", "long"], default="long",
+        help="Memory tier: working (1h), short (7d), long (permanent)",
+    )
     p.add_argument("--tags", default=None, help="Comma-separated tags")
     p.add_argument("--context", default=None, help="Additional context for the memory")
     p.add_argument("--ttl", type=int, default=None, help="Time-to-live in seconds")
@@ -213,8 +242,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("recall", help="Search memories")
     p.add_argument("query", help="Search query")
     p.add_argument("--type", default=None, help="Filter by memory type")
+    p.add_argument(
+        "--tier", choices=["working", "short", "long"], default=None,
+        help="Filter by memory tier",
+    )
     p.add_argument("--tags", default=None, help="Comma-separated tags to filter by")
     p.add_argument("--limit", type=int, default=5)
+    p.add_argument("--topic", default=None, help="Filter by enrichment topic")
+    p.add_argument(
+        "--sentiment", default=None, choices=["positive", "negative", "neutral"],
+        help="Filter by sentiment label",
+    )
+    p.add_argument("--entity", default=None, help="Filter by entity name")
+    p.add_argument("--category", default=None, help="Filter by category")
 
     # forget
     p = sub.add_parser("forget", help="Delete a memory")
@@ -223,7 +263,15 @@ def build_parser() -> argparse.ArgumentParser:
     # memories (list)
     p = sub.add_parser("memories", help="List memories")
     p.add_argument("--type", default=None, help="Filter by memory type")
+    p.add_argument(
+        "--tier", choices=["working", "short", "long"], default=None,
+        help="Filter by memory tier",
+    )
     p.add_argument("--limit", type=int, default=None)
+    p.add_argument(
+        "--sort", type=str, choices=["created", "importance"],
+        default="created", help="Sort order (default: created)",
+    )
 
     # stats
     sub.add_parser("stats", help="Show memory statistics")
@@ -243,6 +291,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     kr = keys_sub.add_parser("revoke", help="Revoke an API key")
     kr.add_argument("key_id", help="Key ID to revoke")
+
+    # prompt
+    p = sub.add_parser("prompt", help="Export memories formatted for LLM prompts")
+    p.add_argument("query", help="Search query")
+    p.add_argument("--format", default="xml", choices=["xml", "chatml", "markdown", "raw"])
+    p.add_argument("--max-tokens", type=int, default=None)
+    p.add_argument("--max-chars", type=int, default=None)
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--type", default=None)
+    p.add_argument("--tags", default=None, help="Comma-separated tags")
+    p.add_argument("--min-score", type=float, default=0.0)
+    p.add_argument("--include-metadata", action="store_true", default=False)
+    p.add_argument("--project", default=None, help="Project namespace")
 
     # freshness
     p = sub.add_parser("freshness", help="Check memories for staleness against git history")
@@ -288,10 +349,121 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show what would change without modifying data",
     )
 
+    # enrich
+    p = sub.add_parser("enrich", help="Enrich memories with LLM-extracted metadata")
+    p.add_argument("memory_id", nargs="?", default=None, help="Memory ID to enrich")
+    p.add_argument("--all", action="store_true", help="Enrich all unenriched memories")
+    p.add_argument("--project", default=None, help="Filter to project (with --all)")
+    p.add_argument("--force", action="store_true", help="Re-enrich already enriched memories")
+    p.add_argument(
+        "--model", default=None,
+        help="LLM model for enrichment (default: gpt-4o-mini)",
+    )
+
+    # classify
+    p = sub.add_parser("classify", help="Classify text by intent, domain, and emotion")
+    p.add_argument("text", help="Text to classify")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Output as JSON")
+
+    # facts
+    p = sub.add_parser("facts", help="Show facts for a memory or list active facts")
+    p.add_argument("memory_id", nargs="?", default=None, help="Memory ID (omit to list all active facts)")
+    p.add_argument("--subject", default=None, help="Filter by subject")
+    p.add_argument("--limit", type=int, default=50)
+
+    # conflicts
+    p = sub.add_parser("conflicts", help="Show conflict log")
+    p.add_argument("--resolution", default=None, help="Filter by resolution (SUPERSEDE, MERGE, CONTRADICT)")
+    p.add_argument("--limit", type=int, default=20)
+
+    # backfill-facts
+    p = sub.add_parser("backfill-facts", help="Extract facts from existing memories")
+    p.add_argument("--project", default=None, help="Filter to project")
+    p.add_argument("--limit", type=int, default=100)
+
+    # graph
+    p = sub.add_parser("graph", help="Traverse knowledge graph from an entity")
+    p.add_argument("entity", help="Entity name to start traversal from")
+    p.add_argument("--depth", type=int, default=2, help="Traversal depth (1-3)")
+    p.add_argument("--type", dest="rel_type", default=None, help="Filter by relationship type")
+    p.add_argument("--direction", choices=["outbound", "inbound", "both"], default="both")
+    p.add_argument("--min-weight", type=float, default=0.1, dest="min_weight")
+    p.add_argument("--format", choices=["text", "json"], default="text")
+
+    # entities
+    p = sub.add_parser("entities", help="List entities in the knowledge graph")
+    p.add_argument("--type", dest="entity_type", default=None, help="Filter by entity type")
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--sort", choices=["mentions", "name", "created"], default="mentions")
+
+    # relationships
+    p = sub.add_parser("relationships", help="List relationships in the knowledge graph")
+    p.add_argument("--entity", default=None, help="Filter by entity name")
+    p.add_argument("--type", dest="rel_type", default=None, help="Filter by relationship type")
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--include-expired", action="store_true", dest="include_expired")
+
+    # graph-backfill
+    p = sub.add_parser("graph-backfill", help="Build graph from existing memories")
+    p.add_argument("--project", default=None, help="Filter to project")
+    p.add_argument("--limit", type=int, default=1000)
+
+    # ingest
+    p = sub.add_parser("ingest", help="Ingest content with source tracking")
+    p.add_argument("content", nargs="?", default=None, help="Content to ingest (or use --file)")
+    p.add_argument("--source", default="manual", help="Source adapter name (default: manual)")
+    p.add_argument("--file", default=None, dest="file_path", help="File to import (JSON array or text lines)")
+    p.add_argument("--user", default=None, help="Source user identity")
+    p.add_argument("--channel", default=None, help="Source channel/location")
+    p.add_argument("--type", default="general", help="Memory type")
+    p.add_argument("--tags", default=None, help="Comma-separated tags")
+    p.add_argument("--project", default=None, help="Project namespace")
+    p.add_argument(
+        "--dedup-mode", default="reject", dest="dedup_mode",
+        choices=["reject", "skip", "merge", "allow"],
+        help="Deduplication mode (default: reject)",
+    )
+    p.add_argument("--no-enrich", action="store_true", dest="no_enrich", help="Disable enrichment")
+
+    # consolidate
+    p = sub.add_parser("consolidate", help="Run memory consolidation pipeline")
+    p.add_argument("--dry-run", action="store_true", default=True, dest="dry_run",
+                    help="Preview consolidation without changes (default)")
+    p.add_argument("--execute", action="store_true", help="Run consolidation and apply changes")
+    p.add_argument("--project", default=None, help="Filter to a specific project")
+    p.add_argument("--tier", choices=["working", "short", "long"], default=None,
+                    help="Filter to a specific tier")
+    p.add_argument("--strategy", choices=["deduplicate", "summarize", "all"],
+                    default="all", help="Consolidation strategy (default: all)")
+    p.add_argument("--log", action="store_true", dest="show_log",
+                    help="Show consolidation history instead of running consolidation")
+    p.add_argument("--limit", type=int, default=10, help="Number of log entries to show")
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
     return parser
+
+
+def cmd_prompt(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    tags = None
+    if args.tags:
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+    result = lore.as_prompt(
+        args.query,
+        format=args.format,
+        max_tokens=args.max_tokens,
+        max_chars=args.max_chars,
+        limit=args.limit,
+        type=args.type,
+        tags=tags,
+        min_score=args.min_score,
+        include_metadata=args.include_metadata,
+        project=args.project,
+    )
+    lore.close()
+    print(result, end="")
 
 
 def cmd_github_sync(args: argparse.Namespace) -> None:
@@ -434,6 +606,398 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     print(f"{prefix}Reindexed {updated}/{total_memories} memories.")
 
 
+def cmd_enrich(args: argparse.Namespace) -> None:
+    import os
+    from lore import Lore
+
+    model = args.model or os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
+    kwargs = {"enrichment": True, "enrichment_model": model}
+    if args.db:
+        kwargs["db_path"] = args.db
+    lore = Lore(**kwargs)
+
+    if args.memory_id:
+        result = lore.enrich_memories(memory_ids=[args.memory_id], force=args.force)
+    elif getattr(args, "all", False):
+        result = lore.enrich_memories(project=args.project, force=args.force)
+    else:
+        print("Provide a memory ID or use --all", file=sys.stderr)
+        lore.close()
+        sys.exit(1)
+
+    lore.close()
+    print(
+        f"Enriched: {result['enriched']}, "
+        f"Skipped: {result['skipped']}, "
+        f"Failed: {result['failed']}"
+    )
+    if result["errors"]:
+        for err in result["errors"]:
+            print(f"  Error: {err}", file=sys.stderr)
+
+
+def cmd_classify(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    result = lore.classify(args.text)
+    lore.close()
+    if args.as_json:
+        print(json.dumps(result.to_dict(), indent=2))
+    else:
+        intent_pct = result.confidence.get("intent", 0) * 100
+        domain_pct = result.confidence.get("domain", 0) * 100
+        emotion_pct = result.confidence.get("emotion", 0) * 100
+        print(f"Intent:   {result.intent:<12} ({intent_pct:.0f}%)")
+        print(f"Domain:   {result.domain:<12} ({domain_pct:.0f}%)")
+        print(f"Emotion:  {result.emotion:<12} ({emotion_pct:.0f}%)")
+
+
+def cmd_facts(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    if args.memory_id:
+        facts = lore.get_facts(args.memory_id)
+        lore.close()
+        if not facts:
+            print(f"No facts for memory {args.memory_id}.")
+            return
+        print(f"Facts for memory {args.memory_id}:\n")
+        print(f"{'Subject':<20} {'Predicate':<20} {'Object':<30} {'Confidence':<12} {'Status'}")
+        print("-" * 95)
+        for f in facts:
+            status = "invalidated" if f.invalidated_by else "active"
+            print(
+                f"{f.subject:<20} {f.predicate:<20} {f.object:<30} "
+                f"{f.confidence:<12.2f} {status}"
+            )
+    else:
+        facts = lore.get_active_facts(subject=args.subject, limit=args.limit)
+        lore.close()
+        if not facts:
+            print("No active facts found.")
+            return
+        filter_msg = f" (filtered by subject: {args.subject})" if args.subject else ""
+        print(f"Active facts{filter_msg}:\n")
+        print(f"{'Subject':<20} {'Predicate':<20} {'Object':<30} {'Confidence':<12} {'Source Memory'}")
+        print("-" * 105)
+        for f in facts:
+            print(
+                f"{f.subject:<20} {f.predicate:<20} {f.object:<30} "
+                f"{f.confidence:<12.2f} {f.memory_id[:12]}..."
+            )
+
+
+def cmd_conflicts(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    entries = lore.list_conflicts(resolution=args.resolution, limit=args.limit)
+    lore.close()
+    if not entries:
+        print("No conflicts found.")
+        return
+    for i, c in enumerate(entries, 1):
+        print(f"{i}. [{c.resolution}] {c.subject}/{c.predicate}: \"{c.old_value}\" -> \"{c.new_value}\"")
+        print(f"   Memory: {c.new_memory_id[:12]}... ({c.resolved_at[:10]})")
+        reasoning = (c.metadata or {}).get("reasoning", "")
+        if reasoning:
+            print(f"   Reason: {reasoning}")
+        print()
+
+
+def cmd_backfill_facts(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = _get_lore(args.db)
+    if not lore._fact_extraction_enabled:
+        lore.close()
+        print(
+            "Error: Fact extraction not enabled. "
+            "Configure llm_provider, llm_api_key, and set fact_extraction=True.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    count = lore.backfill_facts(project=args.project, limit=args.limit)
+    lore.close()
+    print(f"Extracted {count} fact(s) from existing memories.")
+
+
+def cmd_graph(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    if not lore._knowledge_graph_enabled:
+        print("Knowledge graph is not enabled.", file=sys.stderr)
+        lore.close()
+        sys.exit(1)
+
+    from lore.graph.cache import find_query_entities
+    entities = find_query_entities(args.entity, lore._entity_cache)
+    if not entities:
+        print(f"No entity matching '{args.entity}' found.")
+        lore.close()
+        return
+
+    rel_types = [args.rel_type] if args.rel_type else None
+    seed_ids = [e.id for e in entities]
+    graph_ctx = lore._graph_traverser.traverse(
+        seed_entity_ids=seed_ids,
+        depth=min(args.depth, 3),
+        min_weight=args.min_weight,
+        rel_types=rel_types,
+        direction=args.direction,
+    )
+
+    if args.format == "json":
+        from lore.graph.visualization import to_d3_json
+        print(json.dumps(to_d3_json(graph_ctx), indent=2))
+    else:
+        from lore.graph.visualization import to_text_tree
+        print(to_text_tree(graph_ctx))
+        print(f"\n{len(graph_ctx.entities)} entities, {len(graph_ctx.relationships)} relationships")
+        print(f"Relevance: {graph_ctx.relevance_score:.2f}")
+
+    lore.close()
+
+
+def cmd_entities(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    entities = lore._store.list_entities(entity_type=args.entity_type, limit=args.limit)
+    lore.close()
+
+    if not entities:
+        print("No entities found.")
+        return
+
+    if args.sort == "name":
+        entities.sort(key=lambda e: e.name)
+    elif args.sort == "created":
+        entities.sort(key=lambda e: e.created_at, reverse=True)
+
+    print(f"{'Name':<30} {'Type':<15} {'Mentions':<10} {'Aliases'}")
+    print("-" * 80)
+    for e in entities:
+        aliases = ", ".join(e.aliases[:3]) if e.aliases else "-"
+        print(f"{e.name:<30} {e.entity_type:<15} {e.mention_count:<10} {aliases}")
+
+
+def cmd_relationships(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+
+    entity_id = None
+    if args.entity:
+        e = lore._store.get_entity_by_name(args.entity.lower())
+        if e:
+            entity_id = e.id
+        else:
+            print(f"Entity '{args.entity}' not found.")
+            lore.close()
+            return
+
+    rels = lore._store.list_relationships(
+        entity_id=entity_id,
+        rel_type=args.rel_type,
+        include_expired=args.include_expired,
+        limit=args.limit,
+    )
+    lore.close()
+
+    if not rels:
+        print("No relationships found.")
+        return
+
+    print(f"{'Source':<25} {'Type':<20} {'Target':<25} {'Weight':<10} {'Status'}")
+    print("-" * 90)
+    for r in rels:
+        src = lore._store.get_entity(r.source_entity_id) if hasattr(lore, '_store') else None
+        tgt = lore._store.get_entity(r.target_entity_id) if hasattr(lore, '_store') else None
+        # We already closed lore, so show IDs
+        status = "active" if r.valid_until is None else "expired"
+        print(f"{r.source_entity_id[:24]:<25} {r.rel_type:<20} {r.target_entity_id[:24]:<25} {r.weight:<10.2f} {status}")
+
+
+def cmd_graph_backfill(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    count = lore.graph_backfill(project=args.project, limit=args.limit)
+    lore.close()
+    print(f"Processed {count} memory(ies) into the knowledge graph.")
+
+
+def cmd_ingest(args: argparse.Namespace) -> None:
+    from lore.ingest.adapters.raw import RawAdapter
+    from lore.ingest.dedup import Deduplicator
+    from lore.ingest.pipeline import IngestionPipeline
+
+    lore = _get_lore(args.db)
+    tags: List[str] = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+    source = args.source
+    dedup_mode = args.dedup_mode
+    enrich = not args.no_enrich
+
+    adapter = RawAdapter()
+    adapter.adapter_name = source  # override adapter name to match --source
+    deduplicator = Deduplicator(store=lore._store, embedder=lore._embedder)
+    pipeline = IngestionPipeline(
+        lore=lore,
+        deduplicator=deduplicator,
+        default_dedup_mode=dedup_mode,
+        auto_enrich=enrich,
+    )
+
+    def _ingest_one(content: str, user=None, channel=None) -> str:
+        payload = {
+            "content": content,
+            "user": user or args.user,
+            "channel": channel or args.channel,
+            "type": args.type,
+            "tags": tags,
+        }
+        result = pipeline.ingest(
+            adapter=adapter,
+            payload=payload,
+            project=args.project,
+            dedup_mode=dedup_mode,
+            enrich=enrich,
+        )
+        if result.status == "ingested":
+            return result.memory_id
+        elif result.status.startswith("duplicate"):
+            raise RuntimeError(f"Duplicate detected ({result.dedup_strategy}): {result.duplicate_of}")
+        else:
+            raise RuntimeError(result.error or result.status)
+
+    if args.file_path:
+        import os
+
+        if not os.path.exists(args.file_path):
+            print(f"Error: File not found: {args.file_path}", file=sys.stderr)
+            lore.close()
+            sys.exit(1)
+
+        with open(args.file_path, "r") as f:
+            raw = f.read()
+
+        # Try JSON array first
+        items = None
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                items = data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        if items is not None:
+            ingested = 0
+            failed = 0
+            for i, item in enumerate(items):
+                if isinstance(item, dict):
+                    content = item.get("content", "")
+                    user = item.get("user", args.user)
+                    channel = item.get("channel", args.channel)
+                else:
+                    content = str(item)
+                    user = args.user
+                    channel = args.channel
+
+                if not content.strip():
+                    failed += 1
+                    continue
+                try:
+                    mid = _ingest_one(content, user, channel)
+                    print(f"[{i}] Ingested: {mid}")
+                    ingested += 1
+                except Exception as e:
+                    print(f"[{i}] Failed: {e}", file=sys.stderr)
+                    failed += 1
+            print(f"\nTotal: {ingested} ingested, {failed} failed")
+        else:
+            # Treat as newline-delimited text
+            lines = [l.strip() for l in raw.splitlines() if l.strip()]
+            if not lines:
+                print("No content found in file.", file=sys.stderr)
+                lore.close()
+                sys.exit(1)
+            ingested = 0
+            for i, line in enumerate(lines):
+                try:
+                    mid = _ingest_one(line)
+                    print(f"[{i}] Ingested: {mid}")
+                    ingested += 1
+                except Exception as e:
+                    print(f"[{i}] Failed: {e}", file=sys.stderr)
+            print(f"\nTotal: {ingested} ingested")
+    elif args.content:
+        try:
+            mid = _ingest_one(args.content)
+            print(mid)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            lore.close()
+            sys.exit(1)
+    else:
+        print("Provide content or use --file", file=sys.stderr)
+        lore.close()
+        sys.exit(1)
+
+    lore.close()
+
+
+def cmd_consolidate(args: argparse.Namespace) -> None:
+    import asyncio
+
+    lore = _get_lore(args.db)
+
+    if args.show_log:
+        entries = lore.get_consolidation_log(limit=args.limit)
+        lore.close()
+        if not entries:
+            print("No consolidation log entries.")
+            return
+        print(f"{'ID':<28} {'Strategy':<14} {'Originals':<10} {'Created':<22}")
+        print("-" * 80)
+        for e in entries:
+            print(
+                f"{e.id:<28} {e.strategy:<14} {e.original_count:<10} "
+                f"{e.created_at[:19]}"
+            )
+        return
+
+    dry_run = not args.execute
+    result = asyncio.run(lore.consolidate(
+        project=args.project,
+        tier=args.tier,
+        strategy=args.strategy,
+        dry_run=dry_run,
+    ))
+    lore.close()
+
+    prefix = "[dry-run] " if dry_run else ""
+    print(f"{prefix}Groups found: {result.groups_found}")
+    print(f"{prefix}Memories consolidated: {result.memories_consolidated}")
+    print(f"{prefix}Memories created: {result.memories_created}")
+    print(f"{prefix}Duplicates merged: {result.duplicates_merged}")
+
+    if result.groups:
+        print()
+        for i, g in enumerate(result.groups, 1):
+            strat = g.get("strategy", "?")
+            count = g.get("memory_count", 0)
+            line = f"  Group {i}: {count} memories (strategy: {strat})"
+            if "similarity" in g:
+                line += f" [similarity: {g['similarity']:.2f}]"
+            if "entities" in g:
+                line += f" [entities: {', '.join(g['entities'][:3])}]"
+            print(line)
+            preview = g.get("preview", "")
+            print(f"    Preview: {preview[:120]}")
+
+    if dry_run:
+        print(f"\n{prefix}Run with --execute to apply changes.")
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -473,9 +1037,21 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "forget": cmd_forget,
         "memories": cmd_memories,
         "stats": cmd_stats,
-"freshness": cmd_freshness,
+        "prompt": cmd_prompt,
+        "freshness": cmd_freshness,
         "github-sync": cmd_github_sync,
         "reindex": cmd_reindex,
+        "classify": cmd_classify,
+        "enrich": cmd_enrich,
+        "facts": cmd_facts,
+        "conflicts": cmd_conflicts,
+        "backfill-facts": cmd_backfill_facts,
+        "graph": cmd_graph,
+        "entities": cmd_entities,
+        "relationships": cmd_relationships,
+        "graph-backfill": cmd_graph_backfill,
+        "ingest": cmd_ingest,
+        "consolidate": cmd_consolidate,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)
