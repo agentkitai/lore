@@ -270,6 +270,40 @@ def downvote_memory(memory_id: str) -> str:
 
 @mcp.tool(
     description=(
+        "Export memories formatted for LLM context injection. "
+        "USE THIS WHEN: you need to inject relevant memories directly into a prompt "
+        "or system message. Returns a formatted block of memories optimized for your "
+        "LLM's preferred format. Supports XML (Claude), ChatML (OpenAI), markdown, "
+        "and raw text."
+    ),
+)
+def as_prompt(
+    query: str,
+    format: str = "xml",
+    max_tokens: Optional[int] = None,
+    limit: int = 10,
+    tags: Optional[List[str]] = None,
+    type: Optional[str] = None,
+    include_metadata: bool = False,
+) -> str:
+    """Export memories formatted for LLM context injection."""
+    try:
+        lore = _get_lore()
+        return lore.as_prompt(
+            query,
+            format=format,
+            max_tokens=max_tokens,
+            limit=limit,
+            tags=tags,
+            type=type,
+            include_metadata=include_metadata,
+        )
+    except Exception as e:
+        return f"Failed to format memories: {e}"
+
+
+@mcp.tool(
+    description=(
         "Check if stored memories are still fresh against current git state. "
         "USE THIS WHEN: you want to verify that code-pattern memories are "
         "still relevant before acting on them. Compares memories with "

@@ -244,6 +244,19 @@ def build_parser() -> argparse.ArgumentParser:
     kr = keys_sub.add_parser("revoke", help="Revoke an API key")
     kr.add_argument("key_id", help="Key ID to revoke")
 
+    # prompt
+    p = sub.add_parser("prompt", help="Export memories formatted for LLM prompts")
+    p.add_argument("query", help="Search query")
+    p.add_argument("--format", default="xml", choices=["xml", "chatml", "markdown", "raw"])
+    p.add_argument("--max-tokens", type=int, default=None)
+    p.add_argument("--max-chars", type=int, default=None)
+    p.add_argument("--limit", type=int, default=10)
+    p.add_argument("--type", default=None)
+    p.add_argument("--tags", default=None, help="Comma-separated tags")
+    p.add_argument("--min-score", type=float, default=0.0)
+    p.add_argument("--include-metadata", action="store_true", default=False)
+    p.add_argument("--project", default=None, help="Project namespace")
+
     # freshness
     p = sub.add_parser("freshness", help="Check memories for staleness against git history")
     p.add_argument("--repo", default=".", help="Path to git repository (default: .)")
@@ -292,6 +305,27 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
     return parser
+
+
+def cmd_prompt(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    tags = None
+    if args.tags:
+        tags = [t.strip() for t in args.tags.split(",") if t.strip()]
+    result = lore.as_prompt(
+        args.query,
+        format=args.format,
+        max_tokens=args.max_tokens,
+        max_chars=args.max_chars,
+        limit=args.limit,
+        type=args.type,
+        tags=tags,
+        min_score=args.min_score,
+        include_metadata=args.include_metadata,
+        project=args.project,
+    )
+    lore.close()
+    print(result, end="")
 
 
 def cmd_github_sync(args: argparse.Namespace) -> None:
@@ -473,6 +507,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "forget": cmd_forget,
         "memories": cmd_memories,
         "stats": cmd_stats,
+"prompt": cmd_prompt,
 "freshness": cmd_freshness,
         "github-sync": cmd_github_sync,
         "reindex": cmd_reindex,

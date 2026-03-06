@@ -18,6 +18,11 @@ from lore.exceptions import MemoryNotFoundError, SecretBlockedError
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
+from lore.importance import (
+    compute_importance,
+    resolve_half_life,
+    time_adjusted_importance,
+)
 from lore.types import (
     DECAY_HALF_LIVES,
     VALID_MEMORY_TYPES,
@@ -89,16 +94,30 @@ class Lore:
         dual_embedding: bool = False,
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        importance_threshold: float = 0.05,
+        decay_config: Optional[Dict[Tuple[str, str], float]] = None,
     ) -> None:
         self.project = project
         self._half_life_days = decay_half_life_days
         self._half_lives: Dict[str, float] = {**DECAY_HALF_LIVES}
         if decay_half_lives:
             self._half_lives.update(decay_half_lives)
-        self._similarity_weight = decay_similarity_weight
-        self._freshness_weight = decay_freshness_weight
+        self._importance_threshold = importance_threshold
+        self._decay_config = decay_config
         self._last_cleanup: float = 0.0
         self._last_cleanup_count: int = 0
+
+        # Deprecation warnings for removed additive weights
+        if decay_similarity_weight != 0.7 or decay_freshness_weight != 0.3:
+            import warnings
+            warnings.warn(
+                "decay_similarity_weight and decay_freshness_weight are deprecated "
+                "and ignored. Scoring now uses multiplicative model: "
+                "score = cosine_similarity * time_adjusted_importance. "
+                "Remove these parameters. They will be deleted in v0.7.0.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
 
         # Redaction pipeline
         self._redact_enabled = redact
@@ -352,7 +371,7 @@ class Lore:
         if code_query_norm is not None:
             cosine_code = embeddings_normed @ code_query_norm
 
-        # Weighted additive scoring: similarity + freshness
+        # Multiplicative scoring: cosine_similarity * time_adjusted_importance
         results: List[RecallResult] = []
         for i, memory in enumerate(candidates):
             # Pick cosine score matching the model that embedded this memory
@@ -364,23 +383,69 @@ class Lore:
             else:
                 cosine_score = float(cosine_prose[i])
 
-            age_days = (
-                now - datetime.fromisoformat(memory.created_at)
-            ).total_seconds() / 86400.0
-            half_life = self._half_lives.get(memory.type, self._half_life_days)
-            half_life = max(half_life, 0.001)
-            freshness = 0.5 ** (age_days / half_life)
-            vote_factor = 1.0 + (memory.upvotes - memory.downvotes) * 0.1
-            vote_factor = max(vote_factor, 0.1)
-            similarity = cosine_score * memory.confidence * vote_factor
-            final_score = (
-                self._similarity_weight * similarity
-                + self._freshness_weight * freshness
+            half_life = resolve_half_life(
+                getattr(memory, "tier", None),
+                memory.type,
+                overrides=self._decay_config,
             )
+            tai = time_adjusted_importance(memory, half_life, now=now)
+            final_score = cosine_score * tai
             results.append(RecallResult(memory=memory, score=final_score))
 
         results.sort(key=lambda r: r.score, reverse=True)
-        return results[:limit]
+        top_results = results[:limit]
+
+        # Access tracking: update returned memories
+        access_now = _utc_now_iso()
+        for r in top_results:
+            memory = r.memory
+            memory.access_count += 1
+            memory.last_accessed_at = access_now
+            memory.importance_score = compute_importance(memory)
+            self._store.update(memory)
+
+        return top_results
+
+    def as_prompt(
+        self,
+        query: str,
+        *,
+        format: str = "xml",
+        max_tokens: Optional[int] = None,
+        max_chars: Optional[int] = None,
+        limit: int = 10,
+        tags: Optional[List[str]] = None,
+        type: Optional[str] = None,
+        min_score: float = 0.0,
+        include_metadata: bool = False,
+        project: Optional[str] = None,
+    ) -> str:
+        """Export memories formatted for LLM context injection.
+
+        Calls recall() internally, then formats results using PromptFormatter.
+        Returns a formatted string ready for prompt injection, or "" if no matches.
+        """
+        from lore.prompt.formatter import PromptFormatter
+
+        # Allow project override for the recall call
+        orig_project = self.project
+        if project is not None:
+            self.project = project
+        try:
+            results = self.recall(query, tags=tags, type=type, limit=limit)
+        finally:
+            self.project = orig_project
+
+        formatter = PromptFormatter()
+        return formatter.format(
+            query,
+            results,
+            format=format,
+            max_tokens=max_tokens,
+            max_chars=max_chars,
+            min_score=min_score,
+            include_metadata=include_metadata,
+        )
 
     def forget(self, memory_id: str) -> bool:
         """Delete a memory by ID. Returns True if it existed."""
@@ -432,7 +497,7 @@ class Lore:
         )
 
     def upvote(self, memory_id: str) -> None:
-        """Increment upvotes for a memory."""
+        """Increment upvotes for a memory and recompute importance."""
         if hasattr(self._store, 'upvote'):
             self._store.upvote(memory_id)
             return
@@ -440,11 +505,12 @@ class Lore:
         if memory is None:
             raise MemoryNotFoundError(memory_id)
         memory.upvotes += 1
+        memory.importance_score = compute_importance(memory)
         memory.updated_at = _utc_now_iso()
         self._store.update(memory)
 
     def downvote(self, memory_id: str) -> None:
-        """Increment downvotes for a memory."""
+        """Increment downvotes for a memory and recompute importance."""
         if hasattr(self._store, 'downvote'):
             self._store.downvote(memory_id)
             return
@@ -452,6 +518,7 @@ class Lore:
         if memory is None:
             raise MemoryNotFoundError(memory_id)
         memory.downvotes += 1
+        memory.importance_score = compute_importance(memory)
         memory.updated_at = _utc_now_iso()
         self._store.update(memory)
 
@@ -519,12 +586,52 @@ class Lore:
     # TTL Cleanup
     # ------------------------------------------------------------------
 
+    def cleanup_expired(self, importance_threshold: Optional[float] = None) -> int:
+        """Remove expired memories AND memories below importance threshold."""
+        threshold = importance_threshold if importance_threshold is not None else self._importance_threshold
+        now = datetime.now(timezone.utc)
+        count = 0
+
+        # Phase 1: TTL/expiry cleanup
+        count += self._store.cleanup_expired()
+
+        # Phase 2: Importance-based cleanup
+        all_memories = self._store.list(limit=10000)
+        to_delete = []
+        for memory in all_memories:
+            half_life = resolve_half_life(
+                getattr(memory, "tier", None),
+                memory.type,
+                overrides=self._decay_config,
+            )
+            tai = time_adjusted_importance(memory, half_life, now=now)
+            if tai < threshold:
+                to_delete.append(memory.id)
+
+        for memory_id in to_delete:
+            self._store.delete(memory_id)
+            count += 1
+
+        return count
+
+    def recalculate_importance(self, project: Optional[str] = None) -> int:
+        """Recompute importance_score for all memories. Returns count updated."""
+        memories = self._store.list(project=project, limit=100000)
+        count = 0
+        for memory in memories:
+            new_score = compute_importance(memory)
+            if memory.importance_score != new_score:
+                memory.importance_score = new_score
+                self._store.update(memory)
+                count += 1
+        return count
+
     def _maybe_cleanup_expired(self) -> None:
         """Run cleanup_expired at most once per 60 seconds."""
         now = time.monotonic()
         if now - self._last_cleanup >= _CLEANUP_INTERVAL_SECONDS:
             self._last_cleanup = now
-            self._last_cleanup_count = self._store.cleanup_expired()
+            self._last_cleanup_count = self.cleanup_expired()
 
 
 
