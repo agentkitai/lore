@@ -1470,3 +1470,106 @@ class TestRelationshipProperties:
         store.save_relationship(r)
         got = store.get_relationship(r.id)
         assert got.properties == {"version": "3.x", "required": True}
+
+
+# ---------------------------------------------------------------------------
+# FIX 3: Environment variable configuration
+# ---------------------------------------------------------------------------
+
+class TestGraphEnvVars:
+    def test_graph_max_depth_env(self, store):
+        import os
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("LORE_GRAPH_MAX_DEPTH", "5")
+            traverser = GraphTraverser(store)
+            assert traverser.MAX_DEPTH == 5
+
+    def test_graph_max_depth_default(self, store):
+        import os
+        with pytest.MonkeyPatch.context() as mp:
+            mp.delenv("LORE_GRAPH_MAX_DEPTH", raising=False)
+            traverser = GraphTraverser(store)
+            assert traverser.MAX_DEPTH == 3
+
+    def test_graph_confidence_threshold_env(self, tmp_path):
+        import os
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("LORE_GRAPH_CONFIDENCE_THRESHOLD", "0.8")
+            from lore.lore import Lore
+            db = str(tmp_path / "test.db")
+            lore = Lore(db_path=db, knowledge_graph=True)
+            assert lore._graph_confidence_threshold == 0.8
+            lore.close()
+
+    def test_graph_co_occurrence_env(self, tmp_path):
+        import os
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("LORE_GRAPH_CO_OCCURRENCE", "false")
+            from lore.lore import Lore
+            db = str(tmp_path / "test.db")
+            lore = Lore(db_path=db, knowledge_graph=True)
+            assert lore._graph_co_occurrence is False
+            lore.close()
+
+    def test_graph_co_occurrence_weight_env(self, tmp_path):
+        import os
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setenv("LORE_GRAPH_CO_OCCURRENCE_WEIGHT", "0.7")
+            from lore.lore import Lore
+            db = str(tmp_path / "test.db")
+            lore = Lore(db_path=db, knowledge_graph=True)
+            assert lore._graph_co_occurrence_weight == 0.7
+            lore.close()
+
+
+# ---------------------------------------------------------------------------
+# FIX 4: related MCP tool
+# ---------------------------------------------------------------------------
+
+class TestRelatedMCPTool:
+    def test_related_by_entity_name(self, store):
+        """related() finds connections from an entity name."""
+        e1 = _make_entity(store, "react", "technology")
+        e2 = _make_entity(store, "webpack", "technology")
+        now = _utc_now_iso()
+        rel = Relationship(
+            id=str(ULID()),
+            source_entity_id=e1.id, target_entity_id=e2.id,
+            rel_type="uses", valid_from=now, created_at=now, updated_at=now,
+        )
+        store.save_relationship(rel)
+
+        from unittest.mock import patch, MagicMock
+        from lore.graph.cache import EntityCache
+
+        mock_lore = MagicMock()
+        mock_lore._knowledge_graph_enabled = True
+        mock_lore._store = store
+        mock_lore._entity_cache = EntityCache(store)
+        mock_lore._graph_traverser = GraphTraverser(store)
+
+        with patch("lore.mcp.server._get_lore", return_value=mock_lore):
+            from lore.mcp.server import related
+            result = related(entity_name="react", depth=1)
+            assert "react" in result
+            assert "webpack" in result
+
+    def test_related_requires_input(self):
+        """related() returns error if no memory_id or entity_name."""
+        from unittest.mock import patch, MagicMock
+        mock_lore = MagicMock()
+        mock_lore._knowledge_graph_enabled = True
+        with patch("lore.mcp.server._get_lore", return_value=mock_lore):
+            from lore.mcp.server import related
+            result = related()
+            assert "Provide either" in result
+
+    def test_related_graph_disabled(self):
+        """related() returns message when graph is disabled."""
+        from unittest.mock import patch, MagicMock
+        mock_lore = MagicMock()
+        mock_lore._knowledge_graph_enabled = False
+        with patch("lore.mcp.server._get_lore", return_value=mock_lore):
+            from lore.mcp.server import related
+            result = related(entity_name="foo")
+            assert "not enabled" in result

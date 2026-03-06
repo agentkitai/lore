@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Set
 
 from lore.store.base import Store
@@ -23,6 +24,9 @@ class GraphTraverser:
 
     def __init__(self, store: Store) -> None:
         self.store = store
+        env_max = os.environ.get("LORE_GRAPH_MAX_DEPTH")
+        if env_max is not None:
+            self.MAX_DEPTH = int(env_max)
 
     def traverse(
         self,

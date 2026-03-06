@@ -168,9 +168,17 @@ class Lore:
         # Knowledge graph config (stored before store init)
         self._knowledge_graph_enabled = knowledge_graph or _env_bool("LORE_KNOWLEDGE_GRAPH")
         self._graph_depth = int(os.environ.get("LORE_GRAPH_DEPTH", str(graph_depth)))
-        self._graph_confidence_threshold = graph_confidence_threshold
-        self._graph_co_occurrence = graph_co_occurrence
-        self._graph_co_occurrence_weight = graph_co_occurrence_weight
+        self._graph_confidence_threshold = float(
+            os.environ.get("LORE_GRAPH_CONFIDENCE_THRESHOLD", str(graph_confidence_threshold))
+        )
+        self._graph_co_occurrence = (
+            _env_bool("LORE_GRAPH_CO_OCCURRENCE")
+            if os.environ.get("LORE_GRAPH_CO_OCCURRENCE") is not None
+            else graph_co_occurrence
+        )
+        self._graph_co_occurrence_weight = float(
+            os.environ.get("LORE_GRAPH_CO_OCCURRENCE_WEIGHT", str(graph_co_occurrence_weight))
+        )
 
         if isinstance(store, str) and store != "remote":
             raise ValueError(f"store must be a Store instance or 'remote', got {store!r}")
@@ -280,6 +288,10 @@ class Lore:
             self._relationship_manager = RelationshipManager(self._store, self._entity_manager)
             self._graph_traverser = GraphTraverser(self._store)
             self._entity_cache = EntityCache(self._store)
+
+            # Wire graph edge expiration into conflict resolver
+            if self._conflict_resolver is not None:
+                self._conflict_resolver._relationship_manager = self._relationship_manager
 
     def close(self) -> None:
         """Close underlying store if it supports closing."""

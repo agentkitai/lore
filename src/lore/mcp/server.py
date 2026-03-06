@@ -698,6 +698,93 @@ def entity_map(
         return f"Entity map failed: {e}"
 
 
+@mcp.tool(
+    description=(
+        "Find memories and entities related to a given memory or entity. "
+        "USE THIS WHEN: you want a quick overview of what's connected to something, "
+        "without needing the full graph_query options. "
+        "Simpler interface than graph_query for common lookups."
+    ),
+)
+def related(
+    memory_id: Optional[str] = None,
+    entity_name: Optional[str] = None,
+    depth: int = 1,
+) -> str:
+    """Find related memories and entities by memory ID or entity name."""
+    try:
+        lore = _get_lore()
+        if not lore._knowledge_graph_enabled:
+            return "Knowledge graph is not enabled. Set LORE_KNOWLEDGE_GRAPH=true."
+
+        if not memory_id and not entity_name:
+            return "Provide either memory_id or entity_name."
+
+        from lore.graph.cache import find_query_entities
+
+        seed_ids: list = []
+
+        if entity_name:
+            entities = find_query_entities(entity_name, lore._entity_cache)
+            if not entities:
+                return f"No entity matching '{entity_name}' found in the graph."
+            seed_ids = [e.id for e in entities]
+
+        if memory_id:
+            mentions = lore._store.get_entity_mentions_for_memory(memory_id)
+            if not mentions:
+                return f"No entities linked to memory '{memory_id}'."
+            mention_entity_ids = [m.entity_id for m in mentions]
+            seed_ids = list(set(seed_ids + mention_entity_ids))
+
+        graph_ctx = lore._graph_traverser.traverse(
+            seed_entity_ids=seed_ids,
+            depth=min(depth, 3),
+        )
+
+        if not graph_ctx.relationships and not graph_ctx.entities:
+            return "No related entities or memories found."
+
+        lines = ["Related (depth={}):\n".format(depth)]
+
+        entity_map_dict = {e.id: e for e in graph_ctx.entities}
+        if graph_ctx.entities:
+            lines.append("Entities:")
+            for e in graph_ctx.entities:
+                lines.append(f"  - {e.name} ({e.entity_type})")
+
+        if graph_ctx.relationships:
+            lines.append("\nRelationships:")
+            for rel in graph_ctx.relationships:
+                src = entity_map_dict.get(rel.source_entity_id)
+                tgt = entity_map_dict.get(rel.target_entity_id)
+                if src and tgt:
+                    lines.append(
+                        f"  {src.name} --{rel.rel_type}--> {tgt.name} "
+                        f"(weight: {rel.weight:.2f})"
+                    )
+
+        # Include related memories via entity mentions
+        related_memory_ids: set = set()
+        for e in graph_ctx.entities:
+            mentions = lore._store.get_entity_mentions_for_entity(e.id)
+            for m in mentions:
+                if m.memory_id != memory_id:
+                    related_memory_ids.add(m.memory_id)
+
+        if related_memory_ids:
+            lines.append(f"\nRelated memories ({len(related_memory_ids)}):")
+            for mid in list(related_memory_ids)[:10]:
+                mem = lore._store.get(mid)
+                if mem:
+                    preview = mem.content[:80] + "..." if len(mem.content) > 80 else mem.content
+                    lines.append(f"  [{mid}] {preview}")
+
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Related lookup failed: {e}"
+
+
 def run_server() -> None:
     """Start the MCP server with stdio transport."""
     mcp.run(transport="stdio")

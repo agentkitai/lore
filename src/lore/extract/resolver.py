@@ -29,8 +29,9 @@ class ResolutionResult:
 class ConflictResolver:
     """Applies resolution strategies to extracted facts."""
 
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, relationship_manager: Optional[object] = None) -> None:
         self._store = store
+        self._relationship_manager = relationship_manager
 
     def resolve_all(
         self,
@@ -72,6 +73,11 @@ class ConflictResolver:
         old_fact = ef.conflicting_fact
         if old_fact is not None:
             self._store.invalidate_fact(old_fact.id, invalidated_by=memory_id)
+            if self._relationship_manager is not None:
+                try:
+                    self._relationship_manager.expire_relationship_for_fact(old_fact.id)
+                except Exception:
+                    logger.warning("Failed to expire graph edge for fact %s", old_fact.id)
 
         self._store.save_fact(ef.fact)
         result.saved_facts.append(ef.fact)

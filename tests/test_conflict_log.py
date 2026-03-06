@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -301,3 +301,57 @@ class TestPipelineIntegration:
         # No facts should exist
         assert store.get_facts("m1") == []
         assert store.get_active_facts() == []
+
+
+# ---------------------------------------------------------------------------
+# SUPERSEDE -> graph edge expiration wiring
+# ---------------------------------------------------------------------------
+
+class TestSupersedeGraphWiring:
+    def test_supersede_calls_expire_relationship_for_fact(self):
+        """SUPERSEDE should expire graph edges for the old fact."""
+        store = MemoryStore()
+        old_fact = _make_fact("old1", "m0", subject="user", predicate="city", obj="NYC")
+        store.save_fact(old_fact)
+
+        new_fact = _make_fact("new1", "m1", subject="user", predicate="city", obj="Berlin")
+        ef = _make_extracted(fact=new_fact, resolution="SUPERSEDE",
+                            reasoning="moved", conflicting_fact=old_fact)
+
+        mock_rm = MagicMock()
+        resolver = ConflictResolver(store, relationship_manager=mock_rm)
+        resolver.resolve_all([ef], memory_id="m1")
+
+        mock_rm.expire_relationship_for_fact.assert_called_once_with("old1")
+
+    def test_supersede_no_relationship_manager(self):
+        """SUPERSEDE works without relationship_manager (no crash)."""
+        store = MemoryStore()
+        old_fact = _make_fact("old1", "m0", subject="user", predicate="city", obj="NYC")
+        store.save_fact(old_fact)
+
+        new_fact = _make_fact("new1", "m1", subject="user", predicate="city", obj="Berlin")
+        ef = _make_extracted(fact=new_fact, resolution="SUPERSEDE",
+                            reasoning="moved", conflicting_fact=old_fact)
+
+        resolver = ConflictResolver(store)
+        result = resolver.resolve_all([ef], memory_id="m1")
+        assert result.stats["supersede"] == 1
+
+    def test_supersede_graph_expiration_failure_is_non_fatal(self):
+        """If expire_relationship_for_fact raises, supersede still completes."""
+        store = MemoryStore()
+        old_fact = _make_fact("old1", "m0", subject="user", predicate="city", obj="NYC")
+        store.save_fact(old_fact)
+
+        new_fact = _make_fact("new1", "m1", subject="user", predicate="city", obj="Berlin")
+        ef = _make_extracted(fact=new_fact, resolution="SUPERSEDE",
+                            reasoning="moved", conflicting_fact=old_fact)
+
+        mock_rm = MagicMock()
+        mock_rm.expire_relationship_for_fact.side_effect = RuntimeError("db error")
+        resolver = ConflictResolver(store, relationship_manager=mock_rm)
+        result = resolver.resolve_all([ef], memory_id="m1")
+
+        assert result.stats["supersede"] == 1
+        assert len(result.saved_facts) == 1
