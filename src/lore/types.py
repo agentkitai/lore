@@ -8,6 +8,19 @@ from typing import Any, Dict, List, Optional, Tuple
 # Valid resolution strategies for fact conflicts.
 VALID_RESOLUTIONS: Tuple[str, ...] = ("SUPERSEDE", "MERGE", "CONTRADICT", "NOOP")
 
+# Valid entity types for the knowledge graph.
+VALID_ENTITY_TYPES: Tuple[str, ...] = (
+    "person", "tool", "project", "concept", "organization",
+    "platform", "language", "framework", "service", "other",
+)
+
+# Valid relationship types for the knowledge graph.
+VALID_REL_TYPES: Tuple[str, ...] = (
+    "depends_on", "uses", "implements", "mentions", "works_on",
+    "related_to", "part_of", "created_by", "deployed_on",
+    "communicates_with", "extends", "configures", "co_occurs_with",
+)
+
 
 @dataclass
 class Fact:
@@ -174,4 +187,61 @@ TIER_RECALL_WEIGHT: Dict[str, float] = {
     "short":   1.1,
     "long":    1.2,
 }
+
+
+@dataclass
+class Entity:
+    """A node in the knowledge graph."""
+
+    id: str
+    name: str
+    entity_type: str
+    aliases: List[str] = field(default_factory=list)
+    description: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+    mention_count: int = 1
+    first_seen_at: str = ""
+    last_seen_at: str = ""
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class Relationship:
+    """A directed edge in the knowledge graph."""
+
+    id: str
+    source_entity_id: str
+    target_entity_id: str
+    rel_type: str
+    weight: float = 1.0
+    properties: Optional[Dict[str, Any]] = None
+    source_fact_id: Optional[str] = None
+    source_memory_id: Optional[str] = None
+    valid_from: str = ""
+    valid_until: Optional[str] = None
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class EntityMention:
+    """Links an entity to a memory that mentions it."""
+
+    id: str
+    entity_id: str
+    memory_id: str
+    mention_type: str = "explicit"
+    confidence: float = 1.0
+    created_at: str = ""
+
+
+@dataclass
+class GraphContext:
+    """Result of a graph traversal."""
+
+    entities: List[Entity] = field(default_factory=list)
+    relationships: List[Relationship] = field(default_factory=list)
+    paths: List[List[str]] = field(default_factory=list)
+    relevance_score: float = 0.0
 

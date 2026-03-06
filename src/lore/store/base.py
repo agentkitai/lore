@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
-from lore.types import ConflictEntry, Fact, Memory
+from lore.types import ConflictEntry, Entity, EntityMention, Fact, Memory, Relationship
 
 
 class Store(ABC):
@@ -85,4 +85,98 @@ class Store(ABC):
         limit: int = 20,
     ) -> List[ConflictEntry]:
         """List conflict log entries. Returns empty list by default."""
+        return []
+
+    # ------------------------------------------------------------------
+    # Graph storage (default no-op implementations)
+    # ------------------------------------------------------------------
+
+    def save_entity(self, entity: Entity) -> None:
+        pass
+
+    def get_entity(self, entity_id: str) -> Optional[Entity]:
+        return None
+
+    def get_entity_by_name(self, name: str) -> Optional[Entity]:
+        return None
+
+    def get_entity_by_alias(self, alias: str) -> Optional[Entity]:
+        return None
+
+    def update_entity(self, entity: Entity) -> None:
+        pass
+
+    def delete_entity(self, entity_id: str) -> None:
+        pass
+
+    def list_entities(
+        self,
+        entity_type: Optional[str] = None,
+        limit: int = 1000,
+    ) -> List[Entity]:
+        return []
+
+    def save_relationship(self, rel: Relationship) -> None:
+        pass
+
+    def get_relationship(self, rel_id: str) -> Optional[Relationship]:
+        return None
+
+    def get_active_relationship(
+        self, source_id: str, target_id: str, rel_type: str
+    ) -> Optional[Relationship]:
+        return None
+
+    def get_relationship_by_fact(self, fact_id: str) -> Optional[Relationship]:
+        return None
+
+    def update_relationship(self, rel: Relationship) -> None:
+        pass
+
+    def delete_relationship(self, rel_id: str) -> None:
+        pass
+
+    def get_relationships_from(
+        self, entity_ids: List[str], active_only: bool = True
+    ) -> List[Relationship]:
+        return []
+
+    def get_relationships_to(
+        self, entity_ids: List[str], active_only: bool = True
+    ) -> List[Relationship]:
+        return []
+
+    def list_relationships(
+        self,
+        entity_id: Optional[str] = None,
+        rel_type: Optional[str] = None,
+        include_expired: bool = False,
+        limit: int = 100,
+    ) -> List[Relationship]:
+        return []
+
+    def save_entity_mention(self, mention: EntityMention) -> None:
+        pass
+
+    def get_entity_mentions_for_memory(self, memory_id: str) -> List[EntityMention]:
+        return []
+
+    def get_entity_mentions_for_entity(self, entity_id: str) -> List[EntityMention]:
+        return []
+
+    def transfer_entity_mentions(self, from_id: str, to_id: str) -> None:
+        pass
+
+    def transfer_entity_relationships(self, from_id: str, to_id: str) -> None:
+        pass
+
+    def query_relationships(
+        self,
+        entity_ids: List[str],
+        direction: str = "both",
+        active_only: bool = True,
+        at_time: Optional[str] = None,
+        rel_types: Optional[List[str]] = None,
+    ) -> List[Relationship]:
+        """Query relationships for hop traversal. Returns empty list by default."""
         return []

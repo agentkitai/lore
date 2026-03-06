@@ -30,7 +30,9 @@ from lore.importance import (
 from lore.types import (
     ConflictEntry,
     DECAY_HALF_LIVES,
+    Entity,
     Fact,
+    GraphContext,
     TIER_DEFAULT_TTL,
     TIER_RECALL_WEIGHT,
     VALID_MEMORY_TYPES,
@@ -123,6 +125,11 @@ class Lore:
         enrichment_provider: Optional[str] = None,
         fact_extraction: bool = False,
         fact_confidence_threshold: float = 0.3,
+        knowledge_graph: bool = False,
+        graph_depth: int = 0,
+        graph_confidence_threshold: float = 0.5,
+        graph_co_occurrence: bool = True,
+        graph_co_occurrence_weight: float = 0.3,
     ) -> None:
         self.project = project
         self._tier_weights = tier_recall_weights or dict(TIER_RECALL_WEIGHT)
@@ -158,6 +165,13 @@ class Lore:
         else:
             self._redactor = None
 
+        # Knowledge graph config (stored before store init)
+        self._knowledge_graph_enabled = knowledge_graph or _env_bool("LORE_KNOWLEDGE_GRAPH")
+        self._graph_depth = int(os.environ.get("LORE_GRAPH_DEPTH", str(graph_depth)))
+        self._graph_confidence_threshold = graph_confidence_threshold
+        self._graph_co_occurrence = graph_co_occurrence
+        self._graph_co_occurrence_weight = graph_co_occurrence_weight
+
         if isinstance(store, str) and store != "remote":
             raise ValueError(f"store must be a Store instance or 'remote', got {store!r}")
         if isinstance(store, str) and store == "remote":
@@ -170,7 +184,7 @@ class Lore:
                 db_path = os.path.join(
                     os.path.expanduser("~"), ".lore", "default.db"
                 )
-            self._store = SqliteStore(db_path)
+            self._store = SqliteStore(db_path, knowledge_graph=self._knowledge_graph_enabled)
 
         # Resolve embedder: explicit embedder > embedding_fn > default local
         self._dual_embedding = dual_embedding
@@ -250,6 +264,22 @@ class Lore:
                     "fact_extraction=True but no LLM provider configured. "
                     "Set llm_provider and llm_api_key to enable."
                 )
+
+        # Knowledge graph setup
+        self._entity_manager = None
+        self._relationship_manager = None
+        self._graph_traverser = None
+        self._entity_cache = None
+        if self._knowledge_graph_enabled:
+            from lore.graph.entities import EntityManager
+            from lore.graph.relationships import RelationshipManager
+            from lore.graph.traverser import GraphTraverser
+            from lore.graph.cache import EntityCache
+
+            self._entity_manager = EntityManager(self._store)
+            self._relationship_manager = RelationshipManager(self._store, self._entity_manager)
+            self._graph_traverser = GraphTraverser(self._store)
+            self._entity_cache = EntityCache(self._store)
 
     def close(self) -> None:
         """Close underlying store if it supports closing."""
@@ -383,6 +413,7 @@ class Lore:
         self._store.save(memory)
 
         # Fact extraction (after save, so memory exists for FK)
+        extracted_facts = []
         if self._fact_extraction_enabled and self._fact_extractor and self._conflict_resolver:
             try:
                 enrichment_ctx = (metadata or {}).get("enrichment")
@@ -391,9 +422,17 @@ class Lore:
                     content=content,
                     enrichment_context=enrichment_ctx,
                 )
-                self._conflict_resolver.resolve_all(extracted, memory_id=memory.id)
+                result = self._conflict_resolver.resolve_all(extracted, memory_id=memory.id)
+                extracted_facts = result.saved_facts
             except Exception:
                 logger.warning("Fact extraction failed, memory saved without facts", exc_info=True)
+
+        # Knowledge graph update (after enrichment + facts)
+        if self._knowledge_graph_enabled and self._entity_manager:
+            try:
+                self._update_graph(memory.id, metadata, extracted_facts)
+            except Exception:
+                logger.warning("Graph update failed, memory saved without graph", exc_info=True)
 
         return memory.id
 
@@ -416,6 +455,7 @@ class Lore:
         entity: Optional[str] = None,
         category: Optional[str] = None,
         use_facts: bool = False,
+        graph_depth: Optional[int] = None,
     ) -> List[RecallResult]:
         """Semantic search for memories.
 
@@ -453,6 +493,7 @@ class Lore:
                 min_confidence=min_confidence,
             )
         else:
+            effective_graph_depth = graph_depth if graph_depth is not None else getattr(self, '_graph_depth', 0)
             results = self._recall_local(
                 query_vec, tags=tags, type=type, tier=tier, limit=limit,
                 min_confidence=min_confidence,
@@ -460,6 +501,8 @@ class Lore:
                 intent=intent, domain=domain, emotion=emotion,
                 topic=topic, sentiment=sentiment,
                 entity=entity, category=category,
+                graph_depth=effective_graph_depth,
+                query_text=query,
             )
 
         # Fact-aware recall: supplement with fact-based matches
@@ -493,6 +536,8 @@ class Lore:
         sentiment: Optional[str] = None,
         entity: Optional[str] = None,
         category: Optional[str] = None,
+        graph_depth: int = 0,
+        query_text: str = "",
     ) -> List[RecallResult]:
         """Client-side semantic search for local stores."""
         now = datetime.now(timezone.utc)
@@ -549,7 +594,19 @@ class Lore:
         if code_query_norm is not None:
             cosine_code = embeddings_normed @ code_query_norm
 
-        # Multiplicative scoring: cosine_similarity * time_adjusted_importance
+        # Graph context for boost (only if graph_depth > 0 and graph enabled)
+        graph_context: Optional[GraphContext] = None
+        if graph_depth > 0 and getattr(self, '_knowledge_graph_enabled', False) and getattr(self, '_graph_traverser', None) and getattr(self, '_entity_cache', None):
+            from lore.graph.cache import find_query_entities
+            query_entities = find_query_entities(query_text, self._entity_cache)
+            if query_entities:
+                seed_ids = [e.id for e in query_entities]
+                graph_context = self._graph_traverser.traverse(
+                    seed_entity_ids=seed_ids,
+                    depth=graph_depth,
+                )
+
+        # Multiplicative scoring: cosine_similarity * time_adjusted_importance * graph_boost
         results: List[RecallResult] = []
         for i, memory in enumerate(candidates):
             # Pick cosine score matching the model that embedded this memory
@@ -568,8 +625,31 @@ class Lore:
             )
             tai = time_adjusted_importance(memory, half_life, now=now)
             tier_weight = self._tier_weights.get(memory.tier, 1.0)
-            final_score = cosine_score * tai * tier_weight
+            graph_boost = self._compute_graph_boost(memory.id, graph_context) if graph_context else 1.0
+            final_score = cosine_score * tai * tier_weight * graph_boost
             results.append(RecallResult(memory=memory, score=final_score))
+
+        # Add graph-discovered memories not in vector results
+        if graph_context and graph_context.entities:
+            existing_ids = {r.memory.id for r in results}
+            graph_memory_ids = set()
+            for ge in graph_context.entities:
+                for mention in self._store.get_entity_mentions_for_entity(ge.id):
+                    if mention.memory_id not in existing_ids:
+                        graph_memory_ids.add(mention.memory_id)
+            for mid in graph_memory_ids:
+                mem = self._store.get(mid)
+                if mem and mem.embedding:
+                    # Compute a basic score for graph-discovered memories
+                    mem_vec = _deserialize_embedding(mem.embedding)
+                    mem_norm = mem_vec / max(float(np.linalg.norm(mem_vec)), 1e-9)
+                    cosine_score = float(query_norm @ mem_norm)
+                    half_life = resolve_half_life(mem.tier, mem.type, overrides=self._decay_config)
+                    tai = time_adjusted_importance(mem, half_life, now=now)
+                    tier_weight = self._tier_weights.get(mem.tier, 1.0)
+                    graph_boost = self._compute_graph_boost(mid, graph_context)
+                    final_score = cosine_score * tai * tier_weight * graph_boost
+                    results.append(RecallResult(memory=mem, score=final_score))
 
         results.sort(key=lambda r: r.score, reverse=True)
 
@@ -673,6 +753,11 @@ class Lore:
 
     def forget(self, memory_id: str) -> bool:
         """Delete a memory by ID. Returns True if it existed."""
+        if getattr(self, '_knowledge_graph_enabled', False):
+            try:
+                self._cascade_graph_on_forget(memory_id)
+            except Exception:
+                logger.warning("Graph cascade failed for forget(%s)", memory_id, exc_info=True)
         return self._store.delete(memory_id)
 
     def get(self, memory_id: str) -> Optional[Memory]:
@@ -945,6 +1030,110 @@ class Lore:
         if now - self._last_cleanup >= _CLEANUP_INTERVAL_SECONDS:
             self._last_cleanup = now
             self._last_cleanup_count = self.cleanup_expired()
+
+    # ------------------------------------------------------------------
+    # Knowledge Graph helpers
+    # ------------------------------------------------------------------
+
+    def _update_graph(
+        self,
+        memory_id: str,
+        metadata: Optional[Dict[str, Any]],
+        extracted_facts: List,
+    ) -> None:
+        """Update graph from enrichment entities and extracted facts."""
+        if not self._entity_manager or not self._relationship_manager:
+            return
+
+        # F6 integration: enrichment entities -> graph nodes
+        enrichment = (metadata or {}).get("enrichment", {})
+        enrichment_entities = enrichment.get("entities", [])
+        if enrichment_entities:
+            self._entity_manager.ingest_from_enrichment(memory_id, enrichment_entities)
+
+        # F2 integration: facts -> graph edges
+        if extracted_facts:
+            from lore.graph.extraction import update_graph_from_facts
+            update_graph_from_facts(
+                memory_id=memory_id,
+                facts=extracted_facts,
+                entity_manager=self._entity_manager,
+                relationship_manager=self._relationship_manager,
+                confidence_threshold=self._graph_confidence_threshold,
+                co_occurrence=self._graph_co_occurrence,
+                co_occurrence_weight=self._graph_co_occurrence_weight,
+            )
+
+        # Invalidate entity cache
+        if self._entity_cache:
+            self._entity_cache.invalidate()
+
+    def _compute_graph_boost(
+        self, memory_id: str, graph_context: Optional[GraphContext]
+    ) -> float:
+        """Compute multiplicative graph boost for a memory."""
+        if not graph_context or not graph_context.relationships:
+            return 1.0
+
+        memory_entity_ids = {
+            em.entity_id
+            for em in self._store.get_entity_mentions_for_memory(memory_id)
+        }
+        if not memory_entity_ids:
+            return 1.0
+
+        graph_entity_ids = {e.id for e in graph_context.entities}
+        overlap = memory_entity_ids & graph_entity_ids
+        if not overlap:
+            return 1.0
+
+        overlap_ratio = len(overlap) / max(len(memory_entity_ids), 1)
+        boost = 1.0 + (overlap_ratio * graph_context.relevance_score * 0.5)
+        return min(boost, 1.5)
+
+    def _cascade_graph_on_forget(self, memory_id: str) -> None:
+        """Clean up graph data when a memory is forgotten."""
+        mentions = self._store.get_entity_mentions_for_memory(memory_id)
+        for mention in mentions:
+            entity = self._store.get_entity(mention.entity_id)
+            if entity:
+                entity.mention_count -= 1
+                if entity.mention_count <= 0:
+                    self._store.delete_entity(entity.id)
+                else:
+                    entity.updated_at = datetime.now(timezone.utc).isoformat()
+                    self._store.update_entity(entity)
+
+        # Delete relationships sourced from this memory
+        rels = self._store.list_relationships(limit=10000)
+        for rel in rels:
+            if rel.source_memory_id == memory_id:
+                self._store.delete_relationship(rel.id)
+
+        if self._entity_cache:
+            self._entity_cache.invalidate()
+
+    def graph_backfill(self, project: Optional[str] = None, limit: int = 1000) -> int:
+        """Build graph from existing memories with enrichment/facts."""
+        if not self._knowledge_graph_enabled or not self._entity_manager:
+            return 0
+
+        memories = self._store.list(project=project, limit=limit)
+        count = 0
+        for memory in memories:
+            existing_mentions = self._store.get_entity_mentions_for_memory(memory.id)
+            if existing_mentions:
+                continue
+
+            facts = self._store.get_facts(memory.id)
+            metadata = memory.metadata
+            try:
+                self._update_graph(memory.id, metadata, facts)
+                count += 1
+            except Exception:
+                logger.warning("Backfill failed for memory %s", memory.id, exc_info=True)
+
+        return count
 
     # ------------------------------------------------------------------
     # Fact-aware recall helpers

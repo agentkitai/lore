@@ -596,6 +596,108 @@ def conflicts(
         return f"Failed to list conflicts: {e}"
 
 
+@mcp.tool(
+    description=(
+        "Query the knowledge graph to find entities connected to a given entity. "
+        "USE THIS WHEN: you want to understand relationships between concepts, "
+        "find dependencies, or explore how entities are connected. "
+        "Returns connected entities and relationship types within the specified depth."
+    ),
+)
+def graph_query(
+    entity: str,
+    depth: int = 2,
+    rel_types: Optional[List[str]] = None,
+    direction: str = "both",
+    min_weight: float = 0.1,
+) -> str:
+    """Traverse the knowledge graph from a given entity."""
+    try:
+        lore = _get_lore()
+        if not lore._knowledge_graph_enabled:
+            return "Knowledge graph is not enabled. Set LORE_KNOWLEDGE_GRAPH=true."
+
+        from lore.graph.cache import find_query_entities
+        entities = find_query_entities(entity, lore._entity_cache)
+        if not entities:
+            return f"No entity matching '{entity}' found in the graph."
+
+        seed_ids = [e.id for e in entities]
+        graph_ctx = lore._graph_traverser.traverse(
+            seed_entity_ids=seed_ids,
+            depth=min(depth, 3),
+            min_weight=min_weight,
+            rel_types=rel_types,
+            direction=direction,
+        )
+
+        if not graph_ctx.relationships:
+            names = ", ".join(e.name for e in entities)
+            return f"Entity '{names}' found but has no connections within {depth} hop(s)."
+
+        lines = [f"Graph query for '{entity}' (depth={depth}):\n"]
+        lines.append(f"Found {len(graph_ctx.entities)} entities, {len(graph_ctx.relationships)} relationships\n")
+
+        entity_map = {e.id: e for e in graph_ctx.entities}
+        for rel in graph_ctx.relationships:
+            src = entity_map.get(rel.source_entity_id)
+            tgt = entity_map.get(rel.target_entity_id)
+            if src and tgt:
+                lines.append(
+                    f"  {src.name} --{rel.rel_type}--> {tgt.name} "
+                    f"(weight: {rel.weight:.2f})"
+                )
+
+        lines.append(f"\nRelevance score: {graph_ctx.relevance_score:.2f}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Graph query failed: {e}"
+
+
+@mcp.tool(
+    description=(
+        "List entities in the knowledge graph, optionally filtered by type. "
+        "USE THIS WHEN: you want to see what entities Lore knows about, "
+        "find entity names for graph queries, or get an overview of the knowledge graph."
+    ),
+)
+def entity_map(
+    entity_type: Optional[str] = None,
+    limit: int = 50,
+    format: str = "text",
+) -> str:
+    """List entities in the knowledge graph."""
+    try:
+        lore = _get_lore()
+        if not lore._knowledge_graph_enabled:
+            return "Knowledge graph is not enabled. Set LORE_KNOWLEDGE_GRAPH=true."
+
+        entities = lore._store.list_entities(entity_type=entity_type, limit=limit)
+        if not entities:
+            return "No entities in the knowledge graph."
+
+        if format == "json":
+            import json
+            from lore.graph.visualization import to_d3_json
+            from lore.types import GraphContext
+            # Create a minimal graph context for visualization
+            rels = []
+            for e in entities:
+                rels.extend(lore._store.list_relationships(entity_id=e.id, limit=5))
+            ctx = GraphContext(entities=entities, relationships=rels)
+            return json.dumps(to_d3_json(ctx), indent=2)
+
+        lines = [f"Entities ({len(entities)}):\n"]
+        lines.append(f"{'Name':<30} {'Type':<15} {'Mentions':<10} {'Aliases'}")
+        lines.append("-" * 80)
+        for e in entities:
+            aliases = ", ".join(e.aliases[:3]) if e.aliases else "-"
+            lines.append(f"{e.name:<30} {e.entity_type:<15} {e.mention_count:<10} {aliases}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Entity map failed: {e}"
+
+
 def run_server() -> None:
     """Start the MCP server with stdio transport."""
     mcp.run(transport="stdio")

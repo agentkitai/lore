@@ -381,6 +381,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", default=None, help="Filter to project")
     p.add_argument("--limit", type=int, default=100)
 
+    # graph
+    p = sub.add_parser("graph", help="Traverse knowledge graph from an entity")
+    p.add_argument("entity", help="Entity name to start traversal from")
+    p.add_argument("--depth", type=int, default=2, help="Traversal depth (1-3)")
+    p.add_argument("--type", dest="rel_type", default=None, help="Filter by relationship type")
+    p.add_argument("--direction", choices=["outbound", "inbound", "both"], default="both")
+    p.add_argument("--min-weight", type=float, default=0.1, dest="min_weight")
+    p.add_argument("--format", choices=["text", "json"], default="text")
+
+    # entities
+    p = sub.add_parser("entities", help="List entities in the knowledge graph")
+    p.add_argument("--type", dest="entity_type", default=None, help="Filter by entity type")
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--sort", choices=["mentions", "name", "created"], default="mentions")
+
+    # relationships
+    p = sub.add_parser("relationships", help="List relationships in the knowledge graph")
+    p.add_argument("--entity", default=None, help="Filter by entity name")
+    p.add_argument("--type", dest="rel_type", default=None, help="Filter by relationship type")
+    p.add_argument("--limit", type=int, default=50)
+    p.add_argument("--include-expired", action="store_true", dest="include_expired")
+
+    # graph-backfill
+    p = sub.add_parser("graph-backfill", help="Build graph from existing memories")
+    p.add_argument("--project", default=None, help="Filter to project")
+    p.add_argument("--limit", type=int, default=1000)
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
@@ -661,6 +688,113 @@ def cmd_backfill_facts(args: argparse.Namespace) -> None:
     print(f"Extracted {count} fact(s) from existing memories.")
 
 
+def cmd_graph(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    if not lore._knowledge_graph_enabled:
+        print("Knowledge graph is not enabled.", file=sys.stderr)
+        lore.close()
+        sys.exit(1)
+
+    from lore.graph.cache import find_query_entities
+    entities = find_query_entities(args.entity, lore._entity_cache)
+    if not entities:
+        print(f"No entity matching '{args.entity}' found.")
+        lore.close()
+        return
+
+    rel_types = [args.rel_type] if args.rel_type else None
+    seed_ids = [e.id for e in entities]
+    graph_ctx = lore._graph_traverser.traverse(
+        seed_entity_ids=seed_ids,
+        depth=min(args.depth, 3),
+        min_weight=args.min_weight,
+        rel_types=rel_types,
+        direction=args.direction,
+    )
+
+    if args.format == "json":
+        from lore.graph.visualization import to_d3_json
+        print(json.dumps(to_d3_json(graph_ctx), indent=2))
+    else:
+        from lore.graph.visualization import to_text_tree
+        print(to_text_tree(graph_ctx))
+        print(f"\n{len(graph_ctx.entities)} entities, {len(graph_ctx.relationships)} relationships")
+        print(f"Relevance: {graph_ctx.relevance_score:.2f}")
+
+    lore.close()
+
+
+def cmd_entities(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    entities = lore._store.list_entities(entity_type=args.entity_type, limit=args.limit)
+    lore.close()
+
+    if not entities:
+        print("No entities found.")
+        return
+
+    if args.sort == "name":
+        entities.sort(key=lambda e: e.name)
+    elif args.sort == "created":
+        entities.sort(key=lambda e: e.created_at, reverse=True)
+
+    print(f"{'Name':<30} {'Type':<15} {'Mentions':<10} {'Aliases'}")
+    print("-" * 80)
+    for e in entities:
+        aliases = ", ".join(e.aliases[:3]) if e.aliases else "-"
+        print(f"{e.name:<30} {e.entity_type:<15} {e.mention_count:<10} {aliases}")
+
+
+def cmd_relationships(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+
+    entity_id = None
+    if args.entity:
+        e = lore._store.get_entity_by_name(args.entity.lower())
+        if e:
+            entity_id = e.id
+        else:
+            print(f"Entity '{args.entity}' not found.")
+            lore.close()
+            return
+
+    rels = lore._store.list_relationships(
+        entity_id=entity_id,
+        rel_type=args.rel_type,
+        include_expired=args.include_expired,
+        limit=args.limit,
+    )
+    lore.close()
+
+    if not rels:
+        print("No relationships found.")
+        return
+
+    print(f"{'Source':<25} {'Type':<20} {'Target':<25} {'Weight':<10} {'Status'}")
+    print("-" * 90)
+    for r in rels:
+        src = lore._store.get_entity(r.source_entity_id) if hasattr(lore, '_store') else None
+        tgt = lore._store.get_entity(r.target_entity_id) if hasattr(lore, '_store') else None
+        # We already closed lore, so show IDs
+        status = "active" if r.valid_until is None else "expired"
+        print(f"{r.source_entity_id[:24]:<25} {r.rel_type:<20} {r.target_entity_id[:24]:<25} {r.weight:<10.2f} {status}")
+
+
+def cmd_graph_backfill(args: argparse.Namespace) -> None:
+    from lore import Lore
+
+    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    count = lore.graph_backfill(project=args.project, limit=args.limit)
+    lore.close()
+    print(f"Processed {count} memory(ies) into the knowledge graph.")
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -700,8 +834,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "forget": cmd_forget,
         "memories": cmd_memories,
         "stats": cmd_stats,
-"prompt": cmd_prompt,
-"freshness": cmd_freshness,
+        "prompt": cmd_prompt,
+        "freshness": cmd_freshness,
         "github-sync": cmd_github_sync,
         "reindex": cmd_reindex,
         "classify": cmd_classify,
@@ -709,6 +843,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "facts": cmd_facts,
         "conflicts": cmd_conflicts,
         "backfill-facts": cmd_backfill_facts,
+        "graph": cmd_graph,
+        "entities": cmd_entities,
+        "relationships": cmd_relationships,
+        "graph-backfill": cmd_graph_backfill,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)
