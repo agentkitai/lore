@@ -1,16 +1,12 @@
 """MCP server that wraps the Lore SDK.
 
-Exposes memory tools over stdio transport:
-  - remember: store a memory
-  - recall: semantic search for relevant memories
-  - forget: delete a memory
-  - list_memories: list stored memories
-  - stats: memory statistics
-  - upvote_memory: boost a memory's ranking
-  - downvote_memory: lower a memory's ranking
+Exposes 20 memory tools over stdio transport for knowledge management,
+knowledge graphs, fact extraction, classification, and more.
 
 Configure via environment variables:
   LORE_PROJECT — default project scope
+  LORE_ENRICHMENT_ENABLED — enable LLM enrichment pipeline
+  LORE_KNOWLEDGE_GRAPH — enable knowledge graph features
 """
 
 from __future__ import annotations
@@ -88,7 +84,9 @@ mcp = FastMCP(
         "The content should be a clear, self-contained piece of knowledge. "
         "Optionally set tier: 'working' (auto-expires in 1h, for scratch context), "
         "'short' (auto-expires in 7d, for session learnings), "
-        "or 'long' (default, no expiry, for lasting knowledge)."
+        "or 'long' (default, no expiry, for lasting knowledge). "
+        "When enrichment is enabled, automatically extracts topics, entities, sentiment, "
+        "classifies intent/domain/emotion, and extracts structured facts."
     ),
 )
 def remember(
@@ -128,7 +126,11 @@ def remember(
         "your problem or question. "
         "GOOD queries: 'CORS errors with FastAPI', 'Docker build fails on M1', "
         "'rate limiting strategy for API'. "
-        "BAD queries: 'help', 'error', 'fix this'. Be specific."
+        "BAD queries: 'help', 'error', 'fix this'. Be specific. "
+        "Supports filtering by tier (working/short/long), type, tags, "
+        "entity, topic, intent, domain, and emotion. "
+        "When knowledge graph is enabled, set graph_depth (e.g. via LORE_GRAPH_DEPTH) "
+        "to surface memories connected via entity relationships."
     ),
 )
 def recall(
@@ -228,7 +230,10 @@ def forget(memory_id: str) -> str:
 
 @mcp.tool(
     description=(
-        "List stored memories, optionally filtered by type, tier, or project."
+        "List stored memories, optionally filtered by type, tier, or project. "
+        "USE THIS WHEN: you want to browse all stored memories, audit what's "
+        "in the knowledge base, or find memories by type/tier without semantic search. "
+        "For semantic search, use recall instead."
     ),
 )
 def list_memories(
@@ -258,7 +263,12 @@ def list_memories(
 
 
 @mcp.tool(
-    description="Return memory statistics: total count, count by type, oldest and newest.",
+    description=(
+        "Return memory statistics: total count, counts by type and tier, "
+        "oldest and newest memory timestamps. "
+        "USE THIS WHEN: you want an overview of the knowledge base, check how many "
+        "memories exist, or see the distribution across types and tiers."
+    ),
 )
 def stats(project: Optional[str] = None) -> str:
     """Return memory statistics."""
@@ -453,7 +463,8 @@ def classify(text: str) -> str:
     description=(
         "Enrich memories with LLM-extracted metadata (topics, sentiment, entities, categories). "
         "USE THIS WHEN: you want to add structured metadata to existing memories for better filtering. "
-        "Requires enrichment to be enabled in Lore config with a valid LLM API key."
+        "Requires LORE_ENRICHMENT_ENABLED=true and a configured LLM provider (LORE_LLM_PROVIDER + API key). "
+        "Enrichment runs automatically on remember() when enabled; use this tool to enrich older memories."
     ),
 )
 def enrich(
@@ -658,7 +669,8 @@ def graph_query(
     description=(
         "List entities in the knowledge graph, optionally filtered by type. "
         "USE THIS WHEN: you want to see what entities Lore knows about, "
-        "find entity names for graph queries, or get an overview of the knowledge graph."
+        "find entity names for graph queries, or get an overview of the knowledge graph. "
+        "Set format='json' for D3-compatible graph visualization output."
     ),
 )
 def entity_map(

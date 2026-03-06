@@ -1,34 +1,29 @@
 # MCP Setup Guide
 
-Lore provides an MCP (Model Context Protocol) server that gives Claude and other AI assistants access to your lesson memory.
+Lore provides an MCP (Model Context Protocol) server that gives AI assistants access to persistent memory. This page is an index of per-client setup guides and common configuration.
 
-## Tools Provided
+## Client Setup Guides
 
-| Tool | Description |
-|------|-------------|
-| `save_lesson` | Save a lesson learned from solving a problem |
-| `recall_lessons` | Search for relevant lessons |
-| `upvote_lesson` | Boost a helpful lesson's ranking |
-| `downvote_lesson` | Lower an unhelpful lesson's ranking |
+| Client | Config Location | Guide |
+|--------|----------------|-------|
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) | [Setup guide](setup-claude-desktop.md) |
+| Claude Code | `.claude/settings.json` in project root | [Setup guide](setup-claude-code.md) |
+| Cursor | `.cursor/mcp.json` in project root | [Setup guide](setup-cursor.md) |
+| VS Code / Copilot | `.vscode/mcp.json` in project root | [Setup guide](setup-vscode.md) |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` (global) | [Setup guide](setup-windsurf.md) |
+| Cline | `.cline/mcp_settings.json` in project root | [Setup guide](setup-cline.md) |
+| ChatGPT | Via MCP bridge (experimental) | [Setup guide](setup-chatgpt.md) |
 
-## Install
+## Minimal Config
 
-```bash
-pip install lore-sdk[mcp]
-```
-
-## Claude Desktop
-
-Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, `%APPDATA%\Claude\claude_desktop_config.json` on Windows):
-
-### Local Mode (SQLite)
+Every client uses the same JSON structure. The minimal config for local mode:
 
 ```json
 {
   "mcpServers": {
     "lore": {
-      "command": "python",
-      "args": ["-m", "lore.mcp.server"],
+      "command": "uvx",
+      "args": ["lore-memory"],
       "env": {
         "LORE_PROJECT": "my-project"
       }
@@ -37,14 +32,91 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-### Remote Mode (Lore Cloud)
+Alternative command (if uvx is not installed):
+
+```json
+{
+  "command": "python",
+  "args": ["-m", "lore.mcp.server"]
+}
+```
+
+## Tools Provided (20)
+
+| Tool | Description |
+|------|-------------|
+| `remember` | Save a memory with optional tier, tags, and metadata |
+| `recall` | Semantic search for relevant memories |
+| `forget` | Delete a memory by ID |
+| `list_memories` | List stored memories with filters |
+| `stats` | Memory statistics (counts, tiers, importance) |
+| `upvote_memory` | Boost a helpful memory's ranking |
+| `downvote_memory` | Lower an unhelpful memory's ranking |
+| `extract_facts` | Extract structured facts from text (requires LLM) |
+| `list_facts` | List active facts from the knowledge base |
+| `conflicts` | Show fact conflict log |
+| `graph_query` | Traverse the knowledge graph from an entity |
+| `entity_map` | List entities in the knowledge graph |
+| `related` | Find related memories and entities |
+| `classify` | Classify text by intent, domain, and emotion |
+| `enrich` | Add LLM-extracted metadata to memories |
+| `consolidate` | Merge duplicates and summarize memory clusters |
+| `ingest` | Import content with source tracking |
+| `as_prompt` | Export memories formatted for LLM prompts |
+| `check_freshness` | Check memory freshness against git history |
+| `github_sync` | Sync GitHub repo data into Lore |
+
+See the [API Reference](api-reference.md) for detailed documentation of each tool.
+
+## Environment Variables
+
+### Core
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LORE_STORE` | `local` | Storage backend: `local` (SQLite) or `remote` (HTTP) |
+| `LORE_PROJECT` | none | Default project scope for all operations |
+| `LORE_API_URL` | none | Server URL (required when `LORE_STORE=remote`) |
+| `LORE_API_KEY` | none | API key (required when `LORE_STORE=remote`) |
+
+### LLM Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LORE_LLM_PROVIDER` | none | LLM provider: `anthropic`, `openai`, `azure`, etc. (via litellm) |
+| `LORE_LLM_MODEL` | `gpt-4o-mini` | Model name for classification, fact extraction, consolidation |
+| `LORE_LLM_API_KEY` | none | API key for the LLM provider |
+| `LORE_LLM_BASE_URL` | none | Custom base URL for the LLM API (e.g., for Azure or local models) |
+
+### Feature Toggles
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LORE_ENRICHMENT_ENABLED` | `false` | Enable LLM enrichment (topics, sentiment, entities, categories) |
+| `LORE_ENRICHMENT_MODEL` | `gpt-4o-mini` | Model for enrichment (can differ from main LLM model) |
+| `LORE_CLASSIFY` | `false` | Enable dialog classification on remember |
+| `LORE_KNOWLEDGE_GRAPH` | `false` | Enable knowledge graph entity/relationship extraction |
+| `LORE_FACT_EXTRACTION` | `false` | Enable structured fact extraction from memories |
+
+### Knowledge Graph Tuning
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LORE_GRAPH_DEPTH` | `0` | Default graph traversal depth during recall (0 = disabled) |
+| `LORE_GRAPH_CONFIDENCE_THRESHOLD` | `0.5` | Minimum confidence for graph entities |
+| `LORE_GRAPH_CO_OCCURRENCE` | `true` | Extract co-occurrence relationships between entities |
+| `LORE_GRAPH_CO_OCCURRENCE_WEIGHT` | `0.3` | Weight for co-occurrence edges |
+
+## Remote Mode
+
+To connect to a self-hosted Lore server instead of using local SQLite:
 
 ```json
 {
   "mcpServers": {
     "lore": {
-      "command": "python",
-      "args": ["-m", "lore.mcp.server"],
+      "command": "uvx",
+      "args": ["lore-memory"],
       "env": {
         "LORE_STORE": "remote",
         "LORE_API_URL": "http://localhost:8765",
@@ -56,36 +128,4 @@ Add to your Claude Desktop config (`~/Library/Application Support/Claude/claude_
 }
 ```
 
-## OpenClaw
-
-Add to your OpenClaw skills config:
-
-```yaml
-skills:
-  lore:
-    type: mcp
-    command: python
-    args: ["-m", "lore.mcp.server"]
-    env:
-      LORE_STORE: remote
-      LORE_API_URL: http://localhost:8765
-      LORE_API_KEY: lore_sk_your_key_here
-      LORE_PROJECT: my-project
-```
-
-## Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LORE_STORE` | `local` | `local` (SQLite) or `remote` (Lore Cloud) |
-| `LORE_PROJECT` | none | Default project scope for all operations |
-| `LORE_API_URL` | — | Server URL (required for remote) |
-| `LORE_API_KEY` | — | API key (required for remote) |
-
-## Verify It Works
-
-After configuring, ask Claude:
-
-> "Search lore for lessons about rate limiting"
-
-Claude should call the `recall_lessons` tool automatically.
+See [Self-Hosted Setup](self-hosted.md) for deploying the Lore server.

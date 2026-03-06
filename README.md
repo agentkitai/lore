@@ -1,25 +1,95 @@
-# Lore
+# Lore — Cross-Agent Memory for AI
 
 [![PyPI](https://img.shields.io/pypi/v/lore-sdk)](https://pypi.org/project/lore-sdk/)
-[![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
+[![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 [![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz1/lore/ci.yml?label=tests)](https://github.com/amitpaz1/lore/actions)
-[![License](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
 
-**Cross-agent memory.** Agents store what they learn, other agents recall it. PII redacted automatically.
+**Persistent semantic memory that works with every MCP-compatible AI tool.**
+
+Agents store what they learn — other agents recall it. Knowledge graphs, fact extraction, auto-consolidation, and more. No API key required for basic use.
 
 ## Why Lore?
 
-Your agents keep making the same mistakes. Agent A discovers Stripe rate-limits at 100 req/min. Agent B hits the same wall tomorrow. No learning transfer.
+- **Local-first** — SQLite by default, no server needed. Scale to Postgres + pgvector when ready.
+- **No API key required** — local ONNX embeddings ship with the package. LLM features are opt-in.
+- **Single database** — no Neo4j, Redis, or Qdrant dependency. Everything in one SQLite file or Postgres DB.
+- **20 MCP tools** — remember, recall, knowledge graph, fact extraction, consolidation, classification, and more.
+- **Opt-in intelligence** — enrichment, classification, fact extraction, and knowledge graphs activate only when you configure an LLM.
 
-Lore fixes this. It's a tiny library — no server, no infra — that gives agents a shared memory. Remember a fact in one line, recall it in another. Sensitive data is redacted before storage automatically.
+## Comparison
 
-**What Lore is:** A local-first SDK for storing and retrieving memories across agent runs. SQLite-backed, embedding-powered semantic search, automatic PII redaction, TTL support.
+| Feature | Lore | Mem0 | Zep | Cognee |
+|---|---|---|---|---|
+| Local-first (no server) | Yes | No | No | No |
+| MCP native | Yes | No | No | No |
+| Knowledge graph | Yes | Yes* | Yes | Yes |
+| Fact extraction | Yes | No | No | Yes |
+| Auto-consolidation | Yes | No | Yes | No |
+| Conflict resolution | Yes | No | No | No |
+| Memory tiers | Yes | No | Yes | No |
+| Dialog classification | Yes | No | No | No |
+| Webhook ingestion | Yes | No | No | No |
+| No external DB required | Yes | No** | No | No |
+| PII masking | Yes | No | No | No |
 
-**What Lore is not:** A conversation memory store (see Mem0/Zep), a vector database, or a RAG framework.
+\* Mem0 requires Neo4j for graph features.
+\*\* Mem0 requires Qdrant or Redis.
 
-Integrates with [AgentLens](https://github.com/amitpaz1/agentlens) as an optional memory backend.
+*Comparison as of March 2026. Lore focuses on being the MCP-native, local-first choice for agent memory.*
 
-## Quickstart
+## Quick Start
+
+### 1. Install (30 seconds)
+
+```bash
+pip install lore-sdk
+```
+
+### 2. Configure your AI tool (60 seconds)
+
+Add to your MCP client config (e.g., Claude Desktop `claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "lore": {
+      "command": "uvx",
+      "args": ["lore-memory"],
+      "env": {
+        "LORE_PROJECT": "my-project"
+      }
+    }
+  }
+}
+```
+
+See [Setup Guides](docs/mcp-setup.md) for Claude Desktop, Cursor, VS Code, Windsurf, ChatGPT, Cline, and Claude Code.
+
+### 3. Try it (3 minutes)
+
+Ask your AI assistant:
+
+> "Remember that our API uses REST with JSON responses and rate limits at 100 req/min"
+
+Then ask:
+
+> "What do you know about our API?"
+
+Lore's `recall` tool will be invoked automatically.
+
+### 4. Enable LLM features (optional)
+
+```bash
+export LORE_ENRICHMENT_ENABLED=true
+export LORE_LLM_PROVIDER=anthropic
+export LORE_LLM_API_KEY=sk-ant-...
+```
+
+This enables auto-enrichment (topics, entities, sentiment), classification (intent, domain, emotion), and fact extraction on every `remember()` call.
+
+### 5. Use the SDK directly
 
 ```python
 from lore import Lore
@@ -27,308 +97,143 @@ from lore import Lore
 lore = Lore()  # zero config — local SQLite, built-in embeddings
 
 lore.remember(
-    "Stripe API returns 429 after 100 req/min — use exponential backoff starting at 1s, cap at 32s",
+    "Stripe API returns 429 after 100 req/min — use exponential backoff",
     tags=["stripe", "rate-limit"],
-    confidence=0.9,
+    tier="long",
 )
 
 results = lore.recall("stripe rate limiting")
-prompt = lore.as_prompt(results)  # ready for system prompt injection
+for r in results:
+    print(f"[{r.score:.2f}] {r.memory.content}")
 ```
 
-```typescript
-import { Lore } from 'lore-sdk';
+> [Full Quick Start Guide](docs/quickstart.md)
 
-const lore = new Lore({ embeddingFn: yourEmbedFn });
+## Architecture
 
-await lore.remember(
-  'Stripe API returns 429 after 100 req/min — use exponential backoff starting at 1s, cap at 32s',
-  { tags: ['stripe', 'rate-limit'], confidence: 0.9 },
-);
-
-const results = await lore.recall('stripe rate limiting');
-const prompt = lore.asPrompt(results);
+```mermaid
+graph LR
+    A[MCP Client] -->|stdio| B[MCP Server]
+    B --> C[Lore SDK]
+    C --> D[Store<br/>SQLite / Postgres / HTTP]
+    C --> E[Embedder<br/>ONNX local]
+    C --> F[LLM Pipeline<br/>optional]
+    F --> F1[Enrich]
+    F --> F2[Classify]
+    F --> F3[Extract Facts]
+    F --> F4[Knowledge Graph]
+    F --> F5[Consolidate]
 ```
 
-## Install
+**Pipeline:** `remember()` → redact PII → embed → store → enrich → classify → extract facts → update graph
 
-**Python** (3.9+):
-```bash
-pip install lore-sdk
-```
+**Recall:** `recall()` → embed query → vector search → tier weighting → importance scoring → graph boost → return results
 
-**TypeScript** (Node 18+):
-```bash
-npm install lore-sdk
-```
+> [Full Architecture Documentation](docs/architecture.md)
 
-## Python API Reference
+## Features
 
-### `Lore(project?, db_path?, store?, embedding_fn?, embedder?, redact?, redact_patterns?, decay_half_life_days?)`
+### Memory Management
+**remember** · **recall** · **forget** · **list_memories** · **stats** · **upvote** · **downvote**
 
-Create a Lore instance.
+Core memory operations with semantic search, tier-based TTL (working/short/long), importance scoring, and automatic PII redaction.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `project` | `str \| None` | `None` | Scope memories to a project name |
-| `db_path` | `str \| None` | `~/.lore/default.db` | Path to SQLite database |
-| `store` | `Store \| None` | `None` | Custom storage backend |
-| `embedding_fn` | `Callable[[str], list[float]] \| None` | `None` | Custom embedding function |
-| `embedder` | `Embedder \| None` | `None` | Custom embedder instance |
-| `redact` | `bool` | `True` | Enable automatic PII redaction |
-| `redact_patterns` | `list[tuple[str, str]] \| None` | `None` | Custom redaction patterns as `(regex, label)` |
-| `decay_half_life_days` | `float` | `30` | Half-life for memory score decay |
+### Knowledge Graph
+**graph_query** · **entity_map** · **related**
 
-Lore supports context manager usage:
+Entities and relationships extracted from memories, with hop-by-hop traversal. Graph-enhanced recall surfaces connected memories that pure vector search misses.
 
-```python
-with Lore() as lore:
-    lore.remember("important fact", tags=["tag"])
-```
+### Fact Extraction & Conflicts
+**extract_facts** · **list_facts** · **conflicts**
 
-### `lore.remember(content, type?, context?, tags?, confidence?, source?, project?, ttl?, metadata?) → str`
+Atomic (subject, predicate, object) triples extracted from text. Automatic conflict detection when new facts contradict old ones — supersede, merge, or flag.
 
-Store a memory. Returns the memory ID (ULID).
+### Intelligence Pipeline
+**classify** · **enrich** · **consolidate**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `content` | `str` | *required* | The knowledge to store |
-| `type` | `str` | `"general"` | Memory type (e.g. `"general"`, `"lesson"`, `"preference"`) |
-| `context` | `str \| None` | `None` | Additional context |
-| `tags` | `list[str] \| None` | `[]` | Filterable tags |
-| `confidence` | `float` | `1.0` | Confidence score (0.0–1.0) |
-| `source` | `str \| None` | `None` | Who/what created this memory |
-| `project` | `str \| None` | instance default | Override project scope |
-| `ttl` | `int \| None` | `None` | Time-to-live in seconds |
-| `metadata` | `dict \| None` | `None` | Arbitrary metadata |
+LLM-powered classification (intent/domain/emotion), metadata enrichment (topics/entities/sentiment), and memory consolidation (merge duplicates, summarize clusters).
 
-### `lore.recall(query, tags?, limit?, min_confidence?, type?) → list[RecallResult]`
+### Import/Export
+**ingest** · **as_prompt** · **check_freshness** · **github_sync**
 
-Search memories by semantic similarity.
+Webhook-style ingestion with source tracking. Export memories formatted for LLM context injection. Git-based staleness detection. GitHub issue/PR sync.
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `query` | `str` | *required* | Search query |
-| `tags` | `list[str] \| None` | `None` | Filter: memories must have ALL these tags |
-| `limit` | `int` | `5` | Max results |
-| `min_confidence` | `float` | `0.0` | Minimum confidence threshold |
-| `type` | `str \| None` | `None` | Filter by memory type |
+## Setup Guides
 
-Returns `list[RecallResult]` sorted by score (cosine similarity × confidence × time decay × vote factor).
+| Client | Guide |
+|--------|-------|
+| Claude Desktop | [docs/setup-claude-desktop.md](docs/setup-claude-desktop.md) |
+| Cursor | [docs/setup-cursor.md](docs/setup-cursor.md) |
+| VS Code (Copilot) | [docs/setup-vscode.md](docs/setup-vscode.md) |
+| Windsurf | [docs/setup-windsurf.md](docs/setup-windsurf.md) |
+| ChatGPT | [docs/setup-chatgpt.md](docs/setup-chatgpt.md) |
+| Cline | [docs/setup-cline.md](docs/setup-cline.md) |
+| Claude Code | [docs/setup-claude-code.md](docs/setup-claude-code.md) |
 
-### `lore.as_prompt(results, max_tokens?) → str`
+> [All Setup Guides](docs/mcp-setup.md)
 
-Format recall results as a markdown string for system prompt injection.
+## Docker
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `results` | `list[RecallResult]` | *required* | Results from `recall()` |
-| `max_tokens` | `int` | `1000` | Approximate token budget (1 token ≈ 4 chars) |
-
-### `lore.get(memory_id) → Memory | None`
-
-Retrieve a single memory by ID.
-
-### `lore.forget(memory_id) → bool`
-
-Delete a memory. Returns `True` if found and deleted.
-
-### `lore.list_memories(project?, type?, limit?) → list[Memory]`
-
-List memories, optionally filtered by project or type. Excludes expired memories.
-
-### `lore.stats(project?) → MemoryStats`
-
-Return memory statistics: `total`, `by_type`, `oldest`, `newest`, `expired_cleaned`.
-
-### `lore.upvote(memory_id) → None`
-
-Increment a memory's upvote count. Raises `MemoryNotFoundError` if not found.
-
-### `lore.downvote(memory_id) → None`
-
-Increment a memory's downvote count. Raises `MemoryNotFoundError` if not found.
-
-### `lore.close() → None`
-
-Close the underlying store.
-
-## TypeScript API Reference
-
-The TypeScript SDK mirrors the Python API. See [ts/README.md](ts/README.md) for full details.
-
-Key differences:
-- All store operations are `async`
-- Constructor takes an options object: `new Lore({ project, dbPath, embeddingFn, ... })`
-- No built-in embedding model — you must provide `embeddingFn`
-- `asPrompt()` instead of `as_prompt()`, `listMemories()` instead of `list_memories()`
-- `minConfidence` instead of `min_confidence` (camelCase throughout)
-
-## Redaction
-
-Lore automatically redacts sensitive data before storage:
-
-- **API keys** (Bearer tokens, `sk-*`, `key-*`, etc.)
-- **Email addresses**
-- **Phone numbers**
-- **IP addresses** (IPv4 and IPv6)
-- **Credit card numbers** (with Luhn validation)
-
-```python
-lore.remember("Auth failed with key sk-abc123def456ghi789jkl012mno — rotate the key")
-# Stored as: "Auth failed with key [REDACTED:api_key] — rotate the key"
-```
-
-Add custom patterns:
-
-```python
-lore = Lore(redact_patterns=[
-    (r"ACCT-\d{8}", "account_id"),
-])
-```
-
-Disable redaction entirely with `redact=False`.
-
-## Scoring
-
-Query results are ranked by:
-
-```
-score = cosine_similarity × confidence × time_decay × vote_factor
-```
-
-- **Time decay:** Memories lose relevance over time (configurable half-life, default 30 days)
-- **Vote factor:** `1.0 + (upvotes - downvotes) × 0.1`, floored at 0.1
-- **Confidence:** Author's self-assessed confidence (0.0–1.0)
-
-## Remote Server (Lore Cloud)
-
-Share memories across agents, machines, and teams with the Lore Cloud server.
-
-### 5-Line Remote Setup
-
-```python
-from lore import Lore
-
-lore = Lore(store="remote", api_url="http://localhost:8765", api_key="lore_sk_...")
-lore.remember("Docker builds fail on M1 — use --platform linux/amd64", tags=["docker"])
-results = lore.recall("Docker build issues")
-```
-
-### Self-Host with Docker Compose
+For team setups with Postgres + pgvector:
 
 ```bash
+docker compose up -d
+```
+
+This starts Postgres with pgvector and the Lore HTTP server. Point your MCP client to `http://localhost:8765`.
+
+```bash
+# Production (with secure password)
+cp .env.example .env  # edit POSTGRES_PASSWORD
 docker compose -f docker-compose.prod.yml up -d
-curl -X POST http://localhost:8765/v1/org/init \
-  -H "Content-Type: application/json" -d '{"name": "my-org"}'
 ```
 
-→ [Self-Hosted Guide](docs/self-hosted.md) · [API Reference](docs/api-reference.md)
+> [Self-Hosted Guide](docs/self-hosted.md)
 
-### MCP Integration (Claude Desktop / OpenClaw)
+## API Reference
 
-Give Claude direct access to your memory:
+- [MCP Tools (20 tools)](docs/api-reference.md#mcp-tools)
+- [CLI Commands](docs/api-reference.md#cli-commands)
+- [SDK Methods](docs/api-reference.md#sdk-lore-class)
+- [Environment Variables](docs/api-reference.md#environment-variables)
 
-```bash
-pip install lore-sdk[mcp]
-```
+> [Full API Reference](docs/api-reference.md)
 
-```json
-{
-  "mcpServers": {
-    "lore": {
-      "command": "python",
-      "args": ["-m", "lore.mcp.server"],
-      "env": { "LORE_PROJECT": "my-project" }
-    }
-  }
-}
-```
+## Performance
 
-→ [MCP Setup Guide](docs/mcp-setup.md)
+| Operation | Target |
+|---|---|
+| `remember()` no LLM | < 100ms |
+| `recall()` vector search (100 memories) | < 50ms |
+| `recall()` vector search (10K memories) | < 200ms |
+| `recall()` graph-enhanced (2-hop) | < 500ms |
+| Embedding generation (500 words) | < 200ms |
+| `as_prompt()` 100 memories | < 100ms |
+
+> [Benchmark Results](docs/benchmarks.md)
+
+## Migration from v0.5.x
+
+v0.6.0 adds 13 new MCP tools (7 → 20), new database columns and tables, and opt-in LLM features. Existing installations work without changes — all new features are opt-in.
+
+> [Migration Guide](docs/migration-v0.5-to-v0.6.md)
 
 ## Examples
 
 See [`examples/`](examples/) for runnable scripts:
-- [`basic_usage.py`](examples/basic_usage.py) — publish, query, format
-- [`custom_embeddings.py`](examples/custom_embeddings.py) — bring your own embedding function
-- [`redaction_demo.py`](examples/redaction_demo.py) — see redaction in action
 
+- [`full_pipeline.py`](examples/full_pipeline.py) — remember, recall, tiers, prompt export
+- [`mcp_tool_tour.py`](examples/mcp_tool_tour.py) — tour of all 20 MCP tool equivalents
+- [`webhook_ingestion.py`](examples/webhook_ingestion.py) — ingest with source tracking
+- [`consolidation_demo.py`](examples/consolidation_demo.py) — memory consolidation
 
-## 🧰 AgentKit Ecosystem
+## Contributing
 
-| Project | Description | |
-|---------|-------------|-|
-| [AgentLens](https://github.com/agentkitai/agentlens) | Observability & audit trail for AI agents | |
-| **Lore** | Cross-agent memory and lesson sharing | ⬅️ you are here |
-| [AgentGate](https://github.com/agentkitai/agentgate) | Human-in-the-loop approval gateway | |
-| [FormBridge](https://github.com/agentkitai/formbridge) | Agent-human mixed-mode forms | |
-| [AgentEval](https://github.com/agentkitai/agenteval) | Testing & evaluation framework | |
-| [agentkit-mesh](https://github.com/agentkitai/agentkit-mesh) | Agent discovery & delegation | |
-| [agentkit-cli](https://github.com/agentkitai/agentkit-cli) | Unified CLI orchestrator | |
-| [agentkit-guardrails](https://github.com/agentkitai/agentkit-guardrails) | Reactive policy guardrails | |
-
-## Enterprise Usage Patterns
-
-### LoreClient — Hardened Async SDK
-
-For production/enterprise use, `LoreClient` provides retry logic, graceful degradation, connection pooling, and optional batching:
-
-```python
-from lore import LoreClient
-
-# Reads LORE_URL, LORE_API_KEY, LORE_ORG_ID, LORE_TIMEOUT from env
-async with LoreClient() as client:
-    # Save a memory — returns None if server is unreachable (never raises)
-    memory_id = await client.save(
-        problem="Rate limit exceeded on OpenAI API",
-        resolution="Add exponential backoff with jitter",
-        tags=["openai", "rate-limit"],
-    )
-
-    # Recall memories — returns [] if server is unreachable (never raises)
-    results = await client.recall("how to handle rate limits", limit=5)
-```
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LORE_URL` | `http://localhost:8765` | Lore server URL |
-| `LORE_API_KEY` | *(empty)* | API key for authentication |
-| `LORE_ORG_ID` | *(empty)* | Organization ID (multi-tenant) |
-| `LORE_TIMEOUT` | `5` | Request timeout in seconds |
-
-### Retry & Graceful Degradation
-
-- **Retries:** 3 attempts with exponential backoff (0.5s → 1s → 2s) on 5xx and connection errors only
-- **Graceful degradation:** `save()` returns `None` and `recall()` returns `[]` if the server is unreachable — they never raise exceptions
-- **Connection pooling:** A single `httpx.AsyncClient` is reused across all calls
-
-### Batched Saves
-
-For high-throughput scenarios, enable batching to buffer saves and flush periodically:
-
-```python
-async with LoreClient(batch=True, batch_size=10, batch_interval=5.0) as client:
-    # These are buffered and flushed every 5s or every 10 items
-    await client.save(problem="...", resolution="...")
-    await client.save(problem="...", resolution="...")
-    # Remaining items flush automatically on close
-```
-
-### Constructor Parameters
-
-```python
-LoreClient(
-    url="http://lore.internal:8765",  # or use LORE_URL env var
-    api_key="sk-...",                  # or use LORE_API_KEY env var
-    org_id="my-org",                   # or use LORE_ORG_ID env var
-    timeout=10.0,                      # or use LORE_TIMEOUT env var
-    batch=False,                       # enable batched saves
-    batch_size=10,                     # flush after N buffered items
-    batch_interval=5.0,                # flush every N seconds
-)
+```bash
+git clone https://github.com/amitpaz1/lore.git
+cd lore
+pip install -e ".[dev,mcp,enrichment]"
+pytest
 ```
 
 ## License
