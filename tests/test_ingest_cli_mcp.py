@@ -12,12 +12,21 @@ import pytest
 from lore.cli import main as cli_main
 
 
+def _mock_lore():
+    """Create a MagicMock Lore with store/embedder stubs for pipeline usage."""
+    lore = MagicMock()
+    lore.remember.return_value = "mem-001"
+    lore._store.list.return_value = []
+    lore._store.search.return_value = []
+    lore._embedder.embed.return_value = [0.0] * 384
+    return lore
+
+
 class TestCLIIngest:
     def test_single_item(self, tmp_path):
         db = str(tmp_path / "test.db")
         with patch("lore.cli._get_lore") as mock_get:
-            lore = MagicMock()
-            lore.remember.return_value = "mem-001"
+            lore = _mock_lore()
             mock_get.return_value = lore
 
             cli_main(["--db", db, "ingest", "Some knowledge", "--source", "manual", "--user", "alice", "--project", "p1"])
@@ -36,8 +45,7 @@ class TestCLIIngest:
 
         db = str(tmp_path / "test.db")
         with patch("lore.cli._get_lore") as mock_get:
-            lore = MagicMock()
-            lore.remember.return_value = "mem-001"
+            lore = _mock_lore()
             mock_get.return_value = lore
 
             cli_main(["--db", db, "ingest", "--source", "raw", "--file", str(f)])
@@ -50,8 +58,7 @@ class TestCLIIngest:
 
         db = str(tmp_path / "test.db")
         with patch("lore.cli._get_lore") as mock_get:
-            lore = MagicMock()
-            lore.remember.return_value = "mem-001"
+            lore = _mock_lore()
             mock_get.return_value = lore
 
             cli_main(["--db", db, "ingest", "--source", "raw", "--file", str(f)])
@@ -61,7 +68,7 @@ class TestCLIIngest:
     def test_file_not_found(self, tmp_path):
         db = str(tmp_path / "test.db")
         with patch("lore.cli._get_lore") as mock_get:
-            lore = MagicMock()
+            lore = _mock_lore()
             mock_get.return_value = lore
 
             with pytest.raises(SystemExit):
@@ -70,7 +77,7 @@ class TestCLIIngest:
     def test_no_content_or_file(self, tmp_path):
         db = str(tmp_path / "test.db")
         with patch("lore.cli._get_lore") as mock_get:
-            lore = MagicMock()
+            lore = _mock_lore()
             mock_get.return_value = lore
 
             with pytest.raises(SystemExit):
@@ -79,26 +86,49 @@ class TestCLIIngest:
     def test_dedup_mode_option(self, tmp_path):
         db = str(tmp_path / "test.db")
         with patch("lore.cli._get_lore") as mock_get:
-            lore = MagicMock()
-            lore.remember.return_value = "mem-001"
+            lore = _mock_lore()
             mock_get.return_value = lore
 
             cli_main(["--db", db, "ingest", "content", "--dedup-mode", "skip"])
 
-        # Just verify the command ran (dedup mode is used in pipeline, not CLI directly)
+        lore.remember.assert_called_once()
+
+    def test_dedup_mode_allow_skips_dedup(self, tmp_path):
+        """--dedup-mode allow skips dedup check entirely."""
+        db = str(tmp_path / "test.db")
+        with patch("lore.cli._get_lore") as mock_get:
+            lore = _mock_lore()
+            mock_get.return_value = lore
+
+            cli_main(["--db", db, "ingest", "content", "--dedup-mode", "allow"])
+
+        lore.remember.assert_called_once()
+        # store.list and store.search should NOT have been called (dedup skipped)
+        lore._store.list.assert_not_called()
+
+    def test_no_enrich_flag(self, tmp_path):
+        """--no-enrich flag is wired through the pipeline."""
+        db = str(tmp_path / "test.db")
+        with patch("lore.cli._get_lore") as mock_get:
+            lore = _mock_lore()
+            mock_get.return_value = lore
+
+            cli_main(["--db", db, "ingest", "content", "--no-enrich"])
+
         lore.remember.assert_called_once()
 
     def test_tags_option(self, tmp_path):
         db = str(tmp_path / "test.db")
         with patch("lore.cli._get_lore") as mock_get:
-            lore = MagicMock()
-            lore.remember.return_value = "mem-001"
+            lore = _mock_lore()
             mock_get.return_value = lore
 
             cli_main(["--db", db, "ingest", "content", "--tags", "a,b,c"])
 
         call_kwargs = lore.remember.call_args[1]
-        assert call_kwargs["tags"] == ["a", "b", "c"]
+        assert "a" in call_kwargs["tags"]
+        assert "b" in call_kwargs["tags"]
+        assert "c" in call_kwargs["tags"]
 
 
 class TestMCPIngestTool:

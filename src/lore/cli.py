@@ -827,32 +827,47 @@ def cmd_graph_backfill(args: argparse.Namespace) -> None:
 
 
 def cmd_ingest(args: argparse.Namespace) -> None:
-    from datetime import datetime, timezone
+    from lore.ingest.adapters.raw import RawAdapter
+    from lore.ingest.dedup import Deduplicator
+    from lore.ingest.pipeline import IngestionPipeline
 
     lore = _get_lore(args.db)
     tags: List[str] = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
     source = args.source
+    dedup_mode = args.dedup_mode
+    enrich = not args.no_enrich
+
+    adapter = RawAdapter()
+    adapter.adapter_name = source  # override adapter name to match --source
+    deduplicator = Deduplicator(store=lore._store, embedder=lore._embedder)
+    pipeline = IngestionPipeline(
+        lore=lore,
+        deduplicator=deduplicator,
+        default_dedup_mode=dedup_mode,
+        auto_enrich=enrich,
+    )
 
     def _ingest_one(content: str, user=None, channel=None) -> str:
-        metadata = {
-            "source_info": {
-                "adapter": source,
-                "user": user or args.user,
-                "channel": channel or args.channel,
-                "ingested_at": datetime.now(timezone.utc).isoformat(),
-                "raw_format": "plain_text",
-            }
+        payload = {
+            "content": content,
+            "user": user or args.user,
+            "channel": channel or args.channel,
+            "type": args.type,
+            "tags": tags,
         }
-        mid = lore.remember(
-            content=content,
-            type=args.type,
-            tier="long",
-            tags=tags,
-            metadata=metadata,
-            source=source,
+        result = pipeline.ingest(
+            adapter=adapter,
+            payload=payload,
             project=args.project,
+            dedup_mode=dedup_mode,
+            enrich=enrich,
         )
-        return mid
+        if result.status == "ingested":
+            return result.memory_id
+        elif result.status.startswith("duplicate"):
+            raise RuntimeError(f"Duplicate detected ({result.dedup_strategy}): {result.duplicate_of}")
+        else:
+            raise RuntimeError(result.error or result.status)
 
     if args.file_path:
         import os

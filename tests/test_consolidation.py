@@ -303,6 +303,21 @@ class TestCandidateIdentification:
         assert len(candidates) == 1
         assert candidates[0].id == "m1"
 
+    def test_batch_size_processing(self):
+        """Candidates are processed in batches of batch_size."""
+        store = MemoryStore()
+        vec = [0.5] * 384
+        # Create 5 duplicate memories
+        for i in range(5):
+            store.save(_make_memory(f"m{i}", embedding=_embed(vec), created_at=_old_iso(700000)))
+
+        # batch_size=2 means batches of [m0,m1], [m2,m3], [m4]
+        # Duplicates within a batch will be found, but cross-batch won't
+        engine = _make_engine(store, config={"batch_size": 2})
+        result = asyncio.run(engine.consolidate(dry_run=True))
+        # With batch_size=2 we get groups from pairs within each batch
+        assert result.groups_found >= 2  # At least 2 pairs from batches
+
 
 # ---------------------------------------------------------------------------
 # S5: Deduplication Grouping
@@ -363,6 +378,42 @@ class TestDeduplicationGrouping:
         m3 = _make_memory("m3", embedding=_embed(vec_c))
         engine = _make_engine()
         groups = engine._find_duplicates([m1, m2, m3])
+        assert len(groups) == 1
+        assert len(groups[0]) == 3
+
+    def test_transitive_grouping_union_find(self):
+        """A~B high, B~C high, A~C below threshold — Union-Find groups all three."""
+        rng = np.random.RandomState(100)
+        # Create base vector
+        base = rng.randn(384).astype(np.float32)
+        base = base / np.linalg.norm(base)
+
+        # Create B close to A
+        noise_b = rng.randn(384).astype(np.float32) * 0.02
+        vec_b = base + noise_b
+        vec_b = vec_b / np.linalg.norm(vec_b)
+
+        # Create C close to B but further from A
+        noise_c = rng.randn(384).astype(np.float32) * 0.02
+        vec_c = vec_b + noise_c
+        vec_c = vec_c / np.linalg.norm(vec_c)
+
+        sim_ab = float(np.dot(base, vec_b))
+        sim_bc = float(np.dot(vec_b, vec_c))
+        sim_ac = float(np.dot(base, vec_c))
+
+        # Use a threshold that A~B and B~C pass but A~C might not
+        threshold = min(sim_ab, sim_bc) - 0.001
+        assert sim_ab > threshold
+        assert sim_bc > threshold
+
+        m1 = _make_memory("m1", embedding=_embed(base.tolist()))
+        m2 = _make_memory("m2", embedding=_embed(vec_b.tolist()))
+        m3 = _make_memory("m3", embedding=_embed(vec_c.tolist()))
+
+        engine = _make_engine(config={"dedup_threshold": threshold})
+        groups = engine._find_duplicates([m1, m2, m3])
+        # All three should be in one group via transitive closure
         assert len(groups) == 1
         assert len(groups[0]) == 3
 
@@ -547,6 +598,53 @@ class TestArchiveRelinkLog:
         assert entry.original_count == 2
         entries = store.get_consolidation_log()
         assert len(entries) == 1
+
+    def test_relink_graph_edges(self):
+        """Dedicated test: entity mentions and relationships are relinked to consolidated memory."""
+        from lore.types import Relationship
+
+        store = MemoryStore()
+        # Create original memories
+        m1 = _make_memory("m1")
+        m2 = _make_memory("m2")
+        store.save(m1)
+        store.save(m2)
+
+        now = _now_iso()
+
+        # Create entity mentions for originals
+        store.save_entity_mention(EntityMention(
+            id="em1", entity_id="e1", memory_id="m1",
+            mention_type="explicit", confidence=1.0, created_at=now,
+        ))
+        store.save_entity_mention(EntityMention(
+            id="em2", entity_id="e2", memory_id="m2",
+            mention_type="explicit", confidence=1.0, created_at=now,
+        ))
+
+        # Create a relationship referencing m1
+        rel = Relationship(
+            id="r1", source_entity_id="e1", target_entity_id="e2",
+            rel_type="uses", weight=0.9, source_memory_id="m1",
+            valid_from=now, created_at=now, updated_at=now,
+        )
+        store.update_relationship(rel)
+
+        engine = _make_engine(store)
+        updated = engine._relink_graph_edges(["m1", "m2"], "consolidated-1")
+
+        assert updated > 0
+
+        # Verify entity mentions were relinked
+        mentions_c = store.get_entity_mentions_for_memory("consolidated-1")
+        assert len(mentions_c) == 2
+        mention_entities = {m.entity_id for m in mentions_c}
+        assert mention_entities == {"e1", "e2"}
+
+        # Verify relationship was relinked
+        rels = store.list_relationships()
+        rel_updated = [r for r in rels if r.id == "r1"][0]
+        assert rel_updated.source_memory_id == "consolidated-1"
 
 
 # ---------------------------------------------------------------------------

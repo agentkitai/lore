@@ -101,48 +101,61 @@ class ConsolidationEngine:
         self,
         candidates: List[Memory],
     ) -> List[List[Memory]]:
-        """Group near-duplicate memories by embedding cosine similarity."""
+        """Group near-duplicate memories by embedding cosine similarity.
+
+        Uses Union-Find for true transitive closure: if A~B and B~C are
+        above threshold, A, B, C are grouped together even if A~C is below.
+        """
         threshold = self._config["dedup_threshold"]
-        groups: List[List[Memory]] = []
-        used: Set[str] = set()
 
         # Deserialize embeddings once
         embeddings: Dict[str, np.ndarray] = {}
+        norms: Dict[str, float] = {}
         for mem in candidates:
             if mem.embedding is not None:
                 count = len(mem.embedding) // 4
-                embeddings[mem.id] = np.array(
+                vec = np.array(
                     struct.unpack(f"{count}f", mem.embedding), dtype=np.float32
                 )
+                norm = float(np.linalg.norm(vec))
+                if norm > 0:
+                    embeddings[mem.id] = vec
+                    norms[mem.id] = norm
 
-        for i, mem_a in enumerate(candidates):
-            if mem_a.id in used or mem_a.id not in embeddings:
-                continue
-            vec_a = embeddings[mem_a.id]
-            norm_a = float(np.linalg.norm(vec_a))
-            if norm_a == 0:
-                continue
+        # Union-Find data structure
+        parent: Dict[str, str] = {mid: mid for mid in embeddings}
 
-            group = [mem_a]
-            for j in range(i + 1, len(candidates)):
-                mem_b = candidates[j]
-                if mem_b.id in used or mem_b.id not in embeddings:
-                    continue
-                vec_b = embeddings[mem_b.id]
-                norm_b = float(np.linalg.norm(vec_b))
-                if norm_b == 0:
-                    continue
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]  # path compression
+                x = parent[x]
+            return x
 
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        # Compare all pairs and union those above threshold
+        valid = [m for m in candidates if m.id in embeddings]
+        for i in range(len(valid)):
+            mid_a = valid[i].id
+            vec_a, norm_a = embeddings[mid_a], norms[mid_a]
+            for j in range(i + 1, len(valid)):
+                mid_b = valid[j].id
+                vec_b, norm_b = embeddings[mid_b], norms[mid_b]
                 sim = float(np.dot(vec_a, vec_b) / (norm_a * norm_b))
                 if sim > threshold:
-                    group.append(mem_b)
-                    used.add(mem_b.id)
+                    union(mid_a, mid_b)
 
-            if len(group) > 1:
-                groups.append(group)
-                used.add(mem_a.id)
+        # Collect groups from Union-Find
+        group_map: Dict[str, List[Memory]] = defaultdict(list)
+        mem_by_id = {m.id: m for m in candidates}
+        for mid in embeddings:
+            root = find(mid)
+            group_map[root].append(mem_by_id[mid])
 
-        return groups
+        return [g for g in group_map.values() if len(g) > 1]
 
     # ------------------------------------------------------------------
     # Stage 2b: Entity/Topic Grouping
@@ -403,20 +416,24 @@ class ConsolidationEngine:
         if not candidates:
             return result
 
-        # Stage 2: Group
+        # Stage 2: Group (in batches)
         all_groups: List[tuple] = []  # (group, strategy_name)
         already_grouped: Set[str] = set()
+        batch_size = self._config.get("batch_size", 50)
 
-        if strategy in ("deduplicate", "all"):
-            dedup_groups = self._find_duplicates(candidates)
-            for group in dedup_groups:
-                all_groups.append((group, "deduplicate"))
-                already_grouped.update(m.id for m in group)
+        for batch_start in range(0, len(candidates), batch_size):
+            batch = candidates[batch_start : batch_start + batch_size]
 
-        if strategy in ("summarize", "all") and self._llm is not None:
-            entity_groups = self._group_by_entity(candidates, already_grouped)
-            for group in entity_groups:
-                all_groups.append((group, "summarize"))
+            if strategy in ("deduplicate", "all"):
+                dedup_groups = self._find_duplicates(batch)
+                for group in dedup_groups:
+                    all_groups.append((group, "deduplicate"))
+                    already_grouped.update(m.id for m in group)
+
+            if strategy in ("summarize", "all") and self._llm is not None:
+                entity_groups = self._group_by_entity(batch, already_grouped)
+                for group in entity_groups:
+                    all_groups.append((group, "summarize"))
 
         # Apply max_groups_per_run safety limit
         max_groups = self._config["max_groups_per_run"]
