@@ -6,7 +6,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from lore.store.base import Store
-from lore.types import ConflictEntry, Entity, EntityMention, Fact, Memory, Relationship
+from lore.types import (
+    ConflictEntry, ConsolidationLogEntry, Entity, EntityMention,
+    Fact, Memory, Relationship,
+)
 
 
 class MemoryStore(Store):
@@ -19,6 +22,7 @@ class MemoryStore(Store):
         self._entities: Dict[str, Entity] = {}
         self._relationships: Dict[str, Relationship] = {}
         self._entity_mentions: List[EntityMention] = []
+        self._consolidation_log: List[ConsolidationLogEntry] = []
 
     def save(self, memory: Memory) -> None:
         self._memories[memory.id] = memory
@@ -32,8 +36,11 @@ class MemoryStore(Store):
         type: Optional[str] = None,
         tier: Optional[str] = None,
         limit: Optional[int] = None,
+        include_archived: bool = False,
     ) -> List[Memory]:
         memories = list(self._memories.values())
+        if not include_archived:
+            memories = [m for m in memories if not m.archived]
         if project is not None:
             memories = [m for m in memories if m.project == project]
         if type is not None:
@@ -333,3 +340,19 @@ class MemoryStore(Store):
                 r.source_entity_id = to_id
             if r.target_entity_id == from_id:
                 r.target_entity_id = to_id
+
+    # ------------------------------------------------------------------
+    # Consolidation Log CRUD
+    # ------------------------------------------------------------------
+
+    def save_consolidation_log(self, entry: ConsolidationLogEntry) -> None:
+        self._consolidation_log.append(entry)
+
+    def get_consolidation_log(
+        self,
+        limit: int = 50,
+        project: Optional[str] = None,
+    ) -> List[ConsolidationLogEntry]:
+        entries = list(self._consolidation_log)
+        entries.sort(key=lambda e: e.created_at, reverse=True)
+        return entries[:limit]

@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from lore.store.base import Store
-from lore.types import ConflictEntry, Entity, EntityMention, Fact, Memory, Relationship
+from lore.types import (
+    ConflictEntry, ConsolidationLogEntry, Entity, EntityMention,
+    Fact, Memory, Relationship,
+)
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS memories (
@@ -32,7 +35,9 @@ CREATE TABLE IF NOT EXISTS memories (
     downvotes   INTEGER DEFAULT 0,
     importance_score REAL DEFAULT 1.0,
     access_count INTEGER DEFAULT 0,
-    last_accessed_at TEXT
+    last_accessed_at TEXT,
+    archived INTEGER DEFAULT 0,
+    consolidated_into TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project);
 CREATE INDEX IF NOT EXISTS idx_memories_type ON memories(type);
@@ -41,6 +46,7 @@ CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier);
 CREATE INDEX IF NOT EXISTS idx_memories_project_tier ON memories(project, tier);
 CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance_score);
 CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_at);
+CREATE INDEX IF NOT EXISTS idx_memories_archived ON memories(archived);
 """
 
 _FACT_SCHEMA = """\
@@ -160,6 +166,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_em_unique ON entity_mentions(entity_id, me
 """
 
 
+_CONSOLIDATION_LOG_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS consolidation_log (
+    id                      TEXT PRIMARY KEY,
+    consolidated_memory_id  TEXT NOT NULL,
+    original_memory_ids     TEXT NOT NULL,
+    strategy                TEXT NOT NULL,
+    model_used              TEXT,
+    original_count          INTEGER NOT NULL,
+    created_at              TEXT NOT NULL,
+    metadata                TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_clog_memory
+    ON consolidation_log(consolidated_memory_id);
+CREATE INDEX IF NOT EXISTS idx_clog_created
+    ON consolidation_log(created_at);
+"""
+
+
 class SqliteStore(Store):
     """SQLite-backed memory store."""
 
@@ -174,9 +198,11 @@ class SqliteStore(Store):
             self._maybe_add_context_column()
             self._maybe_add_tier_column()
             self._maybe_add_importance_columns()
+            self._maybe_add_consolidation_columns()
         self._conn.executescript(_SCHEMA)
         self._conn.execute("PRAGMA foreign_keys = ON")
         self._maybe_create_fact_tables()
+        self._maybe_create_consolidation_log_table()
         if knowledge_graph:
             self._maybe_create_graph_tables()
 
@@ -258,14 +284,42 @@ class SqliteStore(Store):
             )
             self._conn.commit()
 
+    def _maybe_add_consolidation_columns(self) -> None:
+        """Add archived and consolidated_into columns if missing."""
+        cols = {
+            row[1]
+            for row in self._conn.execute("PRAGMA table_info(memories)").fetchall()
+        }
+        migrations = []
+        if "archived" not in cols:
+            migrations.append(
+                "ALTER TABLE memories ADD COLUMN archived INTEGER DEFAULT 0"
+            )
+        if "consolidated_into" not in cols:
+            migrations.append(
+                "ALTER TABLE memories ADD COLUMN consolidated_into TEXT"
+            )
+        for sql in migrations:
+            self._conn.execute(sql)
+        if migrations:
+            self._conn.executescript(
+                "CREATE INDEX IF NOT EXISTS idx_memories_archived ON memories(archived);"
+            )
+            self._conn.commit()
+
+    def _maybe_create_consolidation_log_table(self) -> None:
+        """Create consolidation_log table if it doesn't exist."""
+        self._conn.executescript(_CONSOLIDATION_LOG_SCHEMA)
+
     def save(self, memory: Memory) -> None:
         self._conn.execute(
             """INSERT OR REPLACE INTO memories
                (id, content, type, tier, context, tags, metadata, source,
                 project, embedding, created_at, updated_at,
                 ttl, expires_at, confidence, upvotes, downvotes,
-                importance_score, access_count, last_accessed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                importance_score, access_count, last_accessed_at,
+                archived, consolidated_into)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 memory.id,
                 memory.content,
@@ -287,6 +341,8 @@ class SqliteStore(Store):
                 memory.importance_score,
                 memory.access_count,
                 memory.last_accessed_at,
+                int(memory.archived),
+                memory.consolidated_into,
             ),
         )
         self._conn.commit()
@@ -305,10 +361,13 @@ class SqliteStore(Store):
         type: Optional[str] = None,
         tier: Optional[str] = None,
         limit: Optional[int] = None,
+        include_archived: bool = False,
     ) -> List[Memory]:
         query = "SELECT * FROM memories"
         params: List[Any] = []
         conditions: List[str] = []
+        if not include_archived:
+            conditions.append("archived = 0")
         if project is not None:
             conditions.append("project = ?")
             params.append(project)
@@ -333,7 +392,8 @@ class SqliteStore(Store):
                content=?, type=?, tier=?, context=?, tags=?, metadata=?, source=?,
                project=?, embedding=?, updated_at=?,
                ttl=?, expires_at=?, confidence=?, upvotes=?, downvotes=?,
-               importance_score=?, access_count=?, last_accessed_at=?
+               importance_score=?, access_count=?, last_accessed_at=?,
+               archived=?, consolidated_into=?
                WHERE id=?""",
             (
                 memory.content,
@@ -354,6 +414,8 @@ class SqliteStore(Store):
                 memory.importance_score,
                 memory.access_count,
                 memory.last_accessed_at,
+                int(memory.archived),
+                memory.consolidated_into,
                 memory.id,
             ),
         )
@@ -429,6 +491,8 @@ class SqliteStore(Store):
             importance_score=row["importance_score"] if "importance_score" in keys else 1.0,
             access_count=row["access_count"] if "access_count" in keys else 0,
             last_accessed_at=row["last_accessed_at"] if "last_accessed_at" in keys else None,
+            archived=bool(row["archived"]) if "archived" in keys else False,
+            consolidated_into=row["consolidated_into"] if "consolidated_into" in keys else None,
         )
 
     # ------------------------------------------------------------------
@@ -931,6 +995,55 @@ class SqliteStore(Store):
             mention_type=row["mention_type"],
             confidence=row["confidence"],
             created_at=row["created_at"],
+        )
+
+    # ------------------------------------------------------------------
+    # Consolidation Log CRUD
+    # ------------------------------------------------------------------
+
+    def save_consolidation_log(self, entry: ConsolidationLogEntry) -> None:
+        self._conn.execute(
+            """INSERT OR REPLACE INTO consolidation_log
+               (id, consolidated_memory_id, original_memory_ids, strategy,
+                model_used, original_count, created_at, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                entry.id,
+                entry.consolidated_memory_id,
+                json.dumps(entry.original_memory_ids),
+                entry.strategy,
+                entry.model_used,
+                entry.original_count,
+                entry.created_at,
+                json.dumps(entry.metadata) if entry.metadata is not None else None,
+            ),
+        )
+        self._conn.commit()
+
+    def get_consolidation_log(
+        self,
+        limit: int = 50,
+        project: Optional[str] = None,
+    ) -> List[ConsolidationLogEntry]:
+        query = "SELECT * FROM consolidation_log ORDER BY created_at DESC LIMIT ?"
+        rows = self._conn.execute(query, (limit,)).fetchall()
+        return [self._row_to_consolidation_log(r) for r in rows]
+
+    @staticmethod
+    def _row_to_consolidation_log(row: sqlite3.Row) -> ConsolidationLogEntry:
+        ids_raw = row["original_memory_ids"]
+        original_ids = json.loads(ids_raw) if ids_raw else []
+        metadata_raw = row["metadata"]
+        metadata = json.loads(metadata_raw) if metadata_raw else None
+        return ConsolidationLogEntry(
+            id=row["id"],
+            consolidated_memory_id=row["consolidated_memory_id"],
+            original_memory_ids=original_ids,
+            strategy=row["strategy"],
+            model_used=row["model_used"],
+            original_count=row["original_count"],
+            created_at=row["created_at"],
+            metadata=metadata,
         )
 
     def close(self) -> None:

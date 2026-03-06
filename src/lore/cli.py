@@ -425,6 +425,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--no-enrich", action="store_true", dest="no_enrich", help="Disable enrichment")
 
+    # consolidate
+    p = sub.add_parser("consolidate", help="Run memory consolidation pipeline")
+    p.add_argument("--dry-run", action="store_true", default=True, dest="dry_run",
+                    help="Preview consolidation without changes (default)")
+    p.add_argument("--execute", action="store_true", help="Run consolidation and apply changes")
+    p.add_argument("--project", default=None, help="Filter to a specific project")
+    p.add_argument("--tier", choices=["working", "short", "long"], default=None,
+                    help="Filter to a specific tier")
+    p.add_argument("--strategy", choices=["deduplicate", "summarize", "all"],
+                    default="all", help="Consolidation strategy (default: all)")
+    p.add_argument("--log", action="store_true", dest="show_log",
+                    help="Show consolidation history instead of running consolidation")
+    p.add_argument("--limit", type=int, default=10, help="Number of log entries to show")
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
@@ -916,6 +930,59 @@ def cmd_ingest(args: argparse.Namespace) -> None:
     lore.close()
 
 
+def cmd_consolidate(args: argparse.Namespace) -> None:
+    import asyncio
+
+    lore = _get_lore(args.db)
+
+    if args.show_log:
+        entries = lore.get_consolidation_log(limit=args.limit)
+        lore.close()
+        if not entries:
+            print("No consolidation log entries.")
+            return
+        print(f"{'ID':<28} {'Strategy':<14} {'Originals':<10} {'Created':<22}")
+        print("-" * 80)
+        for e in entries:
+            print(
+                f"{e.id:<28} {e.strategy:<14} {e.original_count:<10} "
+                f"{e.created_at[:19]}"
+            )
+        return
+
+    dry_run = not args.execute
+    result = asyncio.run(lore.consolidate(
+        project=args.project,
+        tier=args.tier,
+        strategy=args.strategy,
+        dry_run=dry_run,
+    ))
+    lore.close()
+
+    prefix = "[dry-run] " if dry_run else ""
+    print(f"{prefix}Groups found: {result.groups_found}")
+    print(f"{prefix}Memories consolidated: {result.memories_consolidated}")
+    print(f"{prefix}Memories created: {result.memories_created}")
+    print(f"{prefix}Duplicates merged: {result.duplicates_merged}")
+
+    if result.groups:
+        print()
+        for i, g in enumerate(result.groups, 1):
+            strat = g.get("strategy", "?")
+            count = g.get("memory_count", 0)
+            line = f"  Group {i}: {count} memories (strategy: {strat})"
+            if "similarity" in g:
+                line += f" [similarity: {g['similarity']:.2f}]"
+            if "entities" in g:
+                line += f" [entities: {', '.join(g['entities'][:3])}]"
+            print(line)
+            preview = g.get("preview", "")
+            print(f"    Preview: {preview[:120]}")
+
+    if dry_run:
+        print(f"\n{prefix}Run with --execute to apply changes.")
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -969,6 +1036,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "relationships": cmd_relationships,
         "graph-backfill": cmd_graph_backfill,
         "ingest": cmd_ingest,
+        "consolidate": cmd_consolidate,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

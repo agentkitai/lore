@@ -93,6 +93,8 @@ class Memory:
     importance_score: float = 1.0
     access_count: int = 0
     last_accessed_at: Optional[str] = None
+    archived: bool = False
+    consolidated_into: Optional[str] = None
 
 
 @dataclass
@@ -120,6 +122,9 @@ class MemoryStats:
     expired_cleaned: int = 0
     avg_importance: Optional[float] = None
     below_threshold_count: int = 0
+    archived_count: int = 0
+    consolidation_count: int = 0
+    last_consolidation_at: Optional[str] = None
 
 
 # Tier-aware decay half-lives (in days).
@@ -244,4 +249,50 @@ class GraphContext:
     relationships: List[Relationship] = field(default_factory=list)
     paths: List[List[str]] = field(default_factory=list)
     relevance_score: float = 0.0
+
+
+# ------------------------------------------------------------------
+# Consolidation types and configuration (F3)
+# ------------------------------------------------------------------
+
+@dataclass
+class ConsolidationLogEntry:
+    """A record of a consolidation action."""
+
+    id: str
+    consolidated_memory_id: str
+    original_memory_ids: List[str]
+    strategy: str
+    model_used: Optional[str]
+    original_count: int
+    created_at: str
+    metadata: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ConsolidationResult:
+    """Result of a consolidation run."""
+
+    groups_found: int = 0
+    memories_consolidated: int = 0
+    memories_created: int = 0
+    duplicates_merged: int = 0
+    groups: List[Dict[str, Any]] = field(default_factory=list)
+    dry_run: bool = True
+
+
+DEFAULT_RETENTION_POLICIES: Dict[str, int] = {
+    "working": 3600,       # 1 hour
+    "short": 604800,       # 7 days
+    "long": 2592000,       # 30 days
+}
+
+DEFAULT_CONSOLIDATION_CONFIG: Dict[str, Any] = {
+    "retention_policies": dict(DEFAULT_RETENTION_POLICIES),
+    "dedup_threshold": 0.95,
+    "min_group_size": 3,
+    "batch_size": 50,
+    "max_groups_per_run": 100,
+    "llm_model": None,
+}
 

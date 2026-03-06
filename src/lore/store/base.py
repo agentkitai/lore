@@ -5,7 +5,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
-from lore.types import ConflictEntry, Entity, EntityMention, Fact, Memory, Relationship
+from lore.types import (
+    ConflictEntry, ConsolidationLogEntry, Entity, EntityMention,
+    Fact, Memory, Relationship,
+)
 
 
 class Store(ABC):
@@ -26,6 +29,7 @@ class Store(ABC):
         type: Optional[str] = None,
         tier: Optional[str] = None,
         limit: Optional[int] = None,
+        include_archived: bool = False,
     ) -> List[Memory]:
         """List memories, optionally filtered by project/type/tier, ordered by created_at desc."""
 
@@ -179,4 +183,20 @@ class Store(ABC):
         rel_types: Optional[List[str]] = None,
     ) -> List[Relationship]:
         """Query relationships for hop traversal. Returns empty list by default."""
+        return []
+
+    # ------------------------------------------------------------------
+    # Consolidation log storage (default no-op implementations)
+    # ------------------------------------------------------------------
+
+    def save_consolidation_log(self, entry: ConsolidationLogEntry) -> None:
+        """Save a consolidation log entry. No-op by default."""
+        pass
+
+    def get_consolidation_log(
+        self,
+        limit: int = 50,
+        project: Optional[str] = None,
+    ) -> List[ConsolidationLogEntry]:
+        """Get consolidation log entries. Returns empty list by default."""
         return []

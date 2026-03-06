@@ -221,6 +221,8 @@ class HttpStore(Store):
             importance_score=data.get("importance_score", 1.0),
             access_count=data.get("access_count", 0),
             last_accessed_at=data.get("last_accessed_at"),
+            archived=data.get("archived", False),
+            consolidated_into=data.get("consolidated_into"),
         )
 
     # ------------------------------------------------------------------
@@ -245,12 +247,15 @@ class HttpStore(Store):
         type: Optional[str] = None,
         tier: Optional[str] = None,
         limit: Optional[int] = None,
+        include_archived: bool = False,
     ) -> List[Memory]:
         params: Dict[str, Any] = {}
         if project is not None:
             params["project"] = project
         if limit is not None:
             params["limit"] = limit
+        if include_archived:
+            params["include_archived"] = "true"
 
         resp = self._request("GET", "/v1/lessons", params=params)
         data = resp.json()
@@ -262,6 +267,8 @@ class HttpStore(Store):
             memories = [m for m in memories if m.type == type]
         if tier is not None:
             memories = [m for m in memories if m.tier == tier]
+        if not include_archived:
+            memories = [m for m in memories if not m.archived]
 
         return memories
 

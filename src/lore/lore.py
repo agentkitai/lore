@@ -130,6 +130,8 @@ class Lore:
         graph_confidence_threshold: float = 0.5,
         graph_co_occurrence: bool = True,
         graph_co_occurrence_weight: float = 0.3,
+        consolidation_config: Optional[Dict[str, Any]] = None,
+        consolidation_schedule: Optional[str] = None,
     ) -> None:
         self.project = project
         self._tier_weights = tier_recall_weights or dict(TIER_RECALL_WEIGHT)
@@ -292,6 +294,37 @@ class Lore:
             # Wire graph edge expiration into conflict resolver
             if self._conflict_resolver is not None:
                 self._conflict_resolver._relationship_manager = self._relationship_manager
+
+        # Consolidation engine (always available, LLM optional)
+        from lore.consolidation import ConsolidationEngine, ConsolidationScheduler
+
+        # Resolve LLM provider for consolidation (reuse existing provider if available)
+        consolidation_llm = None
+        _llm_prov = llm_provider or os.environ.get("LORE_LLM_PROVIDER")
+        _llm_key = llm_api_key or os.environ.get("LORE_LLM_API_KEY")
+        _llm_mod = llm_model or os.environ.get("LORE_LLM_MODEL", "gpt-4o-mini")
+        _llm_url = llm_base_url or os.environ.get("LORE_LLM_BASE_URL")
+        if _llm_prov and _llm_key:
+            from lore.llm import create_provider
+            consolidation_llm = create_provider(
+                provider=_llm_prov, model=_llm_mod,
+                api_key=_llm_key, base_url=_llm_url,
+            )
+
+        self._consolidation_engine = ConsolidationEngine(
+            store=self._store,
+            embedder=self._embedder,
+            llm_provider=consolidation_llm,
+            config=consolidation_config,
+        )
+
+        # Scheduled consolidation (optional)
+        self._consolidation_scheduler = None
+        if consolidation_schedule:
+            self._consolidation_scheduler = ConsolidationScheduler(
+                engine=self._consolidation_engine,
+                interval=consolidation_schedule,
+            )
 
     def close(self) -> None:
         """Close underlying store if it supports closing."""
@@ -819,6 +852,12 @@ class Lore:
             by_type[m.type] = by_type.get(m.type, 0) + 1
             by_tier[m.tier] = by_tier.get(m.tier, 0) + 1
 
+        # Consolidation stats
+        archived_count = len(self._store.list(project=project, include_archived=True)) - len(all_memories)
+        consolidation_log = self._store.get_consolidation_log(limit=1)
+        consolidation_count = len(self._store.get_consolidation_log(limit=10000))
+        last_consolidation_at = consolidation_log[0].created_at if consolidation_log else None
+
         # Memories are sorted by created_at desc, so newest is first
         return MemoryStats(
             total=len(all_memories),
@@ -827,7 +866,31 @@ class Lore:
             oldest=all_memories[-1].created_at,
             newest=all_memories[0].created_at,
             expired_cleaned=self._last_cleanup_count,
+            archived_count=archived_count,
+            consolidation_count=consolidation_count,
+            last_consolidation_at=last_consolidation_at,
         )
+
+    async def consolidate(
+        self,
+        project: Optional[str] = None,
+        tier: Optional[str] = None,
+        strategy: str = "all",
+        dry_run: bool = True,
+    ) -> "ConsolidationResult":
+        """Run the consolidation pipeline."""
+        from lore.types import ConsolidationResult
+        return await self._consolidation_engine.consolidate(
+            project=project, tier=tier, strategy=strategy, dry_run=dry_run,
+        )
+
+    def get_consolidation_log(
+        self,
+        limit: int = 50,
+        project: Optional[str] = None,
+    ) -> list:
+        """Retrieve consolidation history."""
+        return self._store.get_consolidation_log(limit=limit, project=project)
 
     def upvote(self, memory_id: str) -> None:
         """Increment upvotes for a memory and recompute importance."""

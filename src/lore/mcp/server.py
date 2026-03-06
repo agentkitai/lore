@@ -832,6 +832,68 @@ def ingest(
         return f"Ingestion failed: {e}"
 
 
+@mcp.tool(
+    description=(
+        "Trigger memory consolidation. Merges near-duplicate memories and "
+        "summarizes related memory clusters into concise long-term memories. "
+        "USE THIS WHEN: memory bloat is high, or you want to compress episodic "
+        "memories into semantic knowledge. Defaults to dry-run (preview only)."
+    ),
+)
+async def consolidate(
+    project: Optional[str] = None,
+    dry_run: bool = True,
+    strategy: Optional[str] = None,
+) -> str:
+    """Trigger memory consolidation."""
+    try:
+        lore = _get_lore()
+        result = await lore.consolidate(
+            project=project,
+            dry_run=dry_run,
+            strategy=strategy or "all",
+        )
+        return _format_consolidation_result(result)
+    except Exception as e:
+        return f"Consolidation failed: {e}"
+
+
+def _format_consolidation_result(result: Any) -> str:
+    """Format consolidation result for display."""
+    lines: List[str] = []
+    if result.dry_run:
+        lines.append("Consolidation Preview (DRY RUN)")
+        lines.append("=" * 32)
+    else:
+        lines.append("Consolidation Complete")
+        lines.append("=" * 22)
+
+    lines.append(f"Groups found: {result.groups_found}")
+    lines.append(f"Memories consolidated: {result.memories_consolidated}")
+    lines.append(f"Memories created: {result.memories_created}")
+    lines.append(f"Duplicates merged: {result.duplicates_merged}")
+
+    if result.groups:
+        lines.append("")
+        for i, g in enumerate(result.groups, 1):
+            strat = g.get("strategy", "?")
+            count = g.get("memory_count", 0)
+            preview = g.get("preview", "")
+            line = f"  Group {i}: {count} memories (strategy: {strat})"
+            if "similarity" in g:
+                line += f" [similarity: {g['similarity']:.2f}]"
+            if "entities" in g:
+                line += f" [entities: {', '.join(g['entities'][:3])}]"
+            lines.append(line)
+            lines.append(f"    Preview: {preview[:120]}")
+
+    if result.dry_run:
+        lines.append("")
+        lines.append("Run with dry_run=false to execute.")
+
+    return "\n".join(lines)
+
+
 def run_server() -> None:
     """Start the MCP server with stdio transport."""
     mcp.run(transport="stdio")
