@@ -785,6 +785,53 @@ def related(
         return f"Related lookup failed: {e}"
 
 
+@mcp.tool(
+    description=(
+        "Ingest content from external sources with source tracking. "
+        "USE THIS WHEN: you want to import content from Slack, Telegram, Git, or any "
+        "external source with full provenance tracking (who said it, where, when). "
+        "Content goes through normalization and deduplication before storage. "
+        "Supports source-specific formatting cleanup (Slack mrkdwn, Telegram HTML, etc)."
+    ),
+)
+def ingest(
+    content: str,
+    source: str = "mcp",
+    user: Optional[str] = None,
+    channel: Optional[str] = None,
+    type: str = "general",
+    tags: Optional[str] = None,
+    project: Optional[str] = None,
+) -> str:
+    """Ingest content with source tracking."""
+    try:
+        from datetime import datetime, timezone
+
+        lore = _get_lore()
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else []
+        metadata = {
+            "source_info": {
+                "adapter": source,
+                "user": user,
+                "channel": channel,
+                "ingested_at": datetime.now(timezone.utc).isoformat(),
+                "raw_format": "plain_text",
+            }
+        }
+        memory_id = lore.remember(
+            content=content,
+            type=type,
+            tier="long",
+            tags=tag_list,
+            metadata=metadata,
+            source=source,
+            project=project,
+        )
+        return f"Ingested as memory {memory_id} (source: {source})"
+    except Exception as e:
+        return f"Ingestion failed: {e}"
+
+
 def run_server() -> None:
     """Start the MCP server with stdio transport."""
     mcp.run(transport="stdio")

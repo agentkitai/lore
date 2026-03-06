@@ -408,6 +408,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--project", default=None, help="Filter to project")
     p.add_argument("--limit", type=int, default=1000)
 
+    # ingest
+    p = sub.add_parser("ingest", help="Ingest content with source tracking")
+    p.add_argument("content", nargs="?", default=None, help="Content to ingest (or use --file)")
+    p.add_argument("--source", default="manual", help="Source adapter name (default: manual)")
+    p.add_argument("--file", default=None, dest="file_path", help="File to import (JSON array or text lines)")
+    p.add_argument("--user", default=None, help="Source user identity")
+    p.add_argument("--channel", default=None, help="Source channel/location")
+    p.add_argument("--type", default="general", help="Memory type")
+    p.add_argument("--tags", default=None, help="Comma-separated tags")
+    p.add_argument("--project", default=None, help="Project namespace")
+    p.add_argument(
+        "--dedup-mode", default="reject", dest="dedup_mode",
+        choices=["reject", "skip", "merge", "allow"],
+        help="Deduplication mode (default: reject)",
+    )
+    p.add_argument("--no-enrich", action="store_true", dest="no_enrich", help="Disable enrichment")
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
@@ -795,6 +812,110 @@ def cmd_graph_backfill(args: argparse.Namespace) -> None:
     print(f"Processed {count} memory(ies) into the knowledge graph.")
 
 
+def cmd_ingest(args: argparse.Namespace) -> None:
+    from datetime import datetime, timezone
+
+    lore = _get_lore(args.db)
+    tags: List[str] = [t.strip() for t in args.tags.split(",") if t.strip()] if args.tags else []
+    source = args.source
+
+    def _ingest_one(content: str, user=None, channel=None) -> str:
+        metadata = {
+            "source_info": {
+                "adapter": source,
+                "user": user or args.user,
+                "channel": channel or args.channel,
+                "ingested_at": datetime.now(timezone.utc).isoformat(),
+                "raw_format": "plain_text",
+            }
+        }
+        mid = lore.remember(
+            content=content,
+            type=args.type,
+            tier="long",
+            tags=tags,
+            metadata=metadata,
+            source=source,
+            project=args.project,
+        )
+        return mid
+
+    if args.file_path:
+        import os
+
+        if not os.path.exists(args.file_path):
+            print(f"Error: File not found: {args.file_path}", file=sys.stderr)
+            lore.close()
+            sys.exit(1)
+
+        with open(args.file_path, "r") as f:
+            raw = f.read()
+
+        # Try JSON array first
+        items = None
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                items = data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        if items is not None:
+            ingested = 0
+            failed = 0
+            for i, item in enumerate(items):
+                if isinstance(item, dict):
+                    content = item.get("content", "")
+                    user = item.get("user", args.user)
+                    channel = item.get("channel", args.channel)
+                else:
+                    content = str(item)
+                    user = args.user
+                    channel = args.channel
+
+                if not content.strip():
+                    failed += 1
+                    continue
+                try:
+                    mid = _ingest_one(content, user, channel)
+                    print(f"[{i}] Ingested: {mid}")
+                    ingested += 1
+                except Exception as e:
+                    print(f"[{i}] Failed: {e}", file=sys.stderr)
+                    failed += 1
+            print(f"\nTotal: {ingested} ingested, {failed} failed")
+        else:
+            # Treat as newline-delimited text
+            lines = [l.strip() for l in raw.splitlines() if l.strip()]
+            if not lines:
+                print("No content found in file.", file=sys.stderr)
+                lore.close()
+                sys.exit(1)
+            ingested = 0
+            for i, line in enumerate(lines):
+                try:
+                    mid = _ingest_one(line)
+                    print(f"[{i}] Ingested: {mid}")
+                    ingested += 1
+                except Exception as e:
+                    print(f"[{i}] Failed: {e}", file=sys.stderr)
+            print(f"\nTotal: {ingested} ingested")
+    elif args.content:
+        try:
+            mid = _ingest_one(args.content)
+            print(mid)
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            lore.close()
+            sys.exit(1)
+    else:
+        print("Provide content or use --file", file=sys.stderr)
+        lore.close()
+        sys.exit(1)
+
+    lore.close()
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -847,6 +968,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "entities": cmd_entities,
         "relationships": cmd_relationships,
         "graph-backfill": cmd_graph_backfill,
+        "ingest": cmd_ingest,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)
