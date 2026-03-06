@@ -5,6 +5,46 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+# Valid resolution strategies for fact conflicts.
+VALID_RESOLUTIONS: Tuple[str, ...] = ("SUPERSEDE", "MERGE", "CONTRADICT", "NOOP")
+
+
+@dataclass
+class Fact:
+    """An atomic fact extracted from a memory.
+
+    Represents a (subject, predicate, object) triple — a single piece
+    of structured knowledge derived from unstructured memory content.
+    """
+
+    id: str
+    memory_id: str
+    subject: str
+    predicate: str
+    object: str
+    confidence: float = 1.0
+    extracted_at: str = ""
+    invalidated_by: Optional[str] = None
+    invalidated_at: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class ConflictEntry:
+    """A record of a fact conflict detection and resolution."""
+
+    id: str
+    new_memory_id: str
+    old_fact_id: str
+    new_fact_id: Optional[str]
+    subject: str
+    predicate: str
+    old_value: str
+    new_value: str
+    resolution: str
+    resolved_at: str
+    metadata: Optional[Dict[str, Any]] = None
+
 
 @dataclass
 class Memory:

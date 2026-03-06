@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from lore.store.base import Store
-from lore.types import Memory
+from lore.types import ConflictEntry, Fact, Memory
 
 _SCHEMA = """\
 CREATE TABLE IF NOT EXISTS memories (
@@ -41,6 +41,43 @@ CREATE INDEX IF NOT EXISTS idx_memories_tier ON memories(tier);
 CREATE INDEX IF NOT EXISTS idx_memories_project_tier ON memories(project, tier);
 CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance_score);
 CREATE INDEX IF NOT EXISTS idx_memories_last_accessed ON memories(last_accessed_at);
+"""
+
+_FACT_SCHEMA = """\
+CREATE TABLE IF NOT EXISTS facts (
+    id              TEXT PRIMARY KEY,
+    memory_id       TEXT NOT NULL,
+    subject         TEXT NOT NULL,
+    predicate       TEXT NOT NULL,
+    object          TEXT NOT NULL,
+    confidence      REAL DEFAULT 1.0,
+    extracted_at    TEXT NOT NULL,
+    invalidated_by  TEXT,
+    invalidated_at  TEXT,
+    metadata        TEXT,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_facts_memory ON facts(memory_id);
+CREATE INDEX IF NOT EXISTS idx_facts_subject ON facts(subject);
+CREATE INDEX IF NOT EXISTS idx_facts_subject_predicate ON facts(subject, predicate);
+CREATE INDEX IF NOT EXISTS idx_facts_active ON facts(id) WHERE invalidated_by IS NULL;
+
+CREATE TABLE IF NOT EXISTS conflict_log (
+    id              TEXT PRIMARY KEY,
+    new_memory_id   TEXT NOT NULL,
+    old_fact_id     TEXT NOT NULL,
+    new_fact_id     TEXT,
+    subject         TEXT NOT NULL,
+    predicate       TEXT NOT NULL,
+    old_value       TEXT NOT NULL,
+    new_value       TEXT NOT NULL,
+    resolution      TEXT NOT NULL,
+    resolved_at     TEXT NOT NULL,
+    metadata        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_conflict_log_memory ON conflict_log(new_memory_id);
+CREATE INDEX IF NOT EXISTS idx_conflict_log_resolution ON conflict_log(resolution);
+CREATE INDEX IF NOT EXISTS idx_conflict_log_resolved ON conflict_log(resolved_at);
 """
 
 _MIGRATION_SQL = """\
@@ -81,6 +118,8 @@ class SqliteStore(Store):
             self._maybe_add_tier_column()
             self._maybe_add_importance_columns()
         self._conn.executescript(_SCHEMA)
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._maybe_create_fact_tables()
 
     def _maybe_migrate(self) -> None:
         """Auto-migrate lessons table to memories table if needed."""
@@ -331,6 +370,150 @@ class SqliteStore(Store):
             importance_score=row["importance_score"] if "importance_score" in keys else 1.0,
             access_count=row["access_count"] if "access_count" in keys else 0,
             last_accessed_at=row["last_accessed_at"] if "last_accessed_at" in keys else None,
+        )
+
+    # ------------------------------------------------------------------
+    # Fact tables
+    # ------------------------------------------------------------------
+
+    def _maybe_create_fact_tables(self) -> None:
+        """Create facts and conflict_log tables if they don't exist."""
+        self._conn.executescript(_FACT_SCHEMA)
+
+    # ------------------------------------------------------------------
+    # Fact + conflict CRUD
+    # ------------------------------------------------------------------
+
+    def save_fact(self, fact: Fact) -> None:
+        self._conn.execute(
+            """INSERT OR REPLACE INTO facts
+               (id, memory_id, subject, predicate, object, confidence,
+                extracted_at, invalidated_by, invalidated_at, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                fact.id,
+                fact.memory_id,
+                fact.subject,
+                fact.predicate,
+                fact.object,
+                fact.confidence,
+                fact.extracted_at,
+                fact.invalidated_by,
+                fact.invalidated_at,
+                json.dumps(fact.metadata) if fact.metadata is not None else None,
+            ),
+        )
+        self._conn.commit()
+
+    def get_facts(self, memory_id: str) -> List[Fact]:
+        rows = self._conn.execute(
+            "SELECT * FROM facts WHERE memory_id = ? ORDER BY extracted_at",
+            (memory_id,),
+        ).fetchall()
+        return [self._row_to_fact(r) for r in rows]
+
+    def get_active_facts(
+        self,
+        subject: Optional[str] = None,
+        predicate: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Fact]:
+        query = "SELECT * FROM facts WHERE invalidated_by IS NULL"
+        params: List[Any] = []
+        if subject is not None:
+            query += " AND subject = ?"
+            params.append(subject.strip().lower())
+        if predicate is not None:
+            query += " AND predicate = ?"
+            params.append(predicate.strip().lower())
+        query += " ORDER BY extracted_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._row_to_fact(r) for r in rows]
+
+    def invalidate_fact(self, fact_id: str, invalidated_by: str) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute(
+            """UPDATE facts SET invalidated_by = ?, invalidated_at = ?
+               WHERE id = ? AND invalidated_by IS NULL""",
+            (invalidated_by, now, fact_id),
+        )
+        self._conn.commit()
+
+    def save_conflict(self, entry: ConflictEntry) -> None:
+        self._conn.execute(
+            """INSERT OR REPLACE INTO conflict_log
+               (id, new_memory_id, old_fact_id, new_fact_id, subject, predicate,
+                old_value, new_value, resolution, resolved_at, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                entry.id,
+                entry.new_memory_id,
+                entry.old_fact_id,
+                entry.new_fact_id,
+                entry.subject,
+                entry.predicate,
+                entry.old_value,
+                entry.new_value,
+                entry.resolution,
+                entry.resolved_at,
+                json.dumps(entry.metadata) if entry.metadata is not None else None,
+            ),
+        )
+        self._conn.commit()
+
+    def list_conflicts(
+        self,
+        resolution: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[ConflictEntry]:
+        query = "SELECT * FROM conflict_log"
+        params: List[Any] = []
+        if resolution is not None:
+            query += " WHERE resolution = ?"
+            params.append(resolution)
+        query += " ORDER BY resolved_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._row_to_conflict(r) for r in rows]
+
+    @staticmethod
+    def _row_to_fact(row: sqlite3.Row) -> Fact:
+        metadata_raw = row["metadata"]
+        metadata: Optional[Dict[str, Any]] = (
+            json.loads(metadata_raw) if metadata_raw else None
+        )
+        return Fact(
+            id=row["id"],
+            memory_id=row["memory_id"],
+            subject=row["subject"],
+            predicate=row["predicate"],
+            object=row["object"],
+            confidence=row["confidence"],
+            extracted_at=row["extracted_at"],
+            invalidated_by=row["invalidated_by"],
+            invalidated_at=row["invalidated_at"],
+            metadata=metadata,
+        )
+
+    @staticmethod
+    def _row_to_conflict(row: sqlite3.Row) -> ConflictEntry:
+        metadata_raw = row["metadata"]
+        metadata: Optional[Dict[str, Any]] = (
+            json.loads(metadata_raw) if metadata_raw else None
+        )
+        return ConflictEntry(
+            id=row["id"],
+            new_memory_id=row["new_memory_id"],
+            old_fact_id=row["old_fact_id"],
+            new_fact_id=row["new_fact_id"],
+            subject=row["subject"],
+            predicate=row["predicate"],
+            old_value=row["old_value"],
+            new_value=row["new_value"],
+            resolution=row["resolution"],
+            resolved_at=row["resolved_at"],
+            metadata=metadata,
         )
 
     def close(self) -> None:

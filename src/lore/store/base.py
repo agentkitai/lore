@@ -5,7 +5,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
-from lore.types import Memory
+from lore.types import ConflictEntry, Fact, Memory
 
 
 class Store(ABC):
@@ -49,3 +49,40 @@ class Store(ABC):
     @abstractmethod
     def cleanup_expired(self) -> int:
         """Delete memories where expires_at < now. Returns count deleted."""
+
+    # ------------------------------------------------------------------
+    # Fact + conflict storage (default no-op implementations)
+    # ------------------------------------------------------------------
+
+    def save_fact(self, fact: Fact) -> None:
+        """Save a fact (insert or update). No-op by default."""
+        pass
+
+    def get_facts(self, memory_id: str) -> List[Fact]:
+        """Get all facts for a memory. Returns empty list by default."""
+        return []
+
+    def get_active_facts(
+        self,
+        subject: Optional[str] = None,
+        predicate: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Fact]:
+        """Get active (non-invalidated) facts. Returns empty list by default."""
+        return []
+
+    def invalidate_fact(self, fact_id: str, invalidated_by: str) -> None:
+        """Mark a fact as invalidated. No-op by default."""
+        pass
+
+    def save_conflict(self, entry: ConflictEntry) -> None:
+        """Save a conflict log entry. No-op by default."""
+        pass
+
+    def list_conflicts(
+        self,
+        resolution: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[ConflictEntry]:
+        """List conflict log entries. Returns empty list by default."""
+        return []

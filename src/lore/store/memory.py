@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from lore.store.base import Store
-from lore.types import Memory
+from lore.types import ConflictEntry, Fact, Memory
 
 
 class MemoryStore(Store):
@@ -14,6 +14,8 @@ class MemoryStore(Store):
 
     def __init__(self) -> None:
         self._memories: Dict[str, Memory] = {}
+        self._facts: Dict[str, Fact] = {}
+        self._conflict_log: List[ConflictEntry] = []
 
     def save(self, memory: Memory) -> None:
         self._memories[memory.id] = memory
@@ -47,7 +49,13 @@ class MemoryStore(Store):
         return True
 
     def delete(self, memory_id: str) -> bool:
-        return self._memories.pop(memory_id, None) is not None
+        existed = self._memories.pop(memory_id, None) is not None
+        if existed:
+            # Cascade: remove facts for this memory
+            to_remove = [fid for fid, f in self._facts.items() if f.memory_id == memory_id]
+            for fid in to_remove:
+                del self._facts[fid]
+        return existed
 
     def count(
         self,
@@ -74,3 +82,51 @@ class MemoryStore(Store):
         for mid in expired_ids:
             del self._memories[mid]
         return len(expired_ids)
+
+    # ------------------------------------------------------------------
+    # Fact + conflict CRUD
+    # ------------------------------------------------------------------
+
+    def save_fact(self, fact: Fact) -> None:
+        self._facts[fact.id] = fact
+
+    def get_facts(self, memory_id: str) -> List[Fact]:
+        facts = [f for f in self._facts.values() if f.memory_id == memory_id]
+        facts.sort(key=lambda f: f.extracted_at)
+        return facts
+
+    def get_active_facts(
+        self,
+        subject: Optional[str] = None,
+        predicate: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Fact]:
+        facts = [f for f in self._facts.values() if f.invalidated_by is None]
+        if subject is not None:
+            norm_subject = subject.strip().lower()
+            facts = [f for f in facts if f.subject == norm_subject]
+        if predicate is not None:
+            norm_predicate = predicate.strip().lower()
+            facts = [f for f in facts if f.predicate == norm_predicate]
+        facts.sort(key=lambda f: f.extracted_at, reverse=True)
+        return facts[:limit]
+
+    def invalidate_fact(self, fact_id: str, invalidated_by: str) -> None:
+        fact = self._facts.get(fact_id)
+        if fact is not None and fact.invalidated_by is None:
+            fact.invalidated_by = invalidated_by
+            fact.invalidated_at = datetime.now(timezone.utc).isoformat()
+
+    def save_conflict(self, entry: ConflictEntry) -> None:
+        self._conflict_log.append(entry)
+
+    def list_conflicts(
+        self,
+        resolution: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[ConflictEntry]:
+        entries = list(self._conflict_log)
+        if resolution is not None:
+            entries = [e for e in entries if e.resolution == resolution]
+        entries.sort(key=lambda e: e.resolved_at, reverse=True)
+        return entries[:limit]
