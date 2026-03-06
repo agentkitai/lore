@@ -6,8 +6,13 @@ from abc import ABC, abstractmethod
 from typing import List, Optional
 
 from lore.types import (
-    ConflictEntry, ConsolidationLogEntry, Entity, EntityMention,
-    Fact, Memory, Relationship,
+    ConflictEntry,
+    ConsolidationLogEntry,
+    Entity,
+    EntityMention,
+    Fact,
+    Memory,
+    Relationship,
 )
 
 

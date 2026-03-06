@@ -608,6 +608,7 @@ def cmd_reindex(args: argparse.Namespace) -> None:
 
 def cmd_enrich(args: argparse.Namespace) -> None:
     import os
+
     from lore import Lore
 
     model = args.model or os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
@@ -702,7 +703,6 @@ def cmd_conflicts(args: argparse.Namespace) -> None:
 
 
 def cmd_backfill_facts(args: argparse.Namespace) -> None:
-    from lore import Lore
 
     lore = _get_lore(args.db)
     if not lore._fact_extraction_enabled:
@@ -810,8 +810,8 @@ def cmd_relationships(args: argparse.Namespace) -> None:
     print(f"{'Source':<25} {'Type':<20} {'Target':<25} {'Weight':<10} {'Status'}")
     print("-" * 90)
     for r in rels:
-        src = lore._store.get_entity(r.source_entity_id) if hasattr(lore, '_store') else None
-        tgt = lore._store.get_entity(r.target_entity_id) if hasattr(lore, '_store') else None
+        lore._store.get_entity(r.source_entity_id) if hasattr(lore, '_store') else None
+        lore._store.get_entity(r.target_entity_id) if hasattr(lore, '_store') else None
         # We already closed lore, so show IDs
         status = "active" if r.valid_until is None else "expired"
         print(f"{r.source_entity_id[:24]:<25} {r.rel_type:<20} {r.target_entity_id[:24]:<25} {r.weight:<10.2f} {status}")

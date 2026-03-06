@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from lore.extract.extractor import ExtractedFact, FactExtractor
-from lore.extract.resolver import ConflictResolver, ResolutionResult
+from lore.extract.resolver import ConflictResolver
 from lore.store.memory import MemoryStore
-from lore.types import ConflictEntry, Fact, Memory
-
+from lore.types import Fact, Memory
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -264,7 +261,6 @@ class TestPipelineIntegration:
              "confidence": 0.95, "resolution": "NOOP", "reasoning": "new fact"},
         ]})
 
-        from lore.extract.extractor import FactExtractor
         from lore.extract.resolver import ConflictResolver
 
         extractor = FactExtractor(
@@ -284,7 +280,7 @@ class TestPipelineIntegration:
         result = resolver.resolve_all(extracted, memory_id=memory.id)
 
         assert len(result.saved_facts) == 1
-        facts = store.get_facts("m1")
+        store.get_facts("m1")
         # Facts are stored by id, not memory_id in MemoryStore._facts
         all_facts = [f for f in store._facts.values() if f.memory_id == "m1"]
         assert len(all_facts) == 1

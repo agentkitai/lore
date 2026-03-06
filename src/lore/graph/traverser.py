@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from lore.store.base import Store
 from lore.types import Entity, GraphContext, Relationship

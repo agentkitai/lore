@@ -11,7 +11,6 @@ import struct
 import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import List
-from unittest.mock import patch
 
 import pytest
 

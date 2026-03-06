@@ -10,7 +10,8 @@ Extract structured metadata from the following text. Return a JSON object with t
 - "topics": list of 1-5 topic keywords (lowercase). What is this text about?
 - "sentiment": {{"label": "positive"|"negative"|"neutral", "score": float from -1.0 to 1.0}}
 - "entities": list of {{"name": string, "type": string}} where type is one of: person, tool, project, platform, organization, concept, language, framework
-- "categories": list of 1-3 categories from this set: infrastructure, architecture, debugging, workflow, learning, preference, incident, convention, planning, documentation, testing, security, performance, other
+- "categories": list of 1-3 categories from: infrastructure, architecture, debugging, workflow, learning, \
+preference, incident, convention, planning, documentation, testing, security, performance, other
 
 Text:
 \"\"\"

@@ -7,7 +7,6 @@ import time
 import pytest
 
 from lore.ingest.adapters import get_adapter
-from lore.ingest.adapters.base import NormalizedMessage, SourceAdapter
 from lore.ingest.adapters.raw import RawAdapter
 
 

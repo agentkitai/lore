@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -12,7 +11,7 @@ from ulid import ULID
 
 from lore.extract.extractor import ExtractedFact
 from lore.store.base import Store
-from lore.types import ConflictEntry, Fact, VALID_RESOLUTIONS
+from lore.types import VALID_RESOLUTIONS, ConflictEntry, Fact
 
 logger = logging.getLogger(__name__)
 

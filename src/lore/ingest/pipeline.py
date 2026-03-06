@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from lore.ingest.adapters.base import NormalizedMessage, SourceAdapter
-from lore.ingest.dedup import DedupResult, Deduplicator
+from lore.ingest.dedup import Deduplicator
 
 logger = logging.getLogger(__name__)
 

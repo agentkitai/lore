@@ -690,6 +690,7 @@ def entity_map(
 
         if format == "json":
             import json
+
             from lore.graph.visualization import to_d3_json
             from lore.types import GraphContext
             # Create a minimal graph context for visualization

@@ -172,6 +172,7 @@ async def ingest_single(req: IngestRequest, request: Request):
     queue = getattr(state, "ingest_queue", None)
     if queue is not None:
         from ulid import ULID
+
         from lore.ingest.queue import QueueItem
 
         # Build payload for queue

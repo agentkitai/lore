@@ -1,13 +1,10 @@
 """Tests for ingestion pipeline orchestrator (F7-S6)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-
-from lore.ingest.adapters.base import NormalizedMessage
 from lore.ingest.adapters.raw import RawAdapter
-from lore.ingest.dedup import DedupResult, Deduplicator
-from lore.ingest.pipeline import IngestResult, IngestionPipeline
+from lore.ingest.dedup import Deduplicator, DedupResult
+from lore.ingest.pipeline import IngestionPipeline
 from lore.types import Memory
 
 
@@ -51,7 +48,7 @@ class TestSuccessfulIngestion:
     def test_source_metadata_stored(self):
         pipeline, lore, _ = _make_pipeline()
         adapter = RawAdapter()
-        result = pipeline.ingest(
+        pipeline.ingest(
             adapter,
             {"content": "test", "user": "alice", "channel": "eng"},
         )

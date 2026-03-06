@@ -15,9 +15,9 @@ from lore.embed.base import Embedder
 from lore.llm.base import LLMProvider
 from lore.store.base import Store
 from lore.types import (
+    DEFAULT_CONSOLIDATION_CONFIG,
     ConsolidationLogEntry,
     ConsolidationResult,
-    DEFAULT_CONSOLIDATION_CONFIG,
     EntityMention,
     Memory,
 )

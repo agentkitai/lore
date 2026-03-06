@@ -10,8 +10,13 @@ from typing import Any, Dict, List, Optional
 
 from lore.store.base import Store
 from lore.types import (
-    ConflictEntry, ConsolidationLogEntry, Entity, EntityMention,
-    Fact, Memory, Relationship,
+    ConflictEntry,
+    ConsolidationLogEntry,
+    Entity,
+    EntityMention,
+    Fact,
+    Memory,
+    Relationship,
 )
 
 _SCHEMA = """\

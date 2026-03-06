@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lore.ingest.dedup import DedupResult
-from lore.ingest.pipeline import IngestResult, IngestionPipeline
+from lore.ingest.pipeline import IngestionPipeline, IngestResult
 from lore.ingest.rate_limit import IngestRateLimiter
 
 # Use FastAPI test client
@@ -251,8 +250,8 @@ class TestRateLimiting:
 
 class TestQueueMode:
     def test_queue_returns_202(self):
+
         from lore.ingest.queue import IngestionQueue
-        import asyncio
 
         queue = IngestionQueue(max_size=10)
         app, _ = _make_app(queue=queue)

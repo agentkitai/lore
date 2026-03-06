@@ -13,7 +13,7 @@ from ulid import ULID
 
 from lore.extract.prompts import build_extraction_prompt
 from lore.store.base import Store
-from lore.types import Fact, VALID_RESOLUTIONS
+from lore.types import VALID_RESOLUTIONS, Fact
 
 logger = logging.getLogger(__name__)
 

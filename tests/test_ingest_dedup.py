@@ -1,11 +1,9 @@
 """Tests for deduplication engine (F7-S5)."""
 
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from lore.ingest.adapters.base import NormalizedMessage
-from lore.ingest.dedup import DedupResult, Deduplicator
+from lore.ingest.dedup import Deduplicator
 from lore.types import Memory, RecallResult
 
 

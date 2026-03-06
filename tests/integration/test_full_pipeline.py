@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lore import Lore
 from lore.types import TIER_DEFAULT_TTL
 

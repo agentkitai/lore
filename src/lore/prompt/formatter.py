@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from lore.prompt.templates import FORMAT_REGISTRY, _OVERHEAD_CHARS, _WRAPPER_CHARS
+from lore.prompt.templates import _OVERHEAD_CHARS, _WRAPPER_CHARS, FORMAT_REGISTRY
 from lore.types import RecallResult
 
 

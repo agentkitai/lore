@@ -6,23 +6,20 @@ import asyncio
 import struct
 from datetime import datetime, timedelta, timezone
 from typing import List
-from unittest.mock import MagicMock, patch
 
 import numpy as np
-import pytest
 
-from lore.consolidation import ConsolidationEngine, ConsolidationScheduler
+from lore.consolidation import ConsolidationEngine
 from lore.store.memory import MemoryStore
 from lore.types import (
-    ConsolidationLogEntry,
-    ConsolidationResult,
     DEFAULT_CONSOLIDATION_CONFIG,
     DEFAULT_RETENTION_POLICIES,
+    ConsolidationLogEntry,
+    ConsolidationResult,
     EntityMention,
     Memory,
     MemoryStats,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -354,14 +351,14 @@ class TestDeduplicationGrouping:
         noise = np.random.RandomState(43).randn(384).astype(np.float32) * 0.05
         vec_b = vec_a + noise
         vec_b = vec_b / np.linalg.norm(vec_b)
-        sim = float(np.dot(vec_a, vec_b))
+        float(np.dot(vec_a, vec_b))
 
         m1 = _make_memory("m1", embedding=_embed(vec_a.tolist()))
         m2 = _make_memory("m2", embedding=_embed(vec_b.tolist()))
 
         # With default 0.95 threshold: may not group
         engine_high = _make_engine(config={"dedup_threshold": 0.99})
-        groups = engine_high._find_duplicates([m1, m2])
+        engine_high._find_duplicates([m1, m2])
 
         # With low threshold: should group
         engine_low = _make_engine(config={"dedup_threshold": 0.5})
@@ -400,7 +397,7 @@ class TestDeduplicationGrouping:
 
         sim_ab = float(np.dot(base, vec_b))
         sim_bc = float(np.dot(vec_b, vec_c))
-        sim_ac = float(np.dot(base, vec_c))
+        float(np.dot(base, vec_c))
 
         # Use a threshold that A~B and B~C pass but A~C might not
         threshold = min(sim_ab, sim_bc) - 0.001
@@ -748,7 +745,6 @@ class TestFullPipeline:
 
         engine = _make_engine(store)
         # Patch _process_group to fail
-        original = engine._process_group
 
         call_count = 0
         async def failing_process(group, strategy, result):
@@ -757,7 +753,7 @@ class TestFullPipeline:
             raise RuntimeError("Simulated failure")
 
         engine._process_group = failing_process
-        result = asyncio.run(engine.consolidate(dry_run=False))
+        asyncio.run(engine.consolidate(dry_run=False))
         # Should have attempted processing but not crashed
         assert call_count > 0
 

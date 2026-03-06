@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from ulid import ULID
 
 from lore.store.base import Store
-from lore.types import Entity, EntityMention, VALID_ENTITY_TYPES
+from lore.types import VALID_ENTITY_TYPES, Entity, EntityMention
 
 
 def _utc_now_iso() -> str:

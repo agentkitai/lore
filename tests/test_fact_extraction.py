@@ -5,12 +5,9 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-import pytest
-
-from lore.extract.extractor import ExtractedFact, FactExtractor
+from lore.extract.extractor import FactExtractor
 from lore.store.memory import MemoryStore
-from lore.types import Fact, VALID_RESOLUTIONS
-
+from lore.types import VALID_RESOLUTIONS, Fact
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
-from lore import Lore, Memory
+from lore import Lore
 from lore.store.memory import MemoryStore
 from lore.types import ConsolidationResult
 

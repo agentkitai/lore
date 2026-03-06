@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-import pytest
-
 from lore.store.memory import MemoryStore
 from lore.types import ConflictEntry, Fact
 

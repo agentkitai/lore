@@ -20,27 +20,30 @@ Covers all 15 stories:
 
 from __future__ import annotations
 
-import json
 import time
-from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from datetime import datetime, timezone
 
 import pytest
 from ulid import ULID
 
-from lore.types import (
-    Entity, EntityMention, Fact, GraphContext, Memory, Relationship,
-    VALID_ENTITY_TYPES, VALID_REL_TYPES,
-)
+from lore.graph.cache import EntityCache, find_query_entities
+from lore.graph.entities import EntityManager
+from lore.graph.extraction import update_graph_from_facts
+from lore.graph.relationships import RelationshipManager
+from lore.graph.traverser import GraphTraverser
+from lore.graph.visualization import to_d3_json, to_text_tree
 from lore.store.memory import MemoryStore
 from lore.store.sqlite import SqliteStore
-from lore.graph.entities import EntityManager
-from lore.graph.relationships import RelationshipManager, PREDICATE_TO_REL_TYPE
-from lore.graph.traverser import GraphTraverser
-from lore.graph.cache import EntityCache, find_query_entities
-from lore.graph.extraction import update_graph_from_facts
-from lore.graph.visualization import to_d3_json, to_text_tree
-
+from lore.types import (
+    VALID_ENTITY_TYPES,
+    VALID_REL_TYPES,
+    Entity,
+    EntityMention,
+    Fact,
+    GraphContext,
+    Memory,
+    Relationship,
+)
 
 # ============================================================
 # Fixtures
@@ -506,7 +509,7 @@ class TestS4RelationshipCRUD:
             subject="auth-service", predicate="depends_on", object="redis",
             confidence=0.85, extracted_at=_utc_now_iso(),
         )
-        rel1 = relationship_manager.ingest_from_fact(mid, fact)
+        relationship_manager.ingest_from_fact(mid, fact)
         fact2 = Fact(
             id=str(ULID()), memory_id=mid,
             subject="auth-service", predicate="depends_on", object="redis",
@@ -909,7 +912,7 @@ class TestS10EntityCache:
     def test_cache_invalidate(self, store):
         _make_entity(store, "redis", "tool")
         cache = EntityCache(store, ttl_seconds=300)
-        result1 = cache.get_all()
+        cache.get_all()
         cache.invalidate()
         _make_entity(store, "postgresql", "tool")
         result2 = cache.get_all()
@@ -932,7 +935,7 @@ class TestS10EntityCache:
         assert matches[0].name == "auth-service"
 
     def test_find_query_entities_by_alias(self, store):
-        e = _make_entity(store, "kubernetes", "platform", aliases=["k8s"])
+        _make_entity(store, "kubernetes", "platform", aliases=["k8s"])
         cache = EntityCache(store)
         matches = find_query_entities("k8s cluster issues", cache)
         assert len(matches) == 1
@@ -1022,7 +1025,7 @@ class TestS11HybridRecall:
         from lore.lore import Lore
 
         lore = Lore(db_path=str(tmp_path / "test.db"), knowledge_graph=True, redact=False)
-        mid = lore.remember("Redis is a cache", type="general")
+        lore.remember("Redis is a cache", type="general")
         results = lore.recall("cache", graph_depth=0)
         # Should work fine, no graph involvement
         assert len(results) >= 0
@@ -1478,21 +1481,18 @@ class TestRelationshipProperties:
 
 class TestGraphEnvVars:
     def test_graph_max_depth_env(self, store):
-        import os
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("LORE_GRAPH_MAX_DEPTH", "5")
             traverser = GraphTraverser(store)
             assert traverser.MAX_DEPTH == 5
 
     def test_graph_max_depth_default(self, store):
-        import os
         with pytest.MonkeyPatch.context() as mp:
             mp.delenv("LORE_GRAPH_MAX_DEPTH", raising=False)
             traverser = GraphTraverser(store)
             assert traverser.MAX_DEPTH == 3
 
     def test_graph_confidence_threshold_env(self, tmp_path):
-        import os
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("LORE_GRAPH_CONFIDENCE_THRESHOLD", "0.8")
             from lore.lore import Lore
@@ -1502,7 +1502,6 @@ class TestGraphEnvVars:
             lore.close()
 
     def test_graph_co_occurrence_env(self, tmp_path):
-        import os
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("LORE_GRAPH_CO_OCCURRENCE", "false")
             from lore.lore import Lore
@@ -1512,7 +1511,6 @@ class TestGraphEnvVars:
             lore.close()
 
     def test_graph_co_occurrence_weight_env(self, tmp_path):
-        import os
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("LORE_GRAPH_CO_OCCURRENCE_WEIGHT", "0.7")
             from lore.lore import Lore
@@ -1539,7 +1537,8 @@ class TestRelatedMCPTool:
         )
         store.save_relationship(rel)
 
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
+
         from lore.graph.cache import EntityCache
 
         mock_lore = MagicMock()
@@ -1556,7 +1555,7 @@ class TestRelatedMCPTool:
 
     def test_related_requires_input(self):
         """related() returns error if no memory_id or entity_name."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
         mock_lore = MagicMock()
         mock_lore._knowledge_graph_enabled = True
         with patch("lore.mcp.server._get_lore", return_value=mock_lore):
@@ -1566,7 +1565,7 @@ class TestRelatedMCPTool:
 
     def test_related_graph_disabled(self):
         """related() returns message when graph is disabled."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
         mock_lore = MagicMock()
         mock_lore._knowledge_graph_enabled = False
         with patch("lore.mcp.server._get_lore", return_value=mock_lore):

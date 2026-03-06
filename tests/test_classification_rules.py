@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from lore.classify.rules import RuleBasedClassifier, _DEFAULT_CONFIDENCE, _MATCHED_CONFIDENCE
+from lore.classify.rules import _DEFAULT_CONFIDENCE, _MATCHED_CONFIDENCE, RuleBasedClassifier
 from lore.classify.taxonomies import DOMAIN_LABELS, EMOTION_LABELS, INTENT_LABELS
 
 

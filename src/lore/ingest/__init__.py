@@ -11,6 +11,6 @@ __all__ = [
 def __getattr__(name: str):
     """Lazy imports to avoid circular dependencies."""
     if name in ("IngestResult", "IngestionPipeline"):
-        from lore.ingest.pipeline import IngestResult, IngestionPipeline
+        from lore.ingest.pipeline import IngestionPipeline, IngestResult
         return {"IngestResult": IngestResult, "IngestionPipeline": IngestionPipeline}[name]
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

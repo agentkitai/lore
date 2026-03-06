@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import List
 
 from lore.graph.entities import EntityManager
 from lore.graph.relationships import RelationshipManager

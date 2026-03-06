@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-import tempfile
-from datetime import datetime, timezone
-
 import pytest
 
 from lore.store.memory import MemoryStore
 from lore.store.sqlite import SqliteStore
 from lore.types import ConflictEntry, Fact, Memory
-
 
 # ---------------------------------------------------------------------------
 # Fixtures: parametrize store backends

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from lore.llm import LLMProvider, OpenAIProvider, create_provider
 from lore.llm.base import LLMProvider as BaseLLMProvider
-
 
 # ── Factory tests ───────────────────────────────────────────────────
 
@@ -68,12 +66,12 @@ class TestOpenAIProvider:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("lore.llm.openai.httpx.Client") as MockClient:
+        with patch("lore.llm.openai.httpx.Client") as mock_client_cls:
             mock_client = MagicMock()
             mock_client.post.return_value = mock_response
             mock_client.__enter__ = MagicMock(return_value=mock_client)
             mock_client.__exit__ = MagicMock(return_value=False)
-            MockClient.return_value = mock_client
+            mock_client_cls.return_value = mock_client
 
             result = provider.complete("Hello", max_tokens=50)
             assert result == "Hello response"

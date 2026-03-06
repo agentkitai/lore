@@ -6,8 +6,8 @@ import hashlib
 import hmac
 from datetime import datetime, timezone
 
-from .base import NormalizedMessage, SourceAdapter
 from ..normalize import normalize_content
+from .base import NormalizedMessage, SourceAdapter
 
 
 class TelegramAdapter(SourceAdapter):

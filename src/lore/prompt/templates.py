@@ -8,7 +8,6 @@ provided results.
 from __future__ import annotations
 
 from typing import Callable, Dict, List
-
 from xml.sax.saxutils import escape, quoteattr
 
 from lore.types import RecallResult
@@ -55,7 +54,7 @@ def format_chatml(
 ) -> str:
     if not results:
         return ""
-    lines = [f"<|im_start|>system", f"Relevant memories for: {query}", ""]
+    lines = ["<|im_start|>system", f"Relevant memories for: {query}", ""]
     for r in results:
         prefix = f"[{r.memory.type}, {r.score:.2f}]"
         if include_metadata:

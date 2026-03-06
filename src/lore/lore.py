@@ -15,28 +15,28 @@ from ulid import ULID
 from lore.classify.base import Classification, Classifier
 from lore.classify.llm import LLMClassifier
 from lore.classify.rules import RuleBasedClassifier
+from lore.consolidation import ConsolidationResult
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder, make_code_embedder
 from lore.embed.router import EmbeddingRouter
 from lore.exceptions import MemoryNotFoundError, SecretBlockedError
-from lore.redact.pipeline import RedactionPipeline
-from lore.store.base import Store
-from lore.store.sqlite import SqliteStore
 from lore.importance import (
     compute_importance,
     resolve_half_life,
     time_adjusted_importance,
 )
+from lore.redact.pipeline import RedactionPipeline
+from lore.store.base import Store
+from lore.store.sqlite import SqliteStore
 from lore.types import (
-    ConflictEntry,
     DECAY_HALF_LIVES,
-    Entity,
-    Fact,
-    GraphContext,
     TIER_DEFAULT_TTL,
     TIER_RECALL_WEIGHT,
     VALID_MEMORY_TYPES,
     VALID_TIERS,
+    ConflictEntry,
+    Fact,
+    GraphContext,
     Memory,
     MemoryStats,
     RecallResult,
@@ -281,10 +281,10 @@ class Lore:
         self._graph_traverser = None
         self._entity_cache = None
         if self._knowledge_graph_enabled:
+            from lore.graph.cache import EntityCache
             from lore.graph.entities import EntityManager
             from lore.graph.relationships import RelationshipManager
             from lore.graph.traverser import GraphTraverser
-            from lore.graph.cache import EntityCache
 
             self._entity_manager = EntityManager(self._store)
             self._relationship_manager = RelationshipManager(self._store, self._entity_manager)
@@ -879,7 +879,6 @@ class Lore:
         dry_run: bool = True,
     ) -> "ConsolidationResult":
         """Run the consolidation pipeline."""
-        from lore.types import ConsolidationResult
         return await self._consolidation_engine.consolidate(
             project=project, tier=tier, strategy=strategy, dry_run=dry_run,
         )

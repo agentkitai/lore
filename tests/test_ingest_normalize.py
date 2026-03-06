@@ -1,6 +1,5 @@
 """Tests for content normalization (F7-S1 AC4/AC5, S2 AC1-AC3, S3 AC1-AC2, S4 AC1)."""
 
-import pytest
 
 from lore.ingest.normalize import MAX_CONTENT_LENGTH, normalize_content
 

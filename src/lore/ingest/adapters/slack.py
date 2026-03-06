@@ -6,8 +6,8 @@ import hashlib
 import hmac
 import time
 
-from .base import NormalizedMessage, SourceAdapter
 from ..normalize import normalize_content
+from .base import NormalizedMessage, SourceAdapter
 
 
 class SlackAdapter(SourceAdapter):

@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -157,7 +155,7 @@ class TestMCPIngestTool:
             lore.remember.return_value = "mem-002"
             mock_get.return_value = lore
 
-            result = ingest(content="test", tags="a,b")
+            ingest(content="test", tags="a,b")
 
         call_kwargs = lore.remember.call_args[1]
         assert call_kwargs["tags"] == ["a", "b"]

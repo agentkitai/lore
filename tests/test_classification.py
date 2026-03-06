@@ -8,10 +8,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from lore.classify.base import Classification, Classifier, make_classification
-from lore.classify.llm import CLASSIFY_PROMPT, LLMClassifier
+from lore.classify.llm import LLMClassifier
 from lore.classify.taxonomies import DOMAIN_LABELS, EMOTION_LABELS, INTENT_LABELS
 from lore.llm.base import LLMProvider
-
 
 # ── Taxonomy tests ──────────────────────────────────────────────────
 
