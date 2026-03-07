@@ -616,6 +616,51 @@ class Lore:
 
         return results
 
+    def add_conversation(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project: Optional[str] = None,
+    ) -> "ConversationJob":
+        """Extract memories from raw conversation messages.
+
+        Requires enrichment=True (LLM needed for extraction).
+        Runs synchronously for local store.
+
+        Args:
+            messages: List of {role, content} dicts.
+            user_id: Scope extracted memories to this user.
+            session_id: Track which conversation session this came from.
+            project: Project scope (defaults to self.project).
+
+        Returns:
+            ConversationJob with extraction results.
+
+        Raises:
+            RuntimeError: If enrichment/LLM not configured.
+            ValueError: If messages is empty or malformed.
+        """
+        from lore.conversation import ConversationExtractor
+        from lore.types import ConversationJob, ConversationMessage
+
+        conv_messages = [
+            ConversationMessage(role=m["role"], content=m["content"])
+            for m in messages
+        ]
+        extractor = ConversationExtractor(self)
+        return extractor.extract(
+            conv_messages,
+            user_id=user_id,
+            session_id=session_id,
+            project=project,
+        )
+
+    def conversation_status(self, job_id: str) -> "ConversationJob":
+        """Check status of a conversation extraction job (remote store only)."""
+        raise RuntimeError("conversation_status() is only for remote store")
+
     def _recall_local(
         self,
         query_vec: List[float],

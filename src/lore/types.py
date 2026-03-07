@@ -320,3 +320,29 @@ DEFAULT_CONSOLIDATION_CONFIG: Dict[str, Any] = {
     "llm_model": None,
 }
 
+
+# ------------------------------------------------------------------
+# Conversation extraction types (v0.8.0)
+# ------------------------------------------------------------------
+
+@dataclass
+class ConversationMessage:
+    """A single message in a conversation."""
+
+    role: str      # "user", "assistant", "system", "tool"
+    content: str
+
+
+@dataclass
+class ConversationJob:
+    """Result of a conversation extraction job."""
+
+    job_id: str
+    status: str                        # "accepted", "processing", "completed", "failed"
+    message_count: int = 0
+    memories_extracted: int = 0
+    memory_ids: List[str] = field(default_factory=list)
+    duplicates_skipped: int = 0
+    processing_time_ms: int = 0
+    error: Optional[str] = None
+
