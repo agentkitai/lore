@@ -508,10 +508,67 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--offset", type=int, default=0, help="Skip N memories (pagination)")
     p.add_argument("--json", action="store_true", dest="as_json", help="Output as JSON")
 
+    # add-conversation
+    p_conv = sub.add_parser("add-conversation", help="Extract memories from conversation")
+    p_conv.add_argument("--file", "-f", help="Path to JSON file with messages")
+    p_conv.add_argument("--user-id", dest="user_id", help="Scope extracted memories to this user")
+    p_conv.add_argument("--session-id", dest="session_id", help="Session identifier for tracking")
+    p_conv.add_argument("--project", "-p", help="Project scope")
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
     return parser
+
+
+def cmd_add_conversation(args: argparse.Namespace) -> None:
+    """Handle add-conversation subcommand."""
+    # Read messages from file or stdin
+    if args.file:
+        with open(args.file, "r") as f:
+            data = json.load(f)
+    elif not sys.stdin.isatty():
+        data = json.load(sys.stdin)
+    else:
+        print("Error: provide --file or pipe JSON to stdin", file=sys.stderr)
+        sys.exit(1)
+
+    # Accept both {"messages": [...]} and bare [...]
+    if isinstance(data, list):
+        messages = data
+    elif isinstance(data, dict) and "messages" in data:
+        messages = data["messages"]
+    else:
+        print('Error: JSON must be a list or {"messages": [...]}', file=sys.stderr)
+        sys.exit(1)
+
+    lore = _get_lore(args.db)
+    try:
+        result = lore.add_conversation(
+            messages=messages,
+            user_id=getattr(args, "user_id", None),
+            session_id=getattr(args, "session_id", None),
+            project=getattr(args, "project", None),
+        )
+    except (RuntimeError, ValueError) as exc:
+        lore.close()
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    lore.close()
+
+    print(f"Accepted {result.message_count} messages for extraction.")
+    print(f"Extracted {result.memories_extracted} memories, skipped {result.duplicates_skipped} duplicates.")
+    if result.memory_ids:
+        print(f"Memory IDs: {', '.join(result.memory_ids)}")
+
+    # Cost estimation
+    transcript_words = sum(len(m.get("content", "").split()) for m in messages)
+    est_tokens = int(transcript_words / 0.75)
+    est_cost = est_tokens * 0.15 / 1_000_000  # gpt-4o-mini pricing
+    model_name = "unknown"
+    if hasattr(lore, '_enrichment_pipeline') and lore._enrichment_pipeline:
+        model_name = lore._enrichment_pipeline.llm.model
+    print(f"Estimated cost: ~${est_cost:.3f} ({est_tokens} tokens, {model_name})")
 
 
 def cmd_prompt(args: argparse.Namespace) -> None:
@@ -1163,6 +1220,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "ingest": cmd_ingest,
         "consolidate": cmd_consolidate,
         "on-this-day": cmd_on_this_day,
+        "add-conversation": cmd_add_conversation,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

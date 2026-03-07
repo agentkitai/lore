@@ -93,3 +93,46 @@ class TestMCPTools:
         mid = result.split("ID: ")[1].split(",")[0].rstrip(")")
         result = downvote_memory(mid)
         assert "Downvoted" in result
+
+
+class TestMCPAddConversation:
+    def test_add_conversation_no_llm(self, mock_lore) -> None:
+        from lore.mcp.server import add_conversation
+        result = add_conversation(
+            messages=[{"role": "user", "content": "hello"}],
+        )
+        # mock_lore has no enrichment pipeline, so should get error
+        assert "LLM" in result or "extraction" in result.lower() or "failed" in result.lower()
+
+    def test_add_conversation_with_llm(self) -> None:
+        """Test add_conversation with a properly mocked LLM."""
+        import json
+        from unittest.mock import MagicMock
+
+        from lore import Lore
+        from lore.store.sqlite import SqliteStore
+
+        store = SqliteStore(":memory:")
+        lore = Lore(store=store, embedding_fn=_stub_embed)
+
+        # Wire up mock enrichment pipeline
+        mock_pipeline = MagicMock()
+        mock_pipeline.llm.model = "gpt-4o-mini"
+        mock_pipeline.enrich.return_value = {
+            "topics": [], "sentiment": {"label": "neutral", "score": 0.0},
+            "entities": [], "categories": [],
+        }
+        mock_pipeline.llm.complete.return_value = json.dumps({
+            "memories": [{"content": "Test fact", "type": "fact", "confidence": 0.9}]
+        })
+        lore._enrichment_pipeline = mock_pipeline
+
+        with patch("lore.mcp.server._get_lore", return_value=lore):
+            from lore.mcp.server import add_conversation
+            result = add_conversation(
+                messages=[{"role": "user", "content": "test"}],
+                user_id="alice",
+            )
+            assert "Extracted 1 memories" in result
+            assert "Memory IDs:" in result
+        lore.close()

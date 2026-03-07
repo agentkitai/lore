@@ -498,6 +498,7 @@ class Lore:
         min_confidence: float = 0.0,
         check_freshness: bool = False,
         repo_path: Optional[str] = None,
+        user_id: Optional[str] = None,
         intent: Optional[str] = None,
         domain: Optional[str] = None,
         emotion: Optional[str] = None,
@@ -590,6 +591,7 @@ class Lore:
                 offset=offset,
                 min_confidence=min_confidence,
                 query_vecs=query_vecs,
+                user_id=user_id,
                 intent=intent, domain=domain, emotion=emotion,
                 topic=topic, sentiment=sentiment,
                 entity=entity, category=category,
@@ -616,6 +618,51 @@ class Lore:
 
         return results
 
+    def add_conversation(
+        self,
+        messages: List[Dict[str, str]],
+        *,
+        user_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        project: Optional[str] = None,
+    ) -> "ConversationJob":
+        """Extract memories from raw conversation messages.
+
+        Requires enrichment=True (LLM needed for extraction).
+        Runs synchronously for local store.
+
+        Args:
+            messages: List of {role, content} dicts.
+            user_id: Scope extracted memories to this user.
+            session_id: Track which conversation session this came from.
+            project: Project scope (defaults to self.project).
+
+        Returns:
+            ConversationJob with extraction results.
+
+        Raises:
+            RuntimeError: If enrichment/LLM not configured.
+            ValueError: If messages is empty or malformed.
+        """
+        from lore.conversation import ConversationExtractor
+        from lore.types import ConversationJob, ConversationMessage
+
+        conv_messages = [
+            ConversationMessage(role=m["role"], content=m["content"])
+            for m in messages
+        ]
+        extractor = ConversationExtractor(self)
+        return extractor.extract(
+            conv_messages,
+            user_id=user_id,
+            session_id=session_id,
+            project=project,
+        )
+
+    def conversation_status(self, job_id: str) -> "ConversationJob":
+        """Check status of a conversation extraction job (remote store only)."""
+        raise RuntimeError("conversation_status() is only for remote store")
+
     def _recall_local(
         self,
         query_vec: List[float],
@@ -627,6 +674,7 @@ class Lore:
         offset: int = 0,
         min_confidence: float = 0.0,
         query_vecs: Optional[Dict[str, List[float]]] = None,
+        user_id: Optional[str] = None,
         intent: Optional[str] = None,
         domain: Optional[str] = None,
         emotion: Optional[str] = None,
@@ -650,6 +698,13 @@ class Lore:
             if m.expires_at is None
             or datetime.fromisoformat(m.expires_at) > now
         ]
+
+        # Filter by user_id if specified
+        if user_id is not None:
+            all_memories = [
+                m for m in all_memories
+                if (m.metadata or {}).get("user_id") == user_id
+            ]
 
         # Temporal filter (F3)
         t_from, t_to = temporal_range

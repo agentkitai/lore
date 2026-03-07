@@ -144,6 +144,7 @@ def recall(
     limit: int = 5,
     offset: int = 0,
     repo_path: Optional[str] = None,
+    user_id: Optional[str] = None,
     intent: Optional[str] = None,
     domain: Optional[str] = None,
     emotion: Optional[str] = None,
@@ -171,6 +172,7 @@ def recall(
             query=query, tags=tags, type=type, tier=tier, limit=limit,
             offset=offset,
             check_freshness=bool(repo_path), repo_path=repo_path,
+            user_id=user_id,
             intent=intent, domain=domain, emotion=emotion,
             topic=topic, sentiment=sentiment, entity=entity, category=category,
             verbatim=verbatim,
@@ -918,6 +920,45 @@ def on_this_day(
         return f"Invalid date: {e}"
     except Exception as e:
         return f"Failed to retrieve on-this-day memories: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Accept raw conversation messages and automatically extract memories. "
+        "USE THIS WHEN: you want to dump your recent conversation context so Lore "
+        "can identify and store useful knowledge (facts, decisions, preferences, lessons). "
+        "Unlike 'remember' which requires you to decide what to save, this tool accepts "
+        "raw conversation history and uses LLM processing to extract what's worth keeping. "
+        "Requires enrichment to be enabled (LORE_ENRICHMENT_ENABLED=true)."
+    ),
+)
+def add_conversation(
+    messages: List[Dict[str, str]],
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    project: Optional[str] = None,
+) -> str:
+    """Accept raw conversation and extract memories."""
+    try:
+        lore = _get_lore()
+        result = lore.add_conversation(
+            messages=messages,
+            user_id=user_id,
+            session_id=session_id,
+            project=project,
+        )
+        lines = [
+            f"Extracted {result.memories_extracted} memories from {result.message_count} messages.",
+        ]
+        if result.duplicates_skipped:
+            lines.append(f"Skipped {result.duplicates_skipped} duplicates.")
+        if result.memory_ids:
+            lines.append(f"Memory IDs: {', '.join(result.memory_ids)}")
+        return "\n".join(lines)
+    except RuntimeError as e:
+        return str(e)
+    except Exception as e:
+        return f"Conversation extraction failed: {e}"
 
 
 @mcp.tool(
