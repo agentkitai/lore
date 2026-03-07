@@ -165,16 +165,20 @@ async def _process_job(job_id: str, org_id: str) -> None:
                 for mid in result.memory_ids:
                     mem = lore._store.get(mid)
                     if mem:
+                        meta = mem.metadata or {}
+                        meta["type"] = mem.type or "fact"
+                        meta["source"] = mem.source or "conversation"
                         await conn.execute(
-                            """INSERT INTO lessons (id, content, type, tags, source, metadata, embedding, created_at, updated_at)
-                               VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())
+                            """INSERT INTO lessons (id, org_id, problem, resolution, tags, source, meta, confidence, created_at, updated_at)
+                               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
                                ON CONFLICT (id) DO NOTHING""",
-                            mem.id, mem.content,
-                            mem.type or "fact",
+                            mem.id, org_id,
+                            mem.content,
+                            mem.content,
                             json.dumps(mem.tags or []),
                             mem.source or "conversation",
-                            json.dumps(mem.metadata or {}),
-                            mem.embedding,
+                            json.dumps(meta),
+                            mem.confidence,
                         )
 
         elapsed_ms = int((time.monotonic() - start) * 1000)
