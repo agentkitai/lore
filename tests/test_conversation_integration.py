@@ -136,3 +136,69 @@ class TestEndToEndExtract:
         assert result.status == "completed"
         assert result.memories_extracted == 0
         lore.close()
+
+
+class TestRecallUserIdFiltering:
+    def test_recall_with_user_id_filters(self):
+        """recall(query, user_id='alice') returns only Alice's memories."""
+        lore, mock_pipeline = _make_lore_with_mock_llm()
+
+        # Alice's extraction
+        alice_response = json.dumps({
+            "memories": [{"content": "Alice prefers dark mode", "type": "preference", "confidence": 0.9, "tags": ["ui"]}]
+        })
+        mock_pipeline.llm.complete.return_value = alice_response
+        lore.add_conversation(
+            [{"role": "user", "content": "I prefer dark mode"}],
+            user_id="alice",
+        )
+
+        # Bob's extraction
+        bob_response = json.dumps({
+            "memories": [{"content": "Bob uses light theme", "type": "preference", "confidence": 0.9, "tags": ["ui"]}]
+        })
+        mock_pipeline.llm.complete.return_value = bob_response
+        lore.add_conversation(
+            [{"role": "user", "content": "I use light theme"}],
+            user_id="bob",
+        )
+
+        # Recall with user_id filter
+        alice_results = lore.recall("theme preference", user_id="alice")
+        assert len(alice_results) > 0
+        for r in alice_results:
+            assert (r.memory.metadata or {}).get("user_id") == "alice"
+
+        bob_results = lore.recall("theme preference", user_id="bob")
+        assert len(bob_results) > 0
+        for r in bob_results:
+            assert (r.memory.metadata or {}).get("user_id") == "bob"
+
+        lore.close()
+
+    def test_recall_without_user_id_returns_all(self):
+        """recall(query) without user_id returns all memories."""
+        lore, mock_pipeline = _make_lore_with_mock_llm()
+
+        alice_response = json.dumps({
+            "memories": [{"content": "Alice prefers dark mode", "type": "preference"}]
+        })
+        mock_pipeline.llm.complete.return_value = alice_response
+        lore.add_conversation(
+            [{"role": "user", "content": "test"}],
+            user_id="alice",
+        )
+
+        bob_response = json.dumps({
+            "memories": [{"content": "Bob uses light theme", "type": "preference"}]
+        })
+        mock_pipeline.llm.complete.return_value = bob_response
+        lore.add_conversation(
+            [{"role": "user", "content": "test"}],
+            user_id="bob",
+        )
+
+        # Recall without user_id should return all
+        all_results = lore.recall("theme preference")
+        assert len(all_results) >= 2
+        lore.close()

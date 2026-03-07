@@ -498,6 +498,7 @@ class Lore:
         min_confidence: float = 0.0,
         check_freshness: bool = False,
         repo_path: Optional[str] = None,
+        user_id: Optional[str] = None,
         intent: Optional[str] = None,
         domain: Optional[str] = None,
         emotion: Optional[str] = None,
@@ -590,6 +591,7 @@ class Lore:
                 offset=offset,
                 min_confidence=min_confidence,
                 query_vecs=query_vecs,
+                user_id=user_id,
                 intent=intent, domain=domain, emotion=emotion,
                 topic=topic, sentiment=sentiment,
                 entity=entity, category=category,
@@ -672,6 +674,7 @@ class Lore:
         offset: int = 0,
         min_confidence: float = 0.0,
         query_vecs: Optional[Dict[str, List[float]]] = None,
+        user_id: Optional[str] = None,
         intent: Optional[str] = None,
         domain: Optional[str] = None,
         emotion: Optional[str] = None,
@@ -695,6 +698,13 @@ class Lore:
             if m.expires_at is None
             or datetime.fromisoformat(m.expires_at) > now
         ]
+
+        # Filter by user_id if specified
+        if user_id is not None:
+            all_memories = [
+                m for m in all_memories
+                if (m.metadata or {}).get("user_id") == user_id
+            ]
 
         # Temporal filter (F3)
         t_from, t_to = temporal_range
