@@ -8,7 +8,7 @@ from typing import List
 import numpy as np
 import pytest
 
-from lore import Lore, RecallResult
+from lore import Lore
 from lore.store.memory import MemoryStore
 from lore.temporal import TemporalFilterResolver, parse_iso
 from lore.types import VALID_WINDOWS, RecallConfig
