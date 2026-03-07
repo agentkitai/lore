@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] — 2026-03-07 — "Conversation Intelligence"
+
+### Added
+
+- **Conversation Auto-Extract:** Accept raw conversation messages and automatically extract salient memories using LLM processing. Zero-intelligence ingestion — the caller provides data, Lore provides intelligence.
+  - New `ConversationExtractor` pipeline: validate → concatenate → chunk → extract → dedup → store
+  - New SDK method: `lore.add_conversation(messages, user_id=..., session_id=...)`
+  - New CLI command: `lore add-conversation --file conversation.json` (also reads from stdin)
+  - New MCP tool: `add_conversation` for AI agents to dump conversation context
+  - REST API: `POST /v1/conversations` (202 Accepted, async processing) and `GET /v1/conversations/{job_id}` (status polling)
+- **User-Scoped Recall:** `recall(query, user_id="alice")` filters memories by user, enabling per-user personalization
+- **Token-Aware Chunking:** Long conversations automatically split into ~8K token chunks with 2-message overlap for context continuity
+- **Cost Estimation:** CLI output includes estimated LLM cost after extraction
+- **Partial Extraction Recovery:** Multi-chunk extraction preserves successful results even when individual chunks fail
+- **Conversation Jobs Table:** New `conversation_jobs` migration for async job tracking (server mode)
+
+### Changed
+
+- `recall()` SDK method and MCP tool gain optional `user_id` parameter for memory scoping
+- Extracted memories tagged with `source="conversation"`, `user_id`, `session_id`, `extraction_model`, and `extracted_at` metadata
+
 ## [0.7.0] — 2026-03-07 — "Living Archive"
 
 ### Added

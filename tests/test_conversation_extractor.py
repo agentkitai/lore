@@ -241,3 +241,51 @@ class TestExtractPipeline:
         assert "extracted_at" in metadata
         assert metadata["extraction_model"] == "gpt-4o-mini"
         assert metadata["conversation_length"] == 1
+
+    def test_partial_extraction_on_chunk_failure(self):
+        """S19: multi-chunk with one failing chunk still stores others."""
+        from lore.conversation.chunker import ConversationChunker
+
+        extractor, mock_lore = _make_extractor()
+        mock_lore.remember.return_value = "mem-001"
+
+        # Create enough messages to force 3 chunks
+        long_msg = "word " * 500  # ~667 tokens per message
+        messages = [
+            ConversationMessage(role="user", content=long_msg)
+            for _ in range(20)
+        ]
+
+        # Verify chunking produces multiple chunks
+        chunker = ConversationChunker(max_tokens=8000, overlap_messages=2)
+        chunks = chunker.chunk(messages)
+        assert len(chunks) >= 2, f"Expected >=2 chunks, got {len(chunks)}"
+
+        # Make LLM succeed for first call, fail for second, succeed for rest
+        call_count = [0]
+        def side_effect(prompt):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise RuntimeError("LLM timeout")
+            return json.dumps({
+                "memories": [{"content": f"Memory from chunk {call_count[0]}", "type": "fact"}]
+            })
+
+        mock_lore._enrichment_pipeline.llm.complete.side_effect = side_effect
+
+        result = extractor.extract(messages)
+
+        # Should still complete with partial results
+        assert result.status == "completed"
+        assert result.memories_extracted >= 1
+        assert result.error is not None
+        assert "Chunk 1 failed" in result.error
+
+    def test_single_chunk_failure_raises(self):
+        """Single-chunk failure should raise RuntimeError."""
+        extractor, mock_lore = _make_extractor()
+        mock_lore._enrichment_pipeline.llm.complete.side_effect = RuntimeError("API down")
+
+        messages = [ConversationMessage(role="user", content="short message")]
+        with pytest.raises(RuntimeError, match="Extraction failed"):
+            extractor.extract(messages)
