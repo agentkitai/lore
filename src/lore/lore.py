@@ -35,6 +35,7 @@ from lore.types import (
     VALID_MEMORY_TYPES,
     VALID_TIERS,
     ConflictEntry,
+    ConversationJob,
     Fact,
     GraphContext,
     Memory,
@@ -645,7 +646,7 @@ class Lore:
             ValueError: If messages is empty or malformed.
         """
         from lore.conversation import ConversationExtractor
-        from lore.types import ConversationJob, ConversationMessage
+        from lore.types import ConversationMessage
 
         conv_messages = [
             ConversationMessage(role=m["role"], content=m["content"])

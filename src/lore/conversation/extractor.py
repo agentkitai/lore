@@ -67,7 +67,6 @@ class ConversationExtractor:
         )
 
         # Stage 2: CONCATENATE
-        transcript = self._format_transcript(messages)
 
         # Stage 3: CHUNK
         from lore.conversation.chunker import ConversationChunker

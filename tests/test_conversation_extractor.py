@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from lore.conversation.extractor import ConversationExtractor, _TYPE_MAP
+from lore.conversation.extractor import _TYPE_MAP, ConversationExtractor
 from lore.types import ConversationMessage
 
 

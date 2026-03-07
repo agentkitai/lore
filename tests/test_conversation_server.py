@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -62,7 +61,7 @@ def mock_auth():
 @pytest.fixture
 def client(db_pool, db_conn, mock_auth):
     """Create test client with mocked dependencies."""
-    from lore.server.auth import get_auth_context, require_role
+    from lore.server.auth import get_auth_context
     from lore.server.routes.conversations import router
 
     app = FastAPI()

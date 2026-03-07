@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 try:
     from fastapi import APIRouter, Depends, HTTPException
@@ -212,7 +212,7 @@ async def _process_job(job_id: str, org_id: str) -> None:
             )
 
 
-def _get_server_lore(org_id: str) -> "Lore":
+def _get_server_lore(org_id: str):
     """Create a Lore instance for server-side extraction using MemoryStore (in-process)."""
     import os
 
