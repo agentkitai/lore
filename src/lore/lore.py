@@ -326,6 +326,11 @@ class Lore:
                 interval=consolidation_schedule,
             )
 
+        # Temporal recall engine (on-this-day)
+        from lore.temporal import OnThisDayEngine
+
+        self._temporal_engine = OnThisDayEngine(store=self._store, log=logger)
+
     def close(self) -> None:
         """Close underlying store if it supports closing."""
         if hasattr(self._store, "close"):
@@ -489,6 +494,7 @@ class Lore:
         type: Optional[str] = None,
         tier: Optional[str] = None,
         limit: int = 5,
+        offset: int = 0,
         min_confidence: float = 0.0,
         check_freshness: bool = False,
         repo_path: Optional[str] = None,
@@ -501,6 +507,18 @@ class Lore:
         category: Optional[str] = None,
         use_facts: bool = False,
         graph_depth: Optional[int] = None,
+        verbatim: bool = False,
+        # Temporal filters (F3)
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        before: Optional[str] = None,
+        after: Optional[str] = None,
+        year: Optional[int] = None,
+        month: Optional[int] = None,
+        day: Optional[int] = None,
+        days_ago: Optional[int] = None,
+        hours_ago: Optional[int] = None,
+        window: Optional[str] = None,
     ) -> List[RecallResult]:
         """Semantic search for memories.
 
@@ -515,8 +533,36 @@ class Lore:
             entity: Filter by entity name.
             category: Filter by category.
             use_facts: If True, supplement vector results with fact-based matches.
+            offset: Number of results to skip (for pagination).
+            verbatim: If True, return raw content without summarization.
+            date_from: ISO 8601 lower bound (inclusive).
+            date_to: ISO 8601 upper bound (inclusive).
+            before: ISO 8601 exclusive upper bound.
+            after: ISO 8601 inclusive lower bound.
+            year: Filter by year (e.g. 2024).
+            month: Filter by month (1-12).
+            day: Filter by day (1-31).
+            days_ago: Filter to last N days.
+            hours_ago: Filter to last N hours.
+            window: Preset window (today, last_hour, last_day, last_week,
+                last_month, last_year).
         """
         self._maybe_cleanup_expired()
+
+        # Build temporal config
+        from lore.temporal import TemporalFilterResolver
+        from lore.types import RecallConfig
+
+        temporal_config = RecallConfig(
+            date_from=date_from, date_to=date_to,
+            before=before, after=after,
+            year=year, month=month, day=day,
+            days_ago=days_ago, hours_ago=hours_ago,
+            window=window,
+        )
+        temporal_range = (None, None)
+        if TemporalFilterResolver.has_temporal_filters(temporal_config):
+            temporal_range = TemporalFilterResolver.resolve(temporal_config)
 
         # Dual embedding: embed query with both models
         query_vecs: Optional[Dict[str, List[float]]] = None
@@ -541,6 +587,7 @@ class Lore:
             effective_graph_depth = graph_depth if graph_depth is not None else getattr(self, '_graph_depth', 0)
             results = self._recall_local(
                 query_vec, tags=tags, type=type, tier=tier, limit=limit,
+                offset=offset,
                 min_confidence=min_confidence,
                 query_vecs=query_vecs,
                 intent=intent, domain=domain, emotion=emotion,
@@ -548,6 +595,7 @@ class Lore:
                 entity=entity, category=category,
                 graph_depth=effective_graph_depth,
                 query_text=query,
+                temporal_range=temporal_range,
             )
 
         # Fact-aware recall: supplement with fact-based matches
@@ -562,6 +610,10 @@ class Lore:
             for r in results:
                 r.staleness = detector.check(r.memory)
 
+        if verbatim:
+            for r in results:
+                r.verbatim = True
+
         return results
 
     def _recall_local(
@@ -572,6 +624,7 @@ class Lore:
         type: Optional[str] = None,
         tier: Optional[str] = None,
         limit: int = 5,
+        offset: int = 0,
         min_confidence: float = 0.0,
         query_vecs: Optional[Dict[str, List[float]]] = None,
         intent: Optional[str] = None,
@@ -583,6 +636,7 @@ class Lore:
         category: Optional[str] = None,
         graph_depth: int = 0,
         query_text: str = "",
+        temporal_range: tuple = (None, None),
     ) -> List[RecallResult]:
         """Client-side semantic search for local stores."""
         now = datetime.now(timezone.utc)
@@ -596,6 +650,23 @@ class Lore:
             if m.expires_at is None
             or datetime.fromisoformat(m.expires_at) > now
         ]
+
+        # Temporal filter (F3)
+        t_from, t_to = temporal_range
+        if t_from is not None or t_to is not None:
+            filtered: List[Memory] = []
+            for m in all_memories:
+                if not m.created_at:
+                    continue
+                created = datetime.fromisoformat(m.created_at)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if t_from is not None and created < t_from:
+                    continue
+                if t_to is not None and created > t_to:
+                    continue
+                filtered.append(m)
+            all_memories = filtered
 
         # Filter by tags
         if tags:
@@ -708,16 +779,16 @@ class Lore:
         # Enrichment post-filter
         has_enrichment_filters = any([topic, sentiment, entity, category])
         if has_enrichment_filters:
-            pool = results[:limit * 3]
+            pool = results[:(offset + limit) * 3]
             filtered = [
                 r for r in pool
                 if self._matches_enrichment_filters(
                     r.memory, topic, sentiment, entity, category
                 )
             ]
-            top_results = filtered[:limit]
+            top_results = filtered[offset:offset + limit]
         else:
-            top_results = results[:limit]
+            top_results = results[offset:offset + limit]
 
         # Access tracking: update returned memories
         access_now = _utc_now_iso()
@@ -768,6 +839,7 @@ class Lore:
         min_score: float = 0.0,
         include_metadata: bool = False,
         project: Optional[str] = None,
+        verbatim: bool = False,
     ) -> str:
         """Export memories formatted for LLM context injection.
 
@@ -781,7 +853,7 @@ class Lore:
         if project is not None:
             self.project = project
         try:
-            results = self.recall(query, tags=tags, type=type, limit=limit)
+            results = self.recall(query, tags=tags, type=type, limit=limit, verbatim=verbatim)
         finally:
             self.project = orig_project
 
@@ -794,6 +866,7 @@ class Lore:
             max_chars=max_chars,
             min_score=min_score,
             include_metadata=include_metadata,
+            verbatim=verbatim,
         )
 
     def forget(self, memory_id: str) -> bool:
@@ -869,6 +942,46 @@ class Lore:
             archived_count=archived_count,
             consolidation_count=consolidation_count,
             last_consolidation_at=last_consolidation_at,
+        )
+
+    def on_this_day(
+        self,
+        month: Optional[int] = None,
+        day: Optional[int] = None,
+        project: Optional[str] = None,
+        tier: Optional[str] = None,
+        date_window_days: int = 1,
+        limit: Optional[int] = None,
+        offset: int = 0,
+    ) -> Dict[int, List["Memory"]]:
+        """Query memories from this month+day across all years, grouped by year.
+
+        Args:
+            month: Month (1-12). Defaults to today.
+            day: Day (1-31). Defaults to today.
+            project: Filter by project namespace.
+            tier: Filter by tier (working/short/long).
+            date_window_days: Day range around target (default 1 = day +/- 1).
+            limit: Max total memories.
+            offset: Skip N memories (pagination).
+
+        Returns:
+            Dict mapping year to list of memories, sorted by year DESC then importance DESC.
+
+        Examples:
+            >>> lore = Lore()
+            >>> results = lore.on_this_day(month=3, day=6)
+            >>> for year, memories in results.items():
+            ...     print(f"{year}: {len(memories)} memories")
+        """
+        return self._temporal_engine.on_this_day(
+            month=month,
+            day=day,
+            project=project,
+            tier=tier,
+            date_window_days=date_window_days,
+            limit=limit,
+            offset=offset,
         )
 
     async def consolidate(

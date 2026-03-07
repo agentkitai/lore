@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+# Valid temporal window presets.
+VALID_WINDOWS: Tuple[str, ...] = (
+    "today", "last_hour", "last_day", "last_week", "last_month", "last_year",
+)
+
 # Valid resolution strategies for fact conflicts.
 VALID_RESOLUTIONS: Tuple[str, ...] = ("SUPERSEDE", "MERGE", "CONTRADICT", "NOOP")
 
@@ -20,6 +25,24 @@ VALID_REL_TYPES: Tuple[str, ...] = (
     "related_to", "part_of", "created_by", "deployed_on",
     "communicates_with", "extends", "configures", "co_occurs_with",
 )
+
+
+@dataclass
+class RecallConfig:
+    """Configuration for temporal recall filters."""
+
+    query: str = ""
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+    before: Optional[str] = None
+    after: Optional[str] = None
+    year: Optional[int] = None
+    month: Optional[int] = None
+    day: Optional[int] = None
+    days_ago: Optional[int] = None
+    hours_ago: Optional[int] = None
+    window: Optional[str] = None
+    verbatim: bool = False
 
 
 @dataclass
@@ -104,6 +127,7 @@ class RecallResult:
     memory: Memory
     score: float
     staleness: Any = None  # Optional StalenessResult, set when check_freshness=True
+    verbatim: bool = False
 
 
 @dataclass

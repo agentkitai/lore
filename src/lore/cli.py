@@ -52,26 +52,50 @@ def cmd_recall(args: argparse.Namespace) -> None:
     if getattr(args, "tags", None):
         tags = [t.strip() for t in args.tags.split(",") if t.strip()]
     tier = getattr(args, "tier", None)
+    verbatim = getattr(args, "verbatim", False)
+    offset = getattr(args, "offset", 0)
     results = lore.recall(
         args.query, type=args.type, tier=tier, tags=tags, limit=args.limit,
+        offset=offset,
         topic=getattr(args, "topic", None),
         sentiment=getattr(args, "sentiment", None),
         entity=getattr(args, "entity", None),
         category=getattr(args, "category", None),
+        verbatim=verbatim,
+        year=getattr(args, "year", None),
+        month=getattr(args, "month", None),
+        day=getattr(args, "day", None),
+        days_ago=getattr(args, "days_ago", None),
+        hours_ago=getattr(args, "hours_ago", None),
+        window=getattr(args, "window", None),
+        before=getattr(args, "before", None),
+        after=getattr(args, "after", None),
+        date_from=getattr(args, "date_from", None),
+        date_to=getattr(args, "date_to", None),
     )
     lore.close()
     if not results:
         print("No results.")
         return
-    for r in results:
-        print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type}, {r.memory.tier})")
-        print(f"  {r.memory.content[:200]}")
-        enrichment = (r.memory.metadata or {}).get("enrichment", {})
-        if enrichment.get("topics"):
-            print(f"  Topics: {', '.join(enrichment['topics'])}")
-        if r.memory.tags:
-            print(f"  Tags: {', '.join(r.memory.tags)}")
-        print()
+    if verbatim:
+        for r in results:
+            created = r.memory.created_at[:19] if r.memory.created_at else "unknown"
+            source = r.memory.source or "unknown"
+            project = r.memory.project or "default"
+            tier_val = r.memory.tier
+            print(f"[{created}] {source} ({project}, {tier_val})")
+            print(r.memory.content)
+            print("---")
+    else:
+        for r in results:
+            print(f"[{r.score:.3f}] {r.memory.id} ({r.memory.type}, {r.memory.tier})")
+            print(f"  {r.memory.content[:200]}")
+            enrichment = (r.memory.metadata or {}).get("enrichment", {})
+            if enrichment.get("topics"):
+                print(f"  Topics: {', '.join(enrichment['topics'])}")
+            if r.memory.tags:
+                print(f"  Tags: {', '.join(r.memory.tags)}")
+            print()
 
 
 def cmd_forget(args: argparse.Namespace) -> None:
@@ -255,6 +279,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--entity", default=None, help="Filter by entity name")
     p.add_argument("--category", default=None, help="Filter by category")
+    p.add_argument("--offset", type=int, default=0, help="Number of results to skip (pagination)")
+    p.add_argument(
+        "--verbatim", "-v", action="store_true", default=False,
+        help="Return raw original content with metadata",
+    )
+    # Temporal filters
+    p.add_argument("--year", type=int, default=None, help="Filter by year (e.g. 2024)")
+    p.add_argument("--month", type=int, default=None, help="Filter by month (1-12)")
+    p.add_argument("--day", type=int, default=None, help="Filter by day (1-31)")
+    p.add_argument(
+        "--days-ago", type=int, default=None, dest="days_ago",
+        help="Filter to last N days (0 = today only)",
+    )
+    p.add_argument(
+        "--hours-ago", type=int, default=None, dest="hours_ago",
+        help="Filter to last N hours",
+    )
+    p.add_argument(
+        "--window", default=None,
+        choices=["today", "last_hour", "last_day", "last_week", "last_month", "last_year"],
+        help="Preset time window",
+    )
+    p.add_argument("--before", default=None, help="ISO 8601 exclusive upper bound")
+    p.add_argument("--after", default=None, help="ISO 8601 inclusive lower bound")
+    p.add_argument(
+        "--date-from", default=None, dest="date_from",
+        help="ISO 8601 range start (inclusive)",
+    )
+    p.add_argument(
+        "--date-to", default=None, dest="date_to",
+        help="ISO 8601 range end (inclusive)",
+    )
 
     # forget
     p = sub.add_parser("forget", help="Delete a memory")
@@ -438,6 +494,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--log", action="store_true", dest="show_log",
                     help="Show consolidation history instead of running consolidation")
     p.add_argument("--limit", type=int, default=10, help="Number of log entries to show")
+
+    # on-this-day
+    p = sub.add_parser("on-this-day", help="Show memories from this day in past years")
+    p.add_argument("--month", type=int, default=None, help="Month (1-12, default: today)")
+    p.add_argument("--day", type=int, default=None, help="Day (1-31, default: today)")
+    p.add_argument("--project", default=None, help="Filter by project")
+    p.add_argument(
+        "--tier", choices=["working", "short", "long"], default=None,
+        help="Filter by memory tier",
+    )
+    p.add_argument("--limit", type=int, default=None, help="Max memories to return")
+    p.add_argument("--offset", type=int, default=0, help="Skip N memories (pagination)")
+    p.add_argument("--json", action="store_true", dest="as_json", help="Output as JSON")
 
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
@@ -998,6 +1067,47 @@ def cmd_consolidate(args: argparse.Namespace) -> None:
         print(f"\n{prefix}Run with --execute to apply changes.")
 
 
+def cmd_on_this_day(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    try:
+        results = lore.on_this_day(
+            month=args.month,
+            day=args.day,
+            project=args.project,
+            tier=args.tier,
+            limit=args.limit,
+            offset=args.offset,
+        )
+    except ValueError as exc:
+        lore.close()
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if args.as_json:
+        lore.close()
+        json_result = {}
+        for year, memories in sorted(results.items(), reverse=True):
+            json_result[str(year)] = [
+                {
+                    "id": m.id,
+                    "content": m.content,
+                    "type": m.type,
+                    "tier": m.tier,
+                    "importance_score": m.importance_score,
+                    "created_at": m.created_at,
+                    "project": m.project,
+                    "tags": m.tags,
+                    "source": m.source,
+                }
+                for m in memories
+            ]
+        print(json.dumps(json_result, indent=2))
+    else:
+        formatted = lore._temporal_engine.format_results(results, include_metadata=True)
+        lore.close()
+        print(formatted)
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -1052,6 +1162,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "graph-backfill": cmd_graph_backfill,
         "ingest": cmd_ingest,
         "consolidate": cmd_consolidate,
+        "on-this-day": cmd_on_this_day,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

@@ -21,6 +21,7 @@ class PromptFormatter:
         max_chars: Optional[int] = None,
         min_score: float = 0.0,
         include_metadata: bool = False,
+        verbatim: bool = False,
     ) -> str:
         if format not in FORMAT_REGISTRY:
             valid = ", ".join(sorted(FORMAT_REGISTRY))
@@ -34,10 +35,35 @@ class PromptFormatter:
         if not filtered:
             return ""
 
+        # Verbatim mode: return raw content with date attribution
+        if verbatim:
+            return self._format_verbatim(filtered, max_tokens, max_chars)
+
         # Budget enforcement
         included = self._apply_budget(filtered, format, include_metadata, max_tokens, max_chars)
 
         return FORMAT_REGISTRY[format](query, included, include_metadata)
+
+    def _format_verbatim(
+        self,
+        results: List[RecallResult],
+        max_tokens: Optional[int],
+        max_chars: Optional[int],
+    ) -> str:
+        budget = self._effective_budget(max_tokens, max_chars)
+        lines = ["These are your original words:\n"]
+        running = len(lines[0])
+        for r in results:
+            created = r.memory.created_at[:10] if r.memory.created_at else "unknown"
+            source = r.memory.source or "unknown"
+            header = f"[{created}] {source}:\n"
+            entry = header + r.memory.content + "\n"
+            if budget is not None and lines[0] != entry:
+                if running + len(entry) > budget:
+                    break
+            lines.append(entry)
+            running += len(entry)
+        return "\n".join(lines)
 
     def _apply_budget(
         self,

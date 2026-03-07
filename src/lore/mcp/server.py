@@ -129,6 +129,9 @@ def remember(
         "BAD queries: 'help', 'error', 'fix this'. Be specific. "
         "Supports filtering by tier (working/short/long), type, tags, "
         "entity, topic, intent, domain, and emotion. "
+        "Supports temporal filtering: year, month, day, days_ago, hours_ago, "
+        "window (today/last_hour/last_day/last_week/last_month/last_year), "
+        "before, after, date_from, date_to (ISO 8601). "
         "When knowledge graph is enabled, set graph_depth (e.g. via LORE_GRAPH_DEPTH) "
         "to surface memories connected via entity relationships."
     ),
@@ -139,6 +142,7 @@ def recall(
     type: Optional[str] = None,
     tier: Optional[str] = None,
     limit: int = 5,
+    offset: int = 0,
     repo_path: Optional[str] = None,
     intent: Optional[str] = None,
     domain: Optional[str] = None,
@@ -147,21 +151,54 @@ def recall(
     sentiment: Optional[str] = None,
     entity: Optional[str] = None,
     category: Optional[str] = None,
+    verbatim: bool = False,
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    day: Optional[int] = None,
+    days_ago: Optional[int] = None,
+    hours_ago: Optional[int] = None,
+    window: Optional[str] = None,
+    before: Optional[str] = None,
+    after: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
 ) -> str:
-    """Search Lore memory for relevant memories."""
+    """Search Lore memory for relevant memories. Set verbatim=true for raw original content."""
     try:
         lore = _get_lore()
         limit = max(1, min(limit, 20))
         results = lore.recall(
             query=query, tags=tags, type=type, tier=tier, limit=limit,
+            offset=offset,
             check_freshness=bool(repo_path), repo_path=repo_path,
             intent=intent, domain=domain, emotion=emotion,
             topic=topic, sentiment=sentiment, entity=entity, category=category,
+            verbatim=verbatim,
+            year=year, month=month, day=day,
+            days_ago=days_ago, hours_ago=hours_ago, window=window,
+            before=before, after=after,
+            date_from=date_from, date_to=date_to,
         )
         if not results:
             return "No relevant memories found. Try a different query or broader terms."
 
-        lines: List[str] = [f"Found {len(results)} relevant memory(ies):\n"]
+        if verbatim:
+            lines: List[str] = [f"Found {len(results)} verbatim memory(ies):\n"]
+            for i, r in enumerate(results, 1):
+                mem = r.memory
+                created = mem.created_at[:19] if mem.created_at else "unknown"
+                source = mem.source or "unknown"
+                project = mem.project or "default"
+                lines.append(f"{'─' * 60}")
+                lines.append(
+                    f"Memory {i}  (created: {created}, source: {source}, "
+                    f"project: {project}, tier: {mem.tier})"
+                )
+                lines.append(mem.content)
+                lines.append("")
+            return "\n".join(lines)
+
+        lines = [f"Found {len(results)} relevant memory(ies):\n"]
         for i, r in enumerate(results, 1):
             mem = r.memory
             lines.append(f"{'─' * 60}")
@@ -347,8 +384,9 @@ def as_prompt(
     tags: Optional[List[str]] = None,
     type: Optional[str] = None,
     include_metadata: bool = False,
+    verbatim: bool = False,
 ) -> str:
-    """Export memories formatted for LLM context injection."""
+    """Export memories formatted for LLM context injection. Set verbatim=true for raw original content."""
     try:
         lore = _get_lore()
         return lore.as_prompt(
@@ -359,6 +397,7 @@ def as_prompt(
             tags=tags,
             type=type,
             include_metadata=include_metadata,
+            verbatim=verbatim,
         )
     except Exception as e:
         return f"Failed to format memories: {e}"
@@ -843,6 +882,42 @@ def ingest(
         return f"Ingested as memory {memory_id} (source: {source})"
     except Exception as e:
         return f"Ingestion failed: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Retrieve memories from this month+day across all years. "
+        "USE THIS WHEN: you want to reflect on what happened on a specific date "
+        "in past years, find anniversaries, or review historical context. "
+        "Returns memories grouped by year, sorted by importance. "
+        "Defaults to today's date. Supports date window for fuzzy matching."
+    ),
+)
+def on_this_day(
+    month: Optional[int] = None,
+    day: Optional[int] = None,
+    project: Optional[str] = None,
+    tier: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> str:
+    """Retrieve memories from this month+day across all years."""
+    try:
+        lore = _get_lore()
+        results = lore.on_this_day(
+            month=month,
+            day=day,
+            project=project,
+            tier=tier,
+            limit=limit,
+        )
+        if not results:
+            return "No memories found for this day across any year."
+
+        return lore._temporal_engine.format_results(results, include_metadata=True)
+    except ValueError as e:
+        return f"Invalid date: {e}"
+    except Exception as e:
+        return f"Failed to retrieve on-this-day memories: {e}"
 
 
 @mcp.tool(
