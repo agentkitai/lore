@@ -190,10 +190,13 @@ class ConversationExtractor:
 
     def _is_duplicate(self, content: str) -> bool:
         """Check if candidate memory is too similar to existing memories."""
-        results = self._lore.recall(content, limit=3)
-        for r in results:
-            if r.score >= self._dedup_threshold:
-                return True
+        try:
+            results = self._lore.recall(content, limit=3)
+            for r in results:
+                if r.score >= self._dedup_threshold:
+                    return True
+        except Exception as e:
+            logger.debug("Dedup check skipped (embedding unavailable): %s", e)
         return False
 
     @staticmethod

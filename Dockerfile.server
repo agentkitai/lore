@@ -24,6 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
 COPY --from=builder /install /usr/local
 COPY migrations/ migrations/
 
+# Create writable dirs for model cache and data
+RUN mkdir -p /app/.lore/models /app/data && chown -R lore:lore /app/.lore /app/data
+
 # Don't run as root
 USER lore
 
