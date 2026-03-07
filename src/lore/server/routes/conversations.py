@@ -159,6 +159,24 @@ async def _process_job(job_id: str, org_id: str) -> None:
             project=row["project"],
         )
 
+        # Persist extracted memories from MemoryStore to Postgres
+        if result.memory_ids and hasattr(lore, '_store'):
+            async with pool.acquire() as conn:
+                for mid in result.memory_ids:
+                    mem = lore._store.get(mid)
+                    if mem:
+                        await conn.execute(
+                            """INSERT INTO lessons (id, content, type, tags, source, metadata, embedding, created_at, updated_at)
+                               VALUES ($1, $2, $3, $4, $5, $6, $7, now(), now())
+                               ON CONFLICT (id) DO NOTHING""",
+                            mem.id, mem.content,
+                            mem.type or "fact",
+                            json.dumps(mem.tags or []),
+                            mem.source or "conversation",
+                            json.dumps(mem.metadata or {}),
+                            mem.embedding,
+                        )
+
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         async with pool.acquire() as conn:
@@ -191,17 +209,16 @@ async def _process_job(job_id: str, org_id: str) -> None:
 
 
 def _get_server_lore(org_id: str) -> "Lore":
-    """Create a Lore instance for server-side extraction."""
+    """Create a Lore instance for server-side extraction using MemoryStore (in-process)."""
     import os
 
     from lore.lore import Lore
-    from lore.store.sqlite import SqliteStore
+    from lore.store.memory import MemoryStore
 
     enrichment_model = os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
-    db_path = os.environ.get("LORE_DB_PATH")
 
     return Lore(
-        db_path=db_path,
+        store=MemoryStore(),
         enrichment=True,
         enrichment_model=enrichment_model,
     )
