@@ -515,6 +515,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_conv.add_argument("--session-id", dest="session_id", help="Session identifier for tracking")
     p_conv.add_argument("--project", "-p", help="Project scope")
 
+    # wrap
+    p_wrap = sub.add_parser(
+        "wrap",
+        help="Wrap a CLI command and capture conversation for memory extraction",
+    )
+    p_wrap.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to wrap (e.g. claude, codex)")
+    p_wrap.add_argument("--api-url", dest="api_url", default=None, help="Lore API URL (or LORE_API_URL)")
+    p_wrap.add_argument("--api-key", dest="api_key", default=None, help="Lore API key (or LORE_API_KEY)")
+    p_wrap.add_argument("--user-id", dest="user_id", default=None, help="User ID for extracted memories")
+    p_wrap.add_argument("--project", "-p", default=None, help="Project scope")
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
@@ -1165,6 +1176,30 @@ def cmd_on_this_day(args: argparse.Namespace) -> None:
         print(formatted)
 
 
+def cmd_wrap(args: argparse.Namespace) -> None:
+    """Wrap a CLI command and capture conversation for memory extraction."""
+    from lore.wrap import run_wrap
+
+    # Strip leading '--' separator if present
+    cmd = list(args.cmd)
+    if cmd and cmd[0] == "--":
+        cmd = cmd[1:]
+
+    if not cmd:
+        print("Error: no command specified. Usage: lore wrap <command> [args...]", file=sys.stderr)
+        sys.exit(1)
+
+    exit_code = run_wrap(
+        cmd,
+        api_url=args.api_url,
+        api_key=args.api_key,
+        user_id=args.user_id,
+        project=args.project,
+        db=args.db,
+    )
+    sys.exit(exit_code)
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -1221,6 +1256,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "consolidate": cmd_consolidate,
         "on-this-day": cmd_on_this_day,
         "add-conversation": cmd_add_conversation,
+        "wrap": cmd_wrap,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

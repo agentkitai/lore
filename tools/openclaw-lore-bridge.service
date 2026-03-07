@@ -1,0 +1,29 @@
+[Unit]
+Description=OpenClaw to Lore Memory Bridge
+Documentation=https://github.com/amitpaz1/lore
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/lore/tools/openclaw-lore-bridge.py
+Restart=on-failure
+RestartSec=10
+
+# Configuration via environment
+Environment=LORE_API_URL=http://localhost:8000
+Environment=LORE_API_KEY=
+Environment=OPENCLAW_LOG_DIR=/tmp/openclaw
+Environment=POLL_INTERVAL=5
+# Optional
+# Environment=LORE_USER_ID=
+# Environment=LORE_PROJECT=
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/tmp/openclaw
+ReadWritePaths=%h/.local/state
+PrivateTmp=no
+
+[Install]
+WantedBy=multi-user.target
