@@ -203,6 +203,9 @@ class OnThisDayEngine:
 
 def parse_iso(value: str) -> datetime:
     """Parse an ISO 8601 string to a timezone-aware datetime (UTC default)."""
+    # Handle 'Z' suffix (Z = +00:00 in ISO 8601)
+    if value.endswith('Z'):
+        value = value[:-1] + '+00:00'
     dt = datetime.fromisoformat(value)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
