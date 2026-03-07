@@ -1,10 +1,10 @@
 # Lore — Cross-Agent Memory for AI
 
 [![PyPI](https://img.shields.io/pypi/v/lore-sdk)](https://pypi.org/project/lore-sdk/)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/github/license/agentkitai/lore)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz1/lore/ci.yml?label=tests)](https://github.com/amitpaz1/lore/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/agentkitai/lore/ci.yml?label=tests)](https://github.com/agentkitai/lore/actions)
 
 **Persistent semantic memory that works with every MCP-compatible AI tool.**
 
@@ -133,6 +133,11 @@ graph LR
 
 ## Features
 
+### v0.7.0 — Living Archive
+**on_this_day** · **verbatim recall** · **temporal filters**
+
+On This Day surfaces memories from the same calendar day across years. Verbatim Recall returns original words instead of AI summaries. Temporal Filters add date-range filtering to `recall` (year, month, days_ago, before/after, window presets).
+
 ### Memory Management
 **remember** · **recall** · **forget** · **list_memories** · **stats** · **upvote** · **downvote**
 
@@ -230,7 +235,7 @@ See [`examples/`](examples/) for runnable scripts:
 ## Contributing
 
 ```bash
-git clone https://github.com/amitpaz1/lore.git
+git clone https://github.com/agentkitai/lore.git
 cd lore
 pip install -e ".[dev,mcp,enrichment]"
 pytest

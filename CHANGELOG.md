@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] — 2026-03-07 — "Living Archive"
+
+### Added
+
+- **On This Day (F1):** Query memories from the same month+day across all years, grouped by year. New MCP tool: `on_this_day`. New CLI command: `lore on-this-day`.
+- **Verbatim Recall (F2):** Return the user's original words instead of AI summaries. New `--verbatim` flag on `recall` CLI command, `verbatim` parameter on MCP `recall` tool.
+- **Temporal Filters (F3):** Date-range filtering on `recall` — supports `year`, `month`, `day`, `days_ago`, `hours_ago`, `before`, `after`, and window presets. New CLI flags and MCP parameters on `recall`.
+
 ## [0.6.0] — 2026-03-06 — "Open Brain"
 
 ### Added
