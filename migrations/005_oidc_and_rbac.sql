@@ -18,11 +18,20 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_sub ON users(oidc_sub);
 CREATE INDEX IF NOT EXISTS idx_users_org ON users(org_id);
 
--- Add tenant_id column to lessons (for explicit multi-tenant querying)
+-- Add tenant_id column to lessons/memories (for explicit multi-tenant querying)
 DO $$
+DECLARE
+    _tbl text;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lessons' AND column_name = 'tenant_id') THEN
-        ALTER TABLE lessons ADD COLUMN tenant_id TEXT;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'memories' AND table_type = 'BASE TABLE') THEN
+        _tbl := 'memories';
+    ELSIF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'lessons' AND table_type = 'BASE TABLE') THEN
+        _tbl := 'lessons';
+    ELSE
+        RETURN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = _tbl AND column_name = 'tenant_id') THEN
+        EXECUTE format('ALTER TABLE %I ADD COLUMN tenant_id TEXT', _tbl);
     END IF;
 END $$;
 
@@ -34,11 +43,20 @@ BEGIN
     END IF;
 END $$;
 
--- Add user_id column to lessons (track which user created/modified)
+-- Add user_id column to lessons/memories (track which user created/modified)
 DO $$
+DECLARE
+    _tbl text;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lessons' AND column_name = 'user_id') THEN
-        ALTER TABLE lessons ADD COLUMN user_id TEXT;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'memories' AND table_type = 'BASE TABLE') THEN
+        _tbl := 'memories';
+    ELSIF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'lessons' AND table_type = 'BASE TABLE') THEN
+        _tbl := 'lessons';
+    ELSE
+        RETURN;
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = _tbl AND column_name = 'user_id') THEN
+        EXECUTE format('ALTER TABLE %I ADD COLUMN user_id TEXT', _tbl);
     END IF;
 END $$;
 

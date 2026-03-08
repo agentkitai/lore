@@ -43,16 +43,14 @@ CREATE TABLE IF NOT EXISTS lessons (
     meta        JSONB DEFAULT '{}'
 );
 
-CREATE INDEX IF NOT EXISTS idx_lessons_org ON lessons(org_id);
-CREATE INDEX IF NOT EXISTS idx_lessons_org_project ON lessons(org_id, project);
-
--- ivfflat index requires data to exist for training; create only if not exists
--- Note: ivfflat index creation will be deferred in production until sufficient data exists
--- For now we use exact search (no index) which is fine for < 100k lessons
+-- Only create indexes if lessons is a table (not a view — after migration 009)
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_lessons_embedding') THEN
-        -- Use HNSW instead of ivfflat — works on empty tables
-        CREATE INDEX idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops);
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'lessons' AND table_type = 'BASE TABLE') THEN
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_lessons_org ON lessons(org_id)';
+        EXECUTE 'CREATE INDEX IF NOT EXISTS idx_lessons_org_project ON lessons(org_id, project)';
+        IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_lessons_embedding') THEN
+            EXECUTE 'CREATE INDEX idx_lessons_embedding ON lessons USING hnsw (embedding vector_cosine_ops)';
+        END IF;
     END IF;
 END $$;

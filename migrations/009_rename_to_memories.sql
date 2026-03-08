@@ -1,10 +1,10 @@
 -- Migration 009: Rename lessons → memories, problem → content, resolution → context
 -- Idempotent — safe to run multiple times
 
--- Step 1: Rename the table
+-- Step 1: Rename the table (only if lessons is still a base table, not already a view)
 DO $$
 BEGIN
-    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'lessons') THEN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'lessons' AND table_type = 'BASE TABLE') THEN
         ALTER TABLE lessons RENAME TO memories;
     END IF;
 END $$;
@@ -20,6 +20,21 @@ BEGIN
     END IF;
 END $$;
 
+-- Drop the old empty 'context' column if it exists (was always NULL in legacy schema)
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'memories' AND column_name = 'context'
+        AND EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'memories' AND column_name = 'resolution'
+        )
+    ) THEN
+        ALTER TABLE memories DROP COLUMN context;
+    END IF;
+END $$;
+
 DO $$
 BEGIN
     IF EXISTS (
@@ -30,7 +45,13 @@ BEGIN
     END IF;
 END $$;
 
--- Step 3: Rename indexes to reflect new table name
+-- Step 3: Rename primary key and indexes to reflect new table name
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'lessons_pkey') THEN
+        ALTER INDEX lessons_pkey RENAME TO memories_pkey;
+    END IF;
+END $$;
 DO $$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_indexes WHERE indexname = 'idx_lessons_org') THEN
@@ -53,10 +74,13 @@ BEGIN
 END $$;
 
 -- Step 4: Create a view for backward compatibility (deprecated /v1/lessons)
+-- Drop first because CREATE OR REPLACE cannot add/rename columns
+DROP VIEW IF EXISTS lessons;
 CREATE OR REPLACE VIEW lessons AS
     SELECT id, org_id,
            content AS problem,
            context AS resolution,
+           NULL::text AS context,
            tags, confidence, source, project, embedding,
            created_at, updated_at, expires_at,
            upvotes, downvotes, meta,

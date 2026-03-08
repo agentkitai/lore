@@ -47,13 +47,23 @@ CREATE INDEX IF NOT EXISTS idx_sharing_audit_org ON sharing_audit(org_id);
 CREATE INDEX IF NOT EXISTS idx_sharing_audit_org_type ON sharing_audit(org_id, event_type);
 CREATE INDEX IF NOT EXISTS idx_sharing_audit_org_created ON sharing_audit(org_id, created_at);
 
--- Add columns to lessons table (idempotent)
+-- Add columns to lessons/memories table (idempotent, handles post-rename)
 DO $$
+DECLARE
+    _tbl text;
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lessons' AND column_name = 'reputation_score') THEN
-        ALTER TABLE lessons ADD COLUMN reputation_score INTEGER DEFAULT 0;
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'memories' AND table_type = 'BASE TABLE') THEN
+        _tbl := 'memories';
+    ELSIF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'lessons' AND table_type = 'BASE TABLE') THEN
+        _tbl := 'lessons';
+    ELSE
+        RETURN;
     END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'lessons' AND column_name = 'quality_signals') THEN
-        ALTER TABLE lessons ADD COLUMN quality_signals JSONB DEFAULT '{}';
+
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = _tbl AND column_name = 'reputation_score') THEN
+        EXECUTE format('ALTER TABLE %I ADD COLUMN reputation_score INTEGER DEFAULT 0', _tbl);
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = _tbl AND column_name = 'quality_signals') THEN
+        EXECUTE format('ALTER TABLE %I ADD COLUMN quality_signals JSONB DEFAULT ''{}''', _tbl);
     END IF;
 END $$;
