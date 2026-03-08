@@ -1,6 +1,6 @@
 # Setting Up Lore with ChatGPT
 
-> **Experimental.** ChatGPT does not natively support MCP. This guide uses an MCP bridge to connect Lore to ChatGPT. The setup is more involved than native MCP clients and may break as bridge projects evolve.
+> **Experimental.** ChatGPT does not support MCP natively or pre-prompt hooks. This guide uses an MCP bridge. For automatic memory injection, use a runtime with hook support ([Claude Code](setup-claude-code.md), [Cursor](setup-cursor.md)).
 
 ## Prerequisites
 

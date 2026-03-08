@@ -1,18 +1,25 @@
 # MCP Setup Guide
 
+> **Recommended:** For the best experience, use **auto-retrieval hooks** instead of (or alongside) MCP tools. Auto-retrieval injects relevant memories into every prompt automatically — no agent cooperation needed.
+>
+> Runtimes with hook support: [Claude Code](setup-claude-code.md) · [OpenClaw](setup-openclaw.md) · [Cursor](setup-cursor.md) · [Codex CLI](setup-codex.md)
+
 Lore provides an MCP (Model Context Protocol) server that gives AI assistants access to persistent memory. This page is an index of per-client setup guides and common configuration.
 
 ## Client Setup Guides
 
-| Client | Config Location | Guide |
-|--------|----------------|-------|
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) | [Setup guide](setup-claude-desktop.md) |
-| Claude Code | `.claude/settings.json` in project root | [Setup guide](setup-claude-code.md) |
-| Cursor | `.cursor/mcp.json` in project root | [Setup guide](setup-cursor.md) |
-| VS Code / Copilot | `.vscode/mcp.json` in project root | [Setup guide](setup-vscode.md) |
-| Windsurf | `~/.codeium/windsurf/mcp_config.json` (global) | [Setup guide](setup-windsurf.md) |
-| Cline | `.cline/mcp_settings.json` in project root | [Setup guide](setup-cline.md) |
-| ChatGPT | Via MCP bridge (experimental) | [Setup guide](setup-chatgpt.md) |
+| Client | Auto-Retrieval | Config Location | Guide |
+|--------|---------------|----------------|-------|
+| Claude Code | ✅ Hooks | `.claude/settings.json` in project root | [Setup guide](setup-claude-code.md) |
+| OpenClaw | ✅ Hooks | `~/.openclaw/hooks/` | [Setup guide](setup-openclaw.md) |
+| Cursor | ✅ Hooks | `.cursor/mcp.json` in project root | [Setup guide](setup-cursor.md) |
+| Codex CLI | ✅ Hooks | `codex.yaml` in project root | [Setup guide](setup-codex.md) |
+| Claude Desktop | MCP only | `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) | [Setup guide](setup-claude-desktop.md) |
+| VS Code / Copilot | MCP only | `.vscode/mcp.json` in project root | [Setup guide](setup-vscode.md) |
+| Windsurf | MCP only | `~/.codeium/windsurf/mcp_config.json` (global) | [Setup guide](setup-windsurf.md) |
+| Cline | MCP only | `.cline/mcp_settings.json` in project root | [Setup guide](setup-cline.md) |
+| Warp | MCP only | Warp MCP config | [Setup guide](setup-warp.md) |
+| ChatGPT | MCP bridge | Via MCP bridge (experimental) | [Setup guide](setup-chatgpt.md) |
 
 ## Minimal Config
 

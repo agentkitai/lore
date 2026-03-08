@@ -127,11 +127,14 @@ Every prompt you type in Claude Code now gets relevant memories injected automat
 |---------|-----------|--------|
 | **Claude Code** | `UserPromptSubmit` | ✅ Ready |
 | **OpenClaw** | `message:preprocessed` | ✅ Ready |
+| **Cursor** | `beforeSubmitPrompt` | ✅ Ready |
+| **Codex CLI** | `beforePlan` | ✅ Ready |
+| **Warp** | Static (`WARP.md`) | ⚠️ No per-prompt hooks |
 | **Any HTTP client** | `GET /v1/retrieve` | ✅ Ready |
 
 The `/v1/retrieve` endpoint works with any system that can make an HTTP call before sending a prompt to an LLM. If your runtime supports pre-prompt hooks, Lore plugs right in.
 
-> [Claude Code Setup](docs/setup-claude-code.md) · [OpenClaw Setup](docs/setup-openclaw.md) · [API Reference](docs/api-reference.md)
+> [Claude Code Setup](docs/setup-claude-code.md) · [OpenClaw Setup](docs/setup-openclaw.md) · [Cursor Setup](docs/setup-cursor.md) · [Codex CLI Setup](docs/setup-codex.md) · [API Reference](docs/api-reference.md)
 
 ## Storing Memories
 
@@ -251,17 +254,20 @@ Surface memories from the same day across years. Return original words. Filter b
 
 Webhook-style ingestion, LLM-formatted export, staleness detection, and GitHub sync.
 
-## MCP Setup Guides
+## Setup Guides
 
-| Client | Guide |
-|--------|-------|
-| Claude Desktop | [docs/setup-claude-desktop.md](docs/setup-claude-desktop.md) |
-| Claude Code | [docs/setup-claude-code.md](docs/setup-claude-code.md) |
-| Cursor | [docs/setup-cursor.md](docs/setup-cursor.md) |
-| VS Code (Copilot) | [docs/setup-vscode.md](docs/setup-vscode.md) |
-| Windsurf | [docs/setup-windsurf.md](docs/setup-windsurf.md) |
-| ChatGPT | [docs/setup-chatgpt.md](docs/setup-chatgpt.md) |
-| Cline | [docs/setup-cline.md](docs/setup-cline.md) |
+| Client | Auto-Retrieval | Guide |
+|--------|---------------|-------|
+| Claude Code | ✅ Hooks | [docs/setup-claude-code.md](docs/setup-claude-code.md) |
+| OpenClaw | ✅ Hooks | [docs/setup-openclaw.md](docs/setup-openclaw.md) |
+| Cursor | ✅ Hooks | [docs/setup-cursor.md](docs/setup-cursor.md) |
+| Codex CLI | ✅ Hooks | [docs/setup-codex.md](docs/setup-codex.md) |
+| Claude Desktop | MCP only | [docs/setup-claude-desktop.md](docs/setup-claude-desktop.md) |
+| VS Code (Copilot) | MCP only | [docs/setup-vscode.md](docs/setup-vscode.md) |
+| Windsurf | MCP only | [docs/setup-windsurf.md](docs/setup-windsurf.md) |
+| Cline | MCP only | [docs/setup-cline.md](docs/setup-cline.md) |
+| Warp | MCP only | [docs/setup-warp.md](docs/setup-warp.md) |
+| ChatGPT | MCP bridge | [docs/setup-chatgpt.md](docs/setup-chatgpt.md) |
 
 > [All Setup Guides](docs/mcp-setup.md)
 

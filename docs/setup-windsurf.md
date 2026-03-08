@@ -1,15 +1,19 @@
 # Setting Up Lore with Windsurf
 
+> **Note:** Windsurf does not currently support pre-prompt hooks. This guide covers MCP tool setup. For automatic memory injection without tool calls, use a runtime that supports pre-prompt hooks ([Claude Code](setup-claude-code.md), [Cursor](setup-cursor.md)).
+
 ## Prerequisites
 
 - Python 3.9+
 - Windsurf IDE installed
 
-## Configuration
+## MCP Tools
+
+MCP tools give your agent 20 tools (remember, recall, forget, etc.) for explicit memory operations.
 
 Windsurf uses a global MCP config file at `~/.codeium/windsurf/mcp_config.json`.
 
-### Local Mode (SQLite -- zero setup)
+### Local Mode (SQLite — zero setup)
 
 ```json
 {

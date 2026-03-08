@@ -1,18 +1,22 @@
 # Setting Up Lore with Claude Desktop
 
+> **Note:** Claude Desktop does not support pre-prompt hooks (`UserPromptSubmit` is a Claude Code feature). This guide covers MCP tool setup. For automatic memory injection, use [Claude Code](setup-claude-code.md) instead.
+
 ## Prerequisites
 
 - Python 3.9+
 - Claude Desktop installed ([download](https://claude.ai/download))
 
-## Configuration
+## MCP Tools
+
+MCP tools give your agent 20 tools (remember, recall, forget, etc.) for explicit memory operations.
 
 Edit your Claude Desktop config file:
 
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Windows:** `%APPDATA%\Claude\claude_desktop_config.json`
 
-### Local Mode (SQLite -- zero setup)
+### Local Mode (SQLite — zero setup)
 
 ```json
 {

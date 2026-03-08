@@ -1,15 +1,19 @@
 # Setting Up Lore with Cline
 
+> **Note:** Cline does not currently support pre-prompt hooks. This guide covers MCP tool setup. For automatic memory injection without tool calls, use a runtime that supports pre-prompt hooks ([Claude Code](setup-claude-code.md), [Cursor](setup-cursor.md)).
+
 ## Prerequisites
 
 - Python 3.9+
 - VS Code with the [Cline](https://marketplace.visualstudio.com/items?itemName=saoudrizwan.claude-dev) extension installed
 
-## Configuration
+## MCP Tools
+
+MCP tools give your agent 20 tools (remember, recall, forget, etc.) for explicit memory operations.
 
 Create `.cline/mcp_settings.json` in your project root:
 
-### Local Mode (SQLite -- zero setup)
+### Local Mode (SQLite — zero setup)
 
 ```json
 {

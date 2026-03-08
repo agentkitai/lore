@@ -1,15 +1,19 @@
 # Setting Up Lore with VS Code
 
+> **Note:** VS Code Copilot does not currently support pre-prompt hooks. This guide covers MCP tool setup. For automatic memory injection without tool calls, use a runtime that supports pre-prompt hooks ([Claude Code](setup-claude-code.md), [Cursor](setup-cursor.md)).
+
 ## Prerequisites
 
 - Python 3.9+
 - VS Code with the [GitHub Copilot](https://marketplace.visualstudio.com/items?itemName=GitHub.copilot) extension (MCP support requires Copilot)
 
-## Configuration
+## MCP Tools
+
+MCP tools give your agent 20 tools (remember, recall, forget, etc.) for explicit memory operations.
 
 Create `.vscode/mcp.json` in your project root:
 
-### Local Mode (SQLite -- zero setup)
+### Local Mode (SQLite — zero setup)
 
 ```json
 {
