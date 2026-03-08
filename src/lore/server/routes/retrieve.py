@@ -168,7 +168,11 @@ async def retrieve(
 
     # SQL with time-adjusted importance scoring (same formula as lessons/search)
     sql = f"""
-        SELECT id, content, type, tier, source, project, tags,
+        SELECT id,
+               COALESCE(problem, '') || CASE WHEN resolution IS NOT NULL AND resolution != '' THEN ' ' || resolution ELSE '' END AS content,
+               COALESCE(meta->>'type', 'unknown') AS type,
+               COALESCE(meta->>'tier', 'long') AS tier,
+               source, project, tags,
                created_at, importance_score,
                (1 - (embedding <=> ${emb_idx}::vector)) *
                COALESCE(importance_score, 1.0) *
