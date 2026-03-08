@@ -34,6 +34,7 @@ from lore.server.routes.conversations import router as conversations_router
 from lore.server.routes.ingest import router as ingest_router
 from lore.server.routes.keys import router as keys_router
 from lore.server.routes.lessons import router as lessons_router
+from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
 
@@ -68,6 +69,7 @@ app.include_router(lessons_router)
 app.include_router(sharing_router)
 app.include_router(rate_router)
 app.include_router(ingest_router)
+app.include_router(retrieve_router)
 app.include_router(conversations_router)
 
 # Install middleware and error handlers
