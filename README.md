@@ -290,16 +290,16 @@ Webhook-style ingestion, LLM-formatted export, staleness detection, and GitHub s
 
 ```mermaid
 graph LR
-    A[Agent Runtime] -->|hook| B[/v1/retrieve]
-    B --> C[Embedder<br/>ONNX local]
+    A[Agent Runtime] -->|hook| B["Retrieve API"]
+    B --> C["Embedder (ONNX)"]
     C --> D[pgvector search]
     D --> E[Score + Format]
     E -->|context| A
 
-    F[Conversations] -->|auto-ingest| G[/v1/memories]
+    F[Conversations] -->|auto-ingest| G["Memories API"]
     G --> H[Lore SDK]
-    H --> I[Store<br/>SQLite / Postgres]
-    H --> J[LLM Pipeline<br/>optional]
+    H --> I["Store (SQLite / Postgres)"]
+    H --> J["LLM Pipeline (optional)"]
 ```
 
 > [Full Architecture Documentation](docs/architecture.md)
