@@ -169,7 +169,7 @@ async def _process_job(job_id: str, org_id: str) -> None:
                         meta["type"] = mem.type or "fact"
                         meta["source"] = mem.source or "conversation"
                         await conn.execute(
-                            """INSERT INTO lessons (id, org_id, problem, resolution, tags, source, meta, confidence, created_at, updated_at)
+                            """INSERT INTO memories (id, org_id, content, context, tags, source, meta, confidence, created_at, updated_at)
                                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
                                ON CONFLICT (id) DO NOTHING""",
                             mem.id, org_id,

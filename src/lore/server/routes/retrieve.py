@@ -166,10 +166,10 @@ async def retrieve(
     params.append(limit)
     limit_idx = len(params)
 
-    # SQL with time-adjusted importance scoring (same formula as lessons/search)
+    # SQL with time-adjusted importance scoring (same formula as memories/search)
     sql = f"""
         SELECT id,
-               COALESCE(problem, '') || CASE WHEN resolution IS NOT NULL AND resolution != '' THEN ' ' || resolution ELSE '' END AS content,
+               content,
                COALESCE(meta->>'type', 'unknown') AS type,
                COALESCE(meta->>'tier', 'long') AS tier,
                source, project, tags,
@@ -187,7 +187,7 @@ async def retrieve(
                    / {_HALF_LIFE_DEFAULT}
                )
                AS score
-        FROM lessons
+        FROM memories
         WHERE {where_sql}
           AND (1 - (embedding <=> ${emb_idx}::vector)) >= ${score_idx}
         ORDER BY score DESC

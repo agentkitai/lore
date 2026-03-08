@@ -526,6 +526,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_wrap.add_argument("--user-id", dest="user_id", default=None, help="User ID for extracted memories")
     p_wrap.add_argument("--project", "-p", default=None, help="Project scope")
 
+    # setup
+    p_setup = sub.add_parser("setup", help="Install Lore hooks for a runtime")
+    p_setup.add_argument(
+        "runtime", nargs="?", default=None,
+        choices=["claude-code", "openclaw"],
+        help="Runtime to configure",
+    )
+    p_setup.add_argument("--server-url", default=None, dest="server_url",
+                         help="Lore server URL (default: http://localhost:8765)")
+    p_setup.add_argument("--api-key", default=None, dest="api_key",
+                         help="Lore API key (or LORE_API_KEY)")
+    p_setup.add_argument("--status", action="store_true",
+                         help="Show current setup status for all runtimes")
+    p_setup.add_argument("--remove", default=None, metavar="RUNTIME",
+                         choices=["claude-code", "openclaw"],
+                         help="Remove hooks for a runtime")
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
@@ -1200,6 +1217,33 @@ def cmd_wrap(args: argparse.Namespace) -> None:
     sys.exit(exit_code)
 
 
+def cmd_setup(args: argparse.Namespace) -> None:
+    """Handle setup subcommand: install/remove hooks for runtimes."""
+    from lore.setup import remove_runtime, setup_claude_code, setup_openclaw, show_status
+
+    if args.status:
+        show_status()
+        return
+
+    if args.remove:
+        remove_runtime(args.remove)
+        return
+
+    if not args.runtime:
+        print("Usage: lore setup <runtime> [--server-url URL]", file=sys.stderr)
+        print("       lore setup --status", file=sys.stderr)
+        print("       lore setup --remove <runtime>", file=sys.stderr)
+        sys.exit(1)
+
+    server_url = args.server_url or "http://localhost:8765"
+    api_key = args.api_key
+
+    if args.runtime == "claude-code":
+        setup_claude_code(server_url=server_url, api_key=api_key)
+    elif args.runtime == "openclaw":
+        setup_openclaw(server_url=server_url, api_key=api_key)
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -1257,6 +1301,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "on-this-day": cmd_on_this_day,
         "add-conversation": cmd_add_conversation,
         "wrap": cmd_wrap,
+        "setup": cmd_setup,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)

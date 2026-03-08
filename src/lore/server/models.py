@@ -190,3 +190,109 @@ class LessonSearchResponse(BaseModel):
     """Response for POST /v1/lessons/search."""
 
     lessons: List[LessonSearchResult]
+
+
+# ── Memory Models (v0.9.0+) ──────────────────────────────────────
+
+
+class MemoryCreateRequest(BaseModel):
+    """Request body for POST /v1/memories."""
+
+    content: str = Field(..., min_length=1)
+    context: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    source: Optional[str] = None
+    project: Optional[str] = None
+    embedding: Optional[List[float]] = Field(default=None)
+    expires_at: Optional[datetime] = None
+    meta: Dict[str, Any] = Field(default_factory=dict)
+    enrich: Optional[bool] = None
+
+    @field_validator("embedding")
+    @classmethod
+    def validate_embedding_dim(cls, v: Optional[List[float]]) -> Optional[List[float]]:
+        if v is not None and len(v) != 384:
+            raise ValueError(f"Embedding must be 384 dimensions, got {len(v)}")
+        return v
+
+
+class MemoryCreateResponse(BaseModel):
+    """Response for POST /v1/memories."""
+
+    id: str
+
+
+class MemoryResponse(BaseModel):
+    """Single memory (no embedding)."""
+
+    id: str
+    content: str
+    context: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    confidence: float
+    source: Optional[str] = None
+    project: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    expires_at: Optional[datetime] = None
+    upvotes: int = 0
+    downvotes: int = 0
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryUpdateRequest(BaseModel):
+    """Request body for PATCH /v1/memories/{id}."""
+
+    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    tags: Optional[List[str]] = None
+    upvotes: Optional[Union[str, int]] = None
+    downvotes: Optional[Union[str, int]] = None
+    meta: Optional[Dict[str, Any]] = None
+
+    @field_validator("upvotes", "downvotes")
+    @classmethod
+    def validate_vote_field(cls, v: Optional[Union[str, int]]) -> Optional[Union[str, int]]:
+        if v is None:
+            return v
+        if isinstance(v, str) and v not in ("+1", "-1"):
+            raise ValueError("Vote string must be '+1' or '-1'")
+        return v
+
+
+class MemoryListResponse(BaseModel):
+    """Response for GET /v1/memories."""
+
+    memories: List[MemoryResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class MemorySearchRequest(BaseModel):
+    """Request body for POST /v1/memories/search."""
+
+    embedding: List[float] = Field(..., min_length=1)
+    tags: Optional[List[str]] = None
+    project: Optional[str] = None
+    limit: int = Field(default=5, ge=1, le=50)
+    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @field_validator("embedding")
+    @classmethod
+    def validate_embedding_dim(cls, v: List[float]) -> List[float]:
+        if len(v) != 384:
+            raise ValueError(f"Embedding must be 384 dimensions, got {len(v)}")
+        return v
+
+
+class MemorySearchResult(MemoryResponse):
+    """A memory with its computed search score."""
+
+    score: float
+
+
+class MemorySearchResponse(BaseModel):
+    """Response for POST /v1/memories/search."""
+
+    memories: List[MemorySearchResult]
