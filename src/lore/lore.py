@@ -1268,7 +1268,13 @@ class Lore:
         return count
 
     def _maybe_cleanup_expired(self) -> None:
-        """Run cleanup_expired at most once per 60 seconds."""
+        """Run cleanup_expired at most once per 60 seconds.
+
+        Skipped for remote (HTTP) stores — the server manages its own TTL.
+        """
+        from lore.store.http import HttpStore
+        if isinstance(self._store, HttpStore):
+            return
         now = time.monotonic()
         if now - self._last_cleanup >= _CLEANUP_INTERVAL_SECONDS:
             self._last_cleanup = now
