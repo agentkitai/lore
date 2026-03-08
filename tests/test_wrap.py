@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import os
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from lore.wrap import _parse_conversation, _send_local, _send_to_api, run_wrap
 
@@ -72,16 +69,15 @@ class TestParseConversation:
 
 class TestSendToApi:
     def test_send_success(self):
-        import httpx
 
         mock_client = MagicMock()
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"job_id": "test-123", "message_count": 2}
         mock_client.post.return_value = mock_resp
 
-        with patch("httpx.Client") as MockClient:
-            MockClient.return_value.__enter__ = MagicMock(return_value=mock_client)
-            MockClient.return_value.__exit__ = MagicMock(return_value=False)
+        with patch("httpx.Client") as mock_http_client:
+            mock_http_client.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_http_client.return_value.__exit__ = MagicMock(return_value=False)
 
             _send_to_api(
                 [{"role": "user", "content": "hi"}],
@@ -99,9 +95,9 @@ class TestSendToApi:
         mock_resp.json.return_value = {"job_id": "test-123", "message_count": 1}
         mock_client.post.return_value = mock_resp
 
-        with patch("httpx.Client") as MockClient:
-            MockClient.return_value.__enter__ = MagicMock(return_value=mock_client)
-            MockClient.return_value.__exit__ = MagicMock(return_value=False)
+        with patch("httpx.Client") as mock_http_client:
+            mock_http_client.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_http_client.return_value.__exit__ = MagicMock(return_value=False)
 
             _send_to_api(
                 [{"role": "user", "content": "hi"}],
@@ -146,7 +142,7 @@ class TestRunWrap:
         # Simulate pty.spawn capturing some output
         def fake_spawn(cmd, read_cb):
             # Simulate child writing data
-            captured_data = b"Hello from child\n"
+            _ = b"Hello from child\n"  # noqa: F841
             # The read callback would be called with the master fd
             # but we simulate the captured data via the BytesIO
             return 0  # exited normally via WEXITSTATUS
@@ -159,7 +155,7 @@ class TestRunWrap:
 
         # No API URL set, so it should use local
         with patch.dict(os.environ, {"LORE_API_URL": "", "LORE_API_KEY": ""}, clear=False):
-            code = run_wrap(["echo", "hello"])
+            run_wrap(["echo", "hello"])
 
         # pty.spawn was called
         mock_pty.spawn.assert_called_once()

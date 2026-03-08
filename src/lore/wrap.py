@@ -13,10 +13,8 @@ local add_conversation if no API URL is configured).
 from __future__ import annotations
 
 import io
-import json
 import os
 import pty
-import select
 import signal
 import sys
 from typing import Dict, List, Optional

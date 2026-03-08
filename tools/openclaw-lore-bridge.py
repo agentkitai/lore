@@ -23,7 +23,6 @@ import os
 import signal
 import sys
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logging.basicConfig(

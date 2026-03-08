@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
-from unittest.mock import MagicMock, patch
-
-import pytest
 
 # Import from tools directory
 import sys
+import tempfile
+from unittest.mock import MagicMock, patch
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tools"))
 
-from importlib import import_module
 
 # Import the bridge module dynamically (filename has hyphens)
 import importlib.util
+
 _bridge_path = os.path.join(
     os.path.dirname(__file__), "..", "tools", "openclaw-lore-bridge.py"
 )
@@ -152,7 +151,7 @@ class TestProcessLogFile:
 
         try:
             state = {}
-            with patch.object(bridge, "_send_conversation", return_value=True) as mock_send:
+            with patch.object(bridge, "_send_conversation", return_value=True) as _mock_send:
                 sent = bridge._process_log_file(
                     log_path, state,
                     api_url="http://localhost:8000",
@@ -235,9 +234,9 @@ class TestSendConversation:
         mock_resp.json.return_value = {"job_id": "j1", "message_count": 1}
         mock_client.post.return_value = mock_resp
 
-        with patch("httpx.Client") as MockClient:
-            MockClient.return_value.__enter__ = MagicMock(return_value=mock_client)
-            MockClient.return_value.__exit__ = MagicMock(return_value=False)
+        with patch("httpx.Client") as mock_http_client:
+            mock_http_client.return_value.__enter__ = MagicMock(return_value=mock_client)
+            mock_http_client.return_value.__exit__ = MagicMock(return_value=False)
 
             result = bridge._send_conversation(
                 [{"role": "user", "content": "hi"}],
