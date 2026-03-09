@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Lore — Full Mac Install (Postgres + pgvector + enrichment pipeline)
-# Usage: curl -sSL <url> | bash
-#    or: bash install-mac.sh [--api-key YOUR_KEY] [--llm-provider anthropic|openai] [--llm-key sk-...]
-#    or: bash install-mac.sh --max-proxy    (uses Claude Max subscription, zero cost)
+# Usage: bash install-mac.sh [--api-key KEY] [--llm-provider anthropic|openai] [--llm-key sk-...]
+#        bash install-mac.sh --max-proxy    (uses Claude Max subscription, zero cost)
 set -euo pipefail
 
 # ── Defaults ───────────────────────────────────────────────────────
@@ -17,16 +16,17 @@ MAX_PROXY_PORT=3456
 # ── Parse args ─────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --api-key)    LORE_API_KEY="$2"; shift 2 ;;
+    --api-key)      LORE_API_KEY="$2"; shift 2 ;;
     --llm-provider) LLM_PROVIDER="$2"; shift 2 ;;
-    --llm-key)    LLM_KEY="$2"; shift 2 ;;
-    --model)      ENRICHMENT_MODEL="$2"; shift 2 ;;
-    --port)       LORE_PORT="$2"; shift 2 ;;
-    --max-proxy)  USE_MAX_PROXY=true; shift ;;
-    *) echo "Unknown arg: $1"; exit 1 ;;
+    --llm-key)      LLM_KEY="$2"; shift 2 ;;
+    --model)        ENRICHMENT_MODEL="$2"; shift 2 ;;
+    --port)         LORE_PORT="$2"; shift 2 ;;
+    --max-proxy)    USE_MAX_PROXY=true; shift ;;
+    *) echo "❌ Unknown arg: $1"; exit 1 ;;
   esac
 done
 
+echo ""
 echo "🧠 Lore — Full Mac Install"
 echo "=========================="
 echo ""
@@ -42,147 +42,234 @@ echo "✅ Homebrew found"
 # ── 2. PostgreSQL ──────────────────────────────────────────────────
 PG_VERSION=""
 for v in 17 16 15; do
-  if brew list "postgresql@$v" &>/dev/null; then
+  if brew list "postgresql@$v" 2>&1 | grep -q "postgresql@$v"; then
     PG_VERSION=$v
     break
   fi
 done
 
 if [ -z "$PG_VERSION" ]; then
-  echo "📦 Installing PostgreSQL 16..."
-  brew install postgresql@16
-  PG_VERSION=16
-  echo "🔄 Starting PostgreSQL..."
+  echo "📦 Installing PostgreSQL 17..."
+  brew install postgresql@17
+  PG_VERSION=17
+fi
+echo "✅ PostgreSQL $PG_VERSION found"
+
+# Ensure it's running
+if ! brew services list | grep "postgresql@$PG_VERSION" | grep -q started; then
+  echo "🔄 Starting PostgreSQL $PG_VERSION..."
   brew services start "postgresql@$PG_VERSION"
-  sleep 2
-else
-  echo "✅ PostgreSQL $PG_VERSION found"
-  # Ensure it's running
-  if ! brew services list | grep "postgresql@$PG_VERSION" | grep -q started; then
-    echo "🔄 Starting PostgreSQL..."
-    brew services start "postgresql@$PG_VERSION"
-    sleep 2
-  fi
+  sleep 3
+fi
+echo "✅ PostgreSQL $PG_VERSION is running"
+
+PG_PREFIX="$(brew --prefix "postgresql@$PG_VERSION")"
+PG_CONFIG="$PG_PREFIX/bin/pg_config"
+export PATH="$PG_PREFIX/bin:$PATH"
+
+if [ ! -x "$PG_CONFIG" ]; then
+  echo "❌ pg_config not found at $PG_CONFIG"
+  echo "   Try: brew reinstall postgresql@$PG_VERSION"
+  exit 1
 fi
 
-PG_CONFIG="$(brew --prefix "postgresql@$PG_VERSION")/bin/pg_config"
-export PATH="$(brew --prefix "postgresql@$PG_VERSION")/bin:$PATH"
-
 # ── 3. pgvector ────────────────────────────────────────────────────
-PG_SHAREDIR="$($PG_CONFIG --sharedir)"
-PG_PKGLIBDIR="$($PG_CONFIG --pkglibdir)"
+PG_SHAREDIR="$("$PG_CONFIG" --sharedir)"
 VECTOR_CONTROL="$PG_SHAREDIR/extension/vector.control"
 
 if [ -f "$VECTOR_CONTROL" ]; then
-  echo "✅ pgvector already installed (found $VECTOR_CONTROL)"
+  echo "✅ pgvector installed (found $VECTOR_CONTROL)"
 else
   echo "📦 Installing pgvector for PostgreSQL $PG_VERSION..."
 
-  # Try Homebrew first
+  # Try Homebrew first — it may or may not target the right PG
   brew install pgvector 2>&1 || true
 
-  # Check if Homebrew put it in the right place
   if [ ! -f "$VECTOR_CONTROL" ]; then
-    echo "  Homebrew pgvector didn't target PostgreSQL $PG_VERSION, building from source..."
-    TMPDIR=$(mktemp -d)
-    git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git "$TMPDIR/pgvector"
-    cd "$TMPDIR/pgvector"
+    echo "⚠️  Homebrew pgvector didn't target PostgreSQL $PG_VERSION, building from source..."
+    BUILD_DIR=$(mktemp -d)
+    git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git "$BUILD_DIR/pgvector"
+    cd "$BUILD_DIR/pgvector"
     make PG_CONFIG="$PG_CONFIG"
     make install PG_CONFIG="$PG_CONFIG"
-    cd -
-    rm -rf "$TMPDIR"
+    cd - > /dev/null
+    rm -rf "$BUILD_DIR"
   fi
 
-  # Final verify
   if [ -f "$VECTOR_CONTROL" ]; then
     echo "✅ pgvector installed for PostgreSQL $PG_VERSION"
   else
-    echo "❌ pgvector installation failed. Expected: $VECTOR_CONTROL"
+    echo "❌ pgvector installation failed"
+    echo "   Expected: $VECTOR_CONTROL"
+    echo "   Try building manually: https://github.com/pgvector/pgvector#installation"
     exit 1
   fi
 
-  # Restart Postgres to pick up the extension
+  # Restart Postgres to pick up the new extension
   brew services restart "postgresql@$PG_VERSION"
-  sleep 2
+  sleep 3
 fi
 
-# ── 4. Create database ────────────────────────────────────────────
-if psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw lore; then
+# ── 4. Database ────────────────────────────────────────────────────
+if psql -lqt 2>&1 | cut -d \| -f 1 | grep -qw lore; then
   echo "✅ Database 'lore' exists"
 else
   echo "📦 Creating database 'lore'..."
   createdb lore
+  echo "✅ Database 'lore' created"
 fi
 
-echo "Enabling pgvector extension..."
+echo "📦 Enabling pgvector extension..."
 if ! psql lore -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>&1; then
-  echo "❌ Failed to create vector extension. Trying with superuser..."
+  echo "⚠️  Retrying with superuser..."
   if ! psql lore -c "CREATE EXTENSION IF NOT EXISTS vector;" -U postgres 2>&1; then
-    echo "❌ pgvector extension failed. You may need to:"
-    echo "   1. Verify pgvector is installed: ls $(pg_config --pkglibdir)/vector.so"
-    echo "   2. Restart Postgres: brew services restart postgresql@$PG_VERSION"
+    echo "❌ pgvector extension failed"
+    echo "   1. Verify: ls $("$PG_CONFIG" --pkglibdir)/vector.so"
+    echo "   2. Restart: brew services restart postgresql@$PG_VERSION"
     echo "   3. Try: psql lore -c 'CREATE EXTENSION vector;'"
     exit 1
   fi
 fi
 echo "✅ pgvector extension enabled"
 
-# ── 5. Python 3.10+ + Lore ────────────────────────────────────────
-# Lore requires Python >=3.10. macOS ships 3.9 which silently installs ancient versions.
-PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
-echo "  System Python: $PY_VERSION"
+# ── 5. Python 3.10+ ───────────────────────────────────────────────
+PY_BIN=""
+PIP_CMD=""
 
-if python3 -c "import sys; assert sys.version_info >= (3, 10)" 2>/dev/null; then
-  PY_BIN="python3"
-  PIP_BIN="pip3"
-else
-  echo "⚠️  Python $PY_VERSION is too old (need 3.10+). Installing Python 3.12 via Homebrew..."
-  brew install python@3.12
-  PY_BIN="$(brew --prefix python@3.12)/bin/python3.12"
-  PIP_BIN="$PY_BIN -m pip"
-  echo "  Using: $PY_BIN ($(${PY_BIN} --version))"
+# Check if system python3 is new enough
+if command -v python3 &>/dev/null; then
+  SYS_PY_VER=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>&1 || echo "0.0")
+  echo "  System Python: $SYS_PY_VER"
+  if python3 -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" 2>&1; then
+    PY_BIN="python3"
+  fi
 fi
 
-echo "📦 Installing Lore SDK..."
-$PIP_BIN install --upgrade "lore-sdk[server,enrichment]"
-LORE_VERSION=$($PY_BIN -c "import importlib.metadata; print(importlib.metadata.version('lore-sdk'))" 2>/dev/null || echo "unknown")
-echo "✅ Lore SDK v$LORE_VERSION installed"
+# If system python is too old, install 3.12 via Homebrew
+if [ -z "$PY_BIN" ]; then
+  echo "⚠️  Python < 3.10 detected. Installing Python 3.12 via Homebrew..."
+  brew install python@3.12
+  PY_BIN="$(brew --prefix python@3.12)/bin/python3.12"
+  if [ ! -x "$PY_BIN" ]; then
+    echo "❌ Python 3.12 not found at $PY_BIN after install"
+    exit 1
+  fi
+  echo "✅ Python 3.12 installed: $PY_BIN"
+fi
 
-if [ "$LORE_VERSION" = "unknown" ] || $PY_BIN -c "from packaging.version import Version; assert Version('$LORE_VERSION') < Version('0.9.0')" 2>/dev/null; then
-  echo "❌ Failed to install lore-sdk >= 0.9.0 (got $LORE_VERSION)"
-  echo "   This usually means pip resolved an old version."
-  echo "   Debug: $PIP_BIN install --upgrade --verbose 'lore-sdk[server,enrichment]'"
+PIP_CMD="$PY_BIN -m pip"
+echo "  Using Python: $PY_BIN ($($PY_BIN --version 2>&1))"
+
+# ── 6. Lore SDK ───────────────────────────────────────────────────
+echo "📦 Installing Lore SDK..."
+$PIP_CMD install --upgrade "lore-sdk[server,enrichment]" 2>&1
+
+LORE_VERSION=$($PY_BIN -c "import importlib.metadata; print(importlib.metadata.version('lore-sdk'))" 2>&1 || echo "unknown")
+echo "  Installed version: $LORE_VERSION"
+
+if [ "$LORE_VERSION" = "unknown" ]; then
+  echo "❌ lore-sdk not found after install"
+  echo "   Debug: $PIP_CMD install --upgrade --verbose 'lore-sdk[server,enrichment]'"
   exit 1
 fi
 
-# ── 6. Claude Max Proxy (optional) ────────────────────────────────
+# Verify >= 0.9.4
+if $PY_BIN -c "
+from packaging.version import Version
+v = Version('$LORE_VERSION')
+assert v >= Version('0.9.4'), f'Got {v}, need >= 0.9.4'
+" 2>&1; then
+  echo "✅ Lore SDK v$LORE_VERSION installed"
+else
+  echo "❌ lore-sdk version $LORE_VERSION is too old (need >= 0.9.4)"
+  echo "   This usually means pip resolved an old version for your Python."
+  echo "   Debug: $PIP_CMD install --upgrade --verbose 'lore-sdk[server,enrichment]'"
+  exit 1
+fi
+
+# ── Find lore binary ──────────────────────────────────────────────
+LORE_BIN=""
+
+# Search known locations in priority order
+PY_USER_BASE=$($PY_BIN -m site --user-base 2>&1 || echo "")
+
+for candidate in \
+  "$(command -v lore 2>&1 || echo "")" \
+  "${PY_USER_BASE:+$PY_USER_BASE/bin/lore}" \
+  "$(brew --prefix python@3.12 2>&1 || echo "")/bin/lore" \
+  "/opt/homebrew/bin/lore" \
+  "/usr/local/bin/lore" \
+  "$HOME/.local/bin/lore" \
+  "$HOME/Library/Python/3.12/bin/lore" \
+  "$HOME/Library/Python/3.11/bin/lore" \
+  "$HOME/Library/Python/3.10/bin/lore"; do
+  if [ -n "$candidate" ] && [ -f "$candidate" ] && [ -x "$candidate" ]; then
+    LORE_BIN="$candidate"
+    break
+  fi
+done
+
+# Fallback: use python -m lore
+if [ -z "$LORE_BIN" ]; then
+  echo "⚠️  lore binary not found in PATH, will use: $PY_BIN -m lore"
+  LORE_BIN=""
+fi
+
+# Build the command to run lore
+if [ -n "$LORE_BIN" ]; then
+  LORE_CMD="$LORE_BIN"
+  echo "  Lore binary: $LORE_BIN"
+else
+  LORE_CMD="$PY_BIN -m lore"
+  echo "  Lore command: $LORE_CMD"
+fi
+
+# Verify lore serve works before we create a LaunchAgent for it
+echo "  Testing 'lore serve --help'..."
+if ! $LORE_CMD serve --help > /dev/null 2>&1; then
+  echo "❌ 'lore serve --help' failed"
+  echo "   Output:"
+  $LORE_CMD serve --help 2>&1 || true
+  exit 1
+fi
+echo "✅ 'lore serve' command works"
+
+# ── 7. Claude Max Proxy (optional) ────────────────────────────────
 if [ "$USE_MAX_PROXY" = true ]; then
+  echo ""
   echo "📦 Installing Claude Max API Proxy..."
   if ! command -v node &>/dev/null; then
+    echo "📦 Installing Node.js..."
     brew install node
   fi
-  npm install -g claude-max-api-proxy
+  npm install -g claude-max-api-proxy 2>&1
 
-  # Find the binary (npm global bin might not be in PATH)
-  MAX_PROXY_BIN=$(npm bin -g 2>/dev/null)/claude-max-api-proxy
+  # Find the binary
+  NPM_PREFIX="$(npm prefix -g 2>&1)"
+  NPM_BIN_DIR="$NPM_PREFIX/bin"
+  MAX_PROXY_BIN="$NPM_BIN_DIR/claude-max-api-proxy"
+
   if [ ! -f "$MAX_PROXY_BIN" ]; then
-    MAX_PROXY_BIN=$(npm prefix -g)/bin/claude-max-api-proxy
+    echo "❌ claude-max-api-proxy not found at $MAX_PROXY_BIN"
+    exit 1
   fi
 
-  # Ensure npm global bin is in PATH
-  NPM_BIN_DIR=$(npm prefix -g)/bin
-  if ! echo "$PATH" | grep -q "$NPM_BIN_DIR"; then
+  # Ensure npm global bin is in PATH persistently
+  if ! echo "$PATH" | tr ':' '\n' | grep -qx "$NPM_BIN_DIR"; then
     SHELL_RC="$HOME/.zshrc"
-    [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.bashrc"
-    if ! grep -q "npm prefix" "$SHELL_RC" 2>/dev/null; then
+    if [ ! -f "$SHELL_RC" ]; then
+      SHELL_RC="$HOME/.bashrc"
+    fi
+    if [ -f "$SHELL_RC" ] && ! grep -q 'npm prefix -g' "$SHELL_RC" 2>&1; then
       echo 'export PATH="$(npm prefix -g)/bin:$PATH"' >> "$SHELL_RC"
-      echo "  Added npm bin to PATH in $SHELL_RC"
+      echo "  Added npm global bin to PATH in $SHELL_RC"
     fi
     export PATH="$NPM_BIN_DIR:$PATH"
   fi
 
   # Create LaunchAgent for the proxy
   PROXY_PLIST="$HOME/Library/LaunchAgents/com.claude-max-api-proxy.plist"
+  mkdir -p "$HOME/Library/LaunchAgents"
   cat > "$PROXY_PLIST" <<PXML
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -192,7 +279,7 @@ if [ "$USE_MAX_PROXY" = true ]; then
     <string>com.claude-max-api-proxy</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$MAX_PROXY_BIN</string>
+        <string>${MAX_PROXY_BIN}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -205,105 +292,99 @@ if [ "$USE_MAX_PROXY" = true ]; then
 </dict>
 </plist>
 PXML
-  launchctl unload "$PROXY_PLIST" 2>/dev/null || true
+  launchctl unload "$PROXY_PLIST" 2>&1 || true
   launchctl load "$PROXY_PLIST"
 
-  # Wait for proxy to start
   echo -n "⏳ Waiting for Max proxy..."
-  for i in $(seq 1 10); do
-    if curl -sf "http://localhost:$MAX_PROXY_PORT/v1/models" &>/dev/null; then
-      echo " ready!"
+  PROXY_READY=false
+  for i in $(seq 1 15); do
+    if curl -sf "http://localhost:$MAX_PROXY_PORT/v1/models" > /dev/null 2>&1; then
+      PROXY_READY=true
       break
     fi
     sleep 1
     echo -n "."
   done
-  echo "✅ Claude Max API Proxy running on port $MAX_PROXY_PORT"
+  echo ""
 
-  # Set LLM provider to route through proxy
+  if [ "$PROXY_READY" = true ]; then
+    echo "✅ Claude Max API Proxy running on port $MAX_PROXY_PORT"
+  else
+    echo "⚠️  Proxy didn't respond within 15s. Check /tmp/claude-max-proxy.log"
+  fi
+
   LLM_PROVIDER="openai"
 fi
 
-# ── 7. Environment file ──────────────────────────────────────────
+# ── 8. Environment file ───────────────────────────────────────────
 LORE_ENV="$HOME/.lore/env"
 mkdir -p "$HOME/.lore"
 
-cat > "$LORE_ENV" <<EOF
+cat > "$LORE_ENV" <<ENVEOF
 # Lore server configuration
 # Generated by install-mac.sh on $(date -Iseconds)
 LORE_STORE=postgres
 LORE_PG_URL=postgresql://localhost/lore
-LORE_API_KEY=$LORE_API_KEY
-LORE_PORT=$LORE_PORT
+LORE_API_KEY=${LORE_API_KEY}
+LORE_PORT=${LORE_PORT}
 
 # Enrichment pipeline
 LORE_ENRICHMENT_ENABLED=true
 LORE_CLASSIFY=true
 LORE_FACT_EXTRACTION=true
 LORE_KNOWLEDGE_GRAPH=true
-EOF
+ENVEOF
 
-# Add LLM config if provided
 if [ -n "$LLM_PROVIDER" ]; then
-  cat >> "$LORE_ENV" <<EOF
+  cat >> "$LORE_ENV" <<LLMEOF
 
 # LLM provider
-LORE_LLM_PROVIDER=$LLM_PROVIDER
-LORE_ENRICHMENT_MODEL=$ENRICHMENT_MODEL
-EOF
+LORE_LLM_PROVIDER=${LLM_PROVIDER}
+LORE_ENRICHMENT_MODEL=${ENRICHMENT_MODEL}
+LLMEOF
+
   if [ "$USE_MAX_PROXY" = true ]; then
-    echo "OPENAI_API_BASE=http://localhost:$MAX_PROXY_PORT/v1" >> "$LORE_ENV"
+    echo "OPENAI_API_BASE=http://localhost:${MAX_PROXY_PORT}/v1" >> "$LORE_ENV"
   elif [ "$LLM_PROVIDER" = "anthropic" ] && [ -n "$LLM_KEY" ]; then
-    echo "ANTHROPIC_API_KEY=$LLM_KEY" >> "$LORE_ENV"
+    echo "ANTHROPIC_API_KEY=${LLM_KEY}" >> "$LORE_ENV"
   elif [ "$LLM_PROVIDER" = "openai" ] && [ -n "$LLM_KEY" ]; then
-    echo "OPENAI_API_KEY=$LLM_KEY" >> "$LORE_ENV"
+    echo "OPENAI_API_KEY=${LLM_KEY}" >> "$LORE_ENV"
   fi
 fi
 
 echo "✅ Config saved to $LORE_ENV"
 
-# ── 8. LaunchAgent (auto-start on login) ──────────────────────────
+# ── 9. LaunchAgent for Lore server ────────────────────────────────
 PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST_FILE="$PLIST_DIR/com.lore.server.plist"
 mkdir -p "$PLIST_DIR"
 
-# Find lore binary installed by the correct Python
-LORE_BIN=$(command -v lore 2>/dev/null || echo "")
-if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
-  LORE_BIN=$($PY_BIN -c "import site; print(site.USER_BASE + '/bin/lore')" 2>/dev/null || echo "")
-fi
-if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
-  for candidate in \
-    "$($PY_BIN -m site --user-base 2>/dev/null)/bin/lore" \
-    "$(brew --prefix python@3.12 2>/dev/null)/bin/lore" \
-    "/opt/homebrew/bin/lore" \
-    "/usr/local/bin/lore" \
-    "$HOME/.local/bin/lore"; do
-    if [ -f "$candidate" ]; then
-      LORE_BIN="$candidate"
-      break
-    fi
-  done
-fi
-
-# Build ProgramArguments as a plain string (arrays don't survive heredoc subshells)
-if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
-  echo "⚠️  lore binary not found, using '$PY_BIN -m lore' for LaunchAgent"
-  PLIST_ARGS="        <string>$PY_BIN</string>
+# Build ProgramArguments XML fragment (plain string, no bash arrays in heredocs)
+if [ -n "$LORE_BIN" ]; then
+  PROG_ARGS="        <string>${LORE_BIN}</string>
+        <string>serve</string>
+        <string>--port</string>
+        <string>${LORE_PORT}</string>"
+else
+  PROG_ARGS="        <string>${PY_BIN}</string>
         <string>-m</string>
         <string>lore</string>
         <string>serve</string>
         <string>--port</string>
-        <string>$LORE_PORT</string>"
-else
-  echo "  Lore binary: $LORE_BIN"
-  PLIST_ARGS="        <string>$LORE_BIN</string>
-        <string>serve</string>
-        <string>--port</string>
-        <string>$LORE_PORT</string>"
+        <string>${LORE_PORT}</string>"
 fi
 
-cat > "$PLIST_FILE" <<EOF
+# Build EnvironmentVariables XML fragment from env file
+ENV_DICT=""
+while IFS='=' read -r key val; do
+  # Skip empty lines and comments
+  [[ -z "$key" || "$key" == \#* ]] && continue
+  ENV_DICT="${ENV_DICT}        <key>${key}</key>
+        <string>${val}</string>
+"
+done < "$LORE_ENV"
+
+cat > "$PLIST_FILE" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -312,16 +393,11 @@ cat > "$PLIST_FILE" <<EOF
     <string>com.lore.server</string>
     <key>ProgramArguments</key>
     <array>
-$PLIST_ARGS
+${PROG_ARGS}
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-$(while IFS='=' read -r key val; do
-    [[ -z "$key" || "$key" == \#* ]] && continue
-    echo "        <key>$key</key>"
-    echo "        <string>$val</string>"
-done < "$LORE_ENV")
-    </dict>
+${ENV_DICT}    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -332,96 +408,93 @@ done < "$LORE_ENV")
     <string>/tmp/lore-server.log</string>
 </dict>
 </plist>
-EOF
+PLISTEOF
 
-# Verify plist
-echo "  LaunchAgent plist:"
-grep -A 2 "ProgramArguments" "$PLIST_FILE" | head -5
-echo "  ..."
+echo "  LaunchAgent written to $PLIST_FILE"
 
 # Load (or reload) the service
-launchctl unload "$PLIST_FILE" 2>/dev/null || true
+launchctl unload "$PLIST_FILE" 2>&1 || true
 launchctl load "$PLIST_FILE"
 echo "✅ Lore server LaunchAgent loaded"
 
-# ── 9. Wait for server to be ready ───────────────────────────────
-echo -n "⏳ Waiting for server..."
-for i in $(seq 1 20); do
-  if curl -sf "http://localhost:$LORE_PORT/health" &>/dev/null; then
-    echo " ready!"
+# ── 10. Wait for health ───────────────────────────────────────────
+echo -n "⏳ Waiting for server health..."
+SERVER_READY=false
+for i in $(seq 1 30); do
+  if curl -sf "http://localhost:$LORE_PORT/health" > /dev/null 2>&1; then
+    SERVER_READY=true
     break
   fi
   sleep 1
   echo -n "."
 done
+echo ""
 
-if ! curl -sf "http://localhost:$LORE_PORT/health" &>/dev/null; then
+if [ "$SERVER_READY" = true ]; then
+  echo "✅ Server healthy at http://localhost:$LORE_PORT"
+else
+  echo "❌ Server didn't start after 30s"
   echo ""
-  echo "❌ Server didn't start after 20s. Diagnosing..."
+  echo "  Log output (last 30 lines):"
+  tail -30 /tmp/lore-server.log 2>&1 || echo "  (no log file found)"
   echo ""
-  echo "  Log output:"
-  tail -20 /tmp/lore-server.log 2>/dev/null || echo "  (no log file)"
-  echo ""
-  echo "  LaunchAgent plist contents:"
+  echo "  Plist contents:"
   cat "$PLIST_FILE"
   echo ""
-  echo "  Trying to start manually to see the error:"
-  source "$LORE_ENV" 2>/dev/null
-  timeout 5 $LORE_BIN serve --port $LORE_PORT 2>&1 || $PY_BIN -m lore serve --port $LORE_PORT 2>&1 &
-  MANUAL_PID=$!
-  sleep 3
-  if curl -sf "http://localhost:$LORE_PORT/health" &>/dev/null; then
-    echo "  ✅ Manual start worked! Killing manual process, fixing LaunchAgent..."
-    kill $MANUAL_PID 2>/dev/null
-  else
-    kill $MANUAL_PID 2>/dev/null
-    echo "  ❌ Manual start also failed. Check errors above."
-    exit 1
-  fi
-else
-  echo "✅ Server healthy at http://localhost:$LORE_PORT"
+  echo "  Try starting manually:"
+  echo "    source ~/.lore/env && $LORE_CMD serve --port $LORE_PORT"
+  exit 1
 fi
 
-# ── 10. Setup agent hooks ────────────────────────────────────────
+# ── 11. Agent hooks ───────────────────────────────────────────────
 echo ""
 echo "📎 Setting up agent hooks..."
 
-# Reuse LORE_BIN from step 8, or fall back to python module
-if [ -n "$LORE_BIN" ] && [ -f "$LORE_BIN" ] && [ "$LORE_BIN" != "$PY_BIN" ]; then
-  LORE_CMD="$LORE_BIN"
-  echo "  Using: $LORE_CMD"
+HOOK_ARGS="--server-url http://localhost:$LORE_PORT --api-key $LORE_API_KEY"
+
+echo "  Installing Claude Code hook..."
+if $LORE_CMD setup claude-code $HOOK_ARGS 2>&1; then
+  echo "  ✅ Claude Code hook installed"
 else
-  LORE_CMD="$PY_BIN -m lore"
-  echo "  Using: $LORE_CMD"
+  echo "  ❌ Claude Code setup failed (see error above)"
 fi
 
-# Claude Code hook
-echo "  Installing Claude Code hook..."
-$LORE_CMD setup claude-code --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" && \
-  echo "  ✅ Claude Code hook installed" || echo "  ❌ Claude Code setup failed (see error above)"
-
-# Codex hook
 echo "  Installing Codex CLI hook..."
-$LORE_CMD setup codex --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" && \
-  echo "  ✅ Codex CLI hook installed" || echo "  ❌ Codex setup failed (see error above)"
+if $LORE_CMD setup codex $HOOK_ARGS 2>&1; then
+  echo "  ✅ Codex CLI hook installed"
+else
+  echo "  ❌ Codex setup failed (see error above)"
+fi
 
-# Cursor hook (project-level)
 echo "  Installing Cursor hook..."
-$LORE_CMD setup cursor --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" && \
-  echo "  ✅ Cursor hook installed" || echo "  ❌ Cursor setup failed (see error above)"
+if $LORE_CMD setup cursor $HOOK_ARGS 2>&1; then
+  echo "  ✅ Cursor hook installed"
+else
+  echo "  ❌ Cursor setup failed (see error above)"
+fi
 
-# Verify Claude Code hook specifically
+# ── 12. Verify ────────────────────────────────────────────────────
+echo ""
 if [ -f "$HOME/.claude/settings.json" ]; then
-  if $PY_BIN -c "import json; s=json.load(open('$HOME/.claude/settings.json')); assert s.get('hooks',{}).get('UserPromptSubmit')" 2>/dev/null; then
-    echo "  ✓ Verified: Claude Code UserPromptSubmit hook registered"
+  if $PY_BIN -c "
+import json, sys
+s = json.load(open('$HOME/.claude/settings.json'))
+hooks = s.get('hooks', {})
+if 'UserPromptSubmit' in hooks:
+    print('  ✅ Verified: Claude Code UserPromptSubmit hook registered')
+else:
+    print('  ⚠️  settings.json exists but UserPromptSubmit hook not found')
+    sys.exit(1)
+" 2>&1; then
+    true
   else
-    echo "  ⚠️  Claude Code settings.json exists but hook not registered"
-    echo "     Contents: $(cat "$HOME/.claude/settings.json")"
+    echo "  ⚠️  Hook verification failed — you may need to run setup manually"
   fi
 else
-  echo "  ⚠️  ~/.claude/settings.json not found — Claude Code may not be installed"
+  echo "  ⚠️  ~/.claude/settings.json not found — Claude Code may not be installed yet"
 fi
 
+# ── Done ──────────────────────────────────────────────────────────
 echo ""
 echo "════════════════════════════════════════"
 echo "🧠 Lore is running!"
@@ -433,22 +506,17 @@ echo "  Config:   ~/.lore/env"
 echo "  Logs:     /tmp/lore-server.log"
 echo "  API Key:  $LORE_API_KEY"
 echo ""
-echo "Setup more agents:"
-echo "  lore setup claude-code --server-url http://localhost:$LORE_PORT --api-key $LORE_API_KEY"
-echo "  lore setup cursor     --server-url http://localhost:$LORE_PORT --api-key $LORE_API_KEY"
-echo "  lore setup codex      --server-url http://localhost:$LORE_PORT --api-key $LORE_API_KEY"
-echo ""
 if [ "$USE_MAX_PROXY" = true ]; then
-  echo "  Max Proxy: http://localhost:$MAX_PROXY_PORT (LaunchAgent)"
+  echo "  Max Proxy: http://localhost:$MAX_PROXY_PORT"
   echo "  Proxy Log: /tmp/claude-max-proxy.log"
   echo ""
 elif [ -z "$LLM_PROVIDER" ]; then
   echo "⚠️  No LLM provider configured. Enrichment will skip LLM features."
-  echo "   Re-run with --max-proxy (free, uses Max sub) or add manually:"
-  echo "   LORE_LLM_PROVIDER=anthropic"
-  echo "   ANTHROPIC_API_KEY=sk-ant-..."
-  echo "   Then: launchctl unload ~/Library/LaunchAgents/com.lore.server.plist"
-  echo "         launchctl load ~/Library/LaunchAgents/com.lore.server.plist"
+  echo "   Re-run with --max-proxy (free with Max subscription) or add to ~/.lore/env:"
+  echo "     LORE_LLM_PROVIDER=anthropic"
+  echo "     ANTHROPIC_API_KEY=sk-ant-..."
+  echo "   Then reload: launchctl unload ~/Library/LaunchAgents/com.lore.server.plist"
+  echo "                launchctl load ~/Library/LaunchAgents/com.lore.server.plist"
   echo ""
 fi
-echo "Done! 🎉"
+echo "Done!"
