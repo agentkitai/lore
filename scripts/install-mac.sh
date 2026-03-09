@@ -290,17 +290,58 @@ fi
 echo ""
 echo "📎 Setting up agent hooks..."
 
-# Always install Claude Code hook (hook script is standalone, doesn't need claude binary)
-lore setup claude-code --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" 2>/dev/null && \
-  echo "  ✅ Claude Code hook installed" || echo "  ⚠️  Claude Code setup failed"
+# Find the lore binary (pip may install to different locations on Mac)
+LORE_BIN=$(command -v lore 2>/dev/null || python3 -c "import site; print(site.USER_BASE + '/bin/lore')" 2>/dev/null || echo "")
+if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
+  # Try common pip install locations
+  for candidate in \
+    "$(python3 -m site --user-base 2>/dev/null)/bin/lore" \
+    "/usr/local/bin/lore" \
+    "$HOME/.local/bin/lore" \
+    "$HOME/Library/Python/3.12/bin/lore" \
+    "$HOME/Library/Python/3.11/bin/lore" \
+    "$HOME/Library/Python/3.10/bin/lore"; do
+    if [ -f "$candidate" ]; then
+      LORE_BIN="$candidate"
+      break
+    fi
+  done
+fi
 
-# Always install Codex hook
-lore setup codex --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" 2>/dev/null && \
-  echo "  ✅ Codex CLI hook installed" || echo "  ⚠️  Codex setup failed"
+if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
+  echo "  ⚠️  'lore' binary not found in PATH. Falling back to python3 -m lore"
+  LORE_CMD="python3 -m lore"
+else
+  echo "  Using: $LORE_BIN"
+  LORE_CMD="$LORE_BIN"
+fi
 
-# Cursor is project-level, install in cwd if it looks like a project
-lore setup cursor --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" 2>/dev/null && \
-  echo "  ✅ Cursor hook installed" || echo "  ⚠️  Cursor setup failed (run 'lore setup cursor' in your project dir)"
+# Claude Code hook
+echo "  Installing Claude Code hook..."
+$LORE_CMD setup claude-code --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" && \
+  echo "  ✅ Claude Code hook installed" || echo "  ❌ Claude Code setup failed (see error above)"
+
+# Codex hook
+echo "  Installing Codex CLI hook..."
+$LORE_CMD setup codex --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" && \
+  echo "  ✅ Codex CLI hook installed" || echo "  ❌ Codex setup failed (see error above)"
+
+# Cursor hook (project-level)
+echo "  Installing Cursor hook..."
+$LORE_CMD setup cursor --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" && \
+  echo "  ✅ Cursor hook installed" || echo "  ❌ Cursor setup failed (see error above)"
+
+# Verify Claude Code hook specifically
+if [ -f "$HOME/.claude/settings.json" ]; then
+  if python3 -c "import json; s=json.load(open('$HOME/.claude/settings.json')); assert s.get('hooks',{}).get('UserPromptSubmit')" 2>/dev/null; then
+    echo "  ✓ Verified: Claude Code UserPromptSubmit hook registered"
+  else
+    echo "  ⚠️  Claude Code settings.json exists but hook not registered"
+    echo "     Contents: $(cat "$HOME/.claude/settings.json")"
+  fi
+else
+  echo "  ⚠️  ~/.claude/settings.json not found — Claude Code may not be installed"
+fi
 
 echo ""
 echo "════════════════════════════════════════"
