@@ -530,7 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup = sub.add_parser("setup", help="Install Lore hooks for a runtime")
     p_setup.add_argument(
         "runtime", nargs="?", default=None,
-        choices=["claude-code", "openclaw"],
+        choices=["claude-code", "openclaw", "cursor", "codex"],
         help="Runtime to configure",
     )
     p_setup.add_argument("--server-url", default=None, dest="server_url",
@@ -540,7 +540,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--status", action="store_true",
                          help="Show current setup status for all runtimes")
     p_setup.add_argument("--remove", default=None, metavar="RUNTIME",
-                         choices=["claude-code", "openclaw"],
+                         choices=["claude-code", "openclaw", "cursor", "codex"],
                          help="Remove hooks for a runtime")
 
     # mcp
@@ -1219,7 +1219,7 @@ def cmd_wrap(args: argparse.Namespace) -> None:
 
 def cmd_setup(args: argparse.Namespace) -> None:
     """Handle setup subcommand: install/remove hooks for runtimes."""
-    from lore.setup import remove_runtime, setup_claude_code, setup_openclaw, show_status
+    from lore.setup import remove_runtime, setup_claude_code, setup_codex, setup_cursor, setup_openclaw, show_status
 
     if args.status:
         show_status()
@@ -1242,6 +1242,10 @@ def cmd_setup(args: argparse.Namespace) -> None:
         setup_claude_code(server_url=server_url, api_key=api_key)
     elif args.runtime == "openclaw":
         setup_openclaw(server_url=server_url, api_key=api_key)
+    elif args.runtime == "cursor":
+        setup_cursor(server_url=server_url, api_key=api_key)
+    elif args.runtime == "codex":
+        setup_codex(server_url=server_url, api_key=api_key)
 
 
 def cmd_mcp(args: argparse.Namespace) -> None:

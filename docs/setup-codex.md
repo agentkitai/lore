@@ -50,6 +50,8 @@ pip install lore-sdk
 lore serve  # starts on port 8765
 ```
 
+> **Automated setup:** `lore setup codex [--server-url URL] [--api-key KEY]` will perform steps 1–2 automatically.
+
 ### Verify Auto-Retrieval
 
 1. Store a memory via the API or CLI.

@@ -56,7 +56,7 @@ pip install lore-sdk
 lore serve  # starts on port 8765
 ```
 
-> **Coming soon:** `lore setup cursor` will automate steps 1–2.
+> **Automated setup:** `lore setup cursor [--server-url URL] [--api-key KEY]` will perform steps 1–2 automatically.
 
 ### Verify Auto-Retrieval
 
