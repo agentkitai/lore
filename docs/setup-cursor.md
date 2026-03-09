@@ -1,10 +1,40 @@
 # Setting Up Lore with Cursor
 
+## Quick Start (2 minutes)
+
+```bash
+pip install lore-sdk
+lore setup cursor --server-url http://localhost:8765
+lore serve  # starts on port 8765
+```
+
+That's it. Restart Cursor and every prompt will automatically include relevant memories from Lore.
+
 ## Auto-Retrieval (Recommended)
 
 Auto-retrieval injects relevant memories into every prompt **before** the agent sees it. No tool calls needed — memories just appear in context.
 
-### 1. Create the hook script
+### Automated Setup
+
+```bash
+lore setup cursor [--server-url URL] [--api-key KEY]
+```
+
+This creates the hook script at `.cursor/hooks/lore-retrieve.sh` and registers it in `.cursor/hooks/config.json` with the `beforeSubmitPrompt` event. Run it in your project root.
+
+To check status or remove:
+
+```bash
+lore setup --status          # show all runtimes
+lore setup --remove cursor   # remove Cursor hooks
+```
+
+### Manual Setup (alternative)
+
+<details>
+<summary>Click to expand manual steps</summary>
+
+#### 1. Create the hook script
 
 Create `.cursor/hooks/lore-retrieve.sh` in your project root:
 
@@ -33,9 +63,9 @@ fi
 chmod +x .cursor/hooks/lore-retrieve.sh
 ```
 
-### 2. Register the hook
+#### 2. Register the hook
 
-Cursor supports `beforeSubmitPrompt` hooks. Add to `.cursor/hooks/config.json`:
+Add to `.cursor/hooks/config.json`:
 
 ```json
 {
@@ -49,14 +79,7 @@ Cursor supports `beforeSubmitPrompt` hooks. Add to `.cursor/hooks/config.json`:
 }
 ```
 
-### 3. Start the Lore server
-
-```bash
-pip install lore-sdk
-lore serve  # starts on port 8765
-```
-
-> **Automated setup:** `lore setup cursor [--server-url URL] [--api-key KEY]` will perform steps 1–2 automatically.
+</details>
 
 ### Verify Auto-Retrieval
 

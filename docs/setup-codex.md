@@ -1,10 +1,40 @@
 # Setting Up Lore with Codex CLI
 
+## Quick Start (2 minutes)
+
+```bash
+pip install lore-sdk
+lore setup codex --server-url http://localhost:8765
+lore serve  # starts on port 8765
+```
+
+That's it. Every Codex prompt will automatically include relevant memories from Lore.
+
 ## Auto-Retrieval (Recommended)
 
 Auto-retrieval injects relevant memories into every prompt **before** the agent sees it. No tool calls needed — memories just appear in context.
 
-### 1. Create the hook script
+### Automated Setup
+
+```bash
+lore setup codex [--server-url URL] [--api-key KEY]
+```
+
+This creates the hook script at `~/.codex/hooks/lore-retrieve.sh` (global) and adds a `hooks.beforePlan` entry to `codex.yaml` in the current directory. The hook script is global, but you need to register it per-project in `codex.yaml`.
+
+To check status or remove:
+
+```bash
+lore setup --status         # show all runtimes
+lore setup --remove codex   # remove Codex hooks
+```
+
+### Manual Setup (alternative)
+
+<details>
+<summary>Click to expand manual steps</summary>
+
+#### 1. Create the hook script
 
 Create `~/.codex/hooks/lore-retrieve.sh`:
 
@@ -33,7 +63,7 @@ fi
 chmod +x ~/.codex/hooks/lore-retrieve.sh
 ```
 
-### 2. Register the hook
+#### 2. Register the hook
 
 Add to `codex.yaml` in your project root:
 
@@ -43,14 +73,7 @@ hooks:
     command: ~/.codex/hooks/lore-retrieve.sh
 ```
 
-### 3. Start the Lore server
-
-```bash
-pip install lore-sdk
-lore serve  # starts on port 8765
-```
-
-> **Automated setup:** `lore setup codex [--server-url URL] [--api-key KEY]` will perform steps 1–2 automatically.
+</details>
 
 ### Verify Auto-Retrieval
 
