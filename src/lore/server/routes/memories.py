@@ -92,15 +92,8 @@ async def _enrich_memory(memory_id: str, content: str, context: str | None) -> N
         if result is None:
             return
 
-        # Store enrichment result in memory meta
-        enrichment_data = {
-            "topics": result.topics,
-            "sentiment": {"label": result.sentiment.label, "score": result.sentiment.score} if result.sentiment else None,
-            "entities": [{"name": e.name, "type": e.type} for e in (result.entities or [])],
-            "categories": result.categories,
-            "enriched_at": datetime.now(timezone.utc).isoformat(),
-            "enrichment_model": model,
-        }
+        # pipeline.enrich() returns a dict with enrichment data
+        enrichment_data = result
 
         pool = await get_pool()
         async with pool.acquire() as conn:
@@ -112,6 +105,24 @@ async def _enrich_memory(memory_id: str, content: str, context: str | None) -> N
                 memory_id,
                 json.dumps(enrichment_data),
             )
+
+        # Generate embeddings for semantic retrieval
+        try:
+            from lore.embed import LocalEmbedder
+
+            embedder = LocalEmbedder()
+            embedding_vector = await asyncio.to_thread(embedder.embed, content)
+
+            async with pool.acquire() as embed_conn:
+                await embed_conn.execute(
+                    """UPDATE memories SET embedding = $2::vector WHERE id = $1""",
+                    memory_id,
+                    json.dumps(embedding_vector),
+                )
+            logger.info("Generated embedding for memory %s", memory_id)
+        except Exception as e:
+            logger.warning("Failed to generate embedding for memory %s: %s", memory_id, e)
+
         logger.info("Enrichment complete for memory %s", memory_id)
     except Exception:
         logger.exception("Enrichment failed for memory %s", memory_id)
