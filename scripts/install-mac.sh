@@ -101,7 +101,17 @@ else
   createdb lore
 fi
 
-psql lore -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>/dev/null
+echo "Enabling pgvector extension..."
+if ! psql lore -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>&1; then
+  echo "❌ Failed to create vector extension. Trying with superuser..."
+  if ! psql lore -c "CREATE EXTENSION IF NOT EXISTS vector;" -U postgres 2>&1; then
+    echo "❌ pgvector extension failed. You may need to:"
+    echo "   1. Verify pgvector is installed: ls $(pg_config --pkglibdir)/vector.so"
+    echo "   2. Restart Postgres: brew services restart postgresql@$PG_VERSION"
+    echo "   3. Try: psql lore -c 'CREATE EXTENSION vector;'"
+    exit 1
+  fi
+fi
 echo "✅ pgvector extension enabled"
 
 # ── 5. Python + Lore ──────────────────────────────────────────────
@@ -120,7 +130,7 @@ if [ "$USE_MAX_PROXY" = true ]; then
   if ! command -v node &>/dev/null; then
     brew install node
   fi
-  npm install -g claude-max-api-proxy 2>/dev/null
+  npm install -g claude-max-api-proxy
 
   # Find the binary (npm global bin might not be in PATH)
   MAX_PROXY_BIN=$(npm bin -g 2>/dev/null)/claude-max-api-proxy
