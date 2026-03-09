@@ -69,16 +69,21 @@ PG_CONFIG="$(brew --prefix "postgresql@$PG_VERSION")/bin/pg_config"
 export PATH="$(brew --prefix "postgresql@$PG_VERSION")/bin:$PATH"
 
 # ── 3. pgvector ────────────────────────────────────────────────────
-if psql postgres -c "SELECT 1 FROM pg_available_extensions WHERE name='vector'" -t 2>/dev/null | grep -q 1; then
-  echo "✅ pgvector already available"
+PG_SHAREDIR="$($PG_CONFIG --sharedir)"
+PG_PKGLIBDIR="$($PG_CONFIG --pkglibdir)"
+VECTOR_CONTROL="$PG_SHAREDIR/extension/vector.control"
+
+if [ -f "$VECTOR_CONTROL" ]; then
+  echo "✅ pgvector already installed (found $VECTOR_CONTROL)"
 else
-  echo "📦 Installing pgvector..."
+  echo "📦 Installing pgvector for PostgreSQL $PG_VERSION..."
+
   # Try Homebrew first
-  if brew install pgvector 2>/dev/null; then
-    echo "✅ pgvector installed via Homebrew"
-  else
-    # Build from source
-    echo "   Building from source..."
+  brew install pgvector 2>&1 || true
+
+  # Check if Homebrew put it in the right place
+  if [ ! -f "$VECTOR_CONTROL" ]; then
+    echo "  Homebrew pgvector didn't target PostgreSQL $PG_VERSION, building from source..."
     TMPDIR=$(mktemp -d)
     git clone --branch v0.8.0 --depth 1 https://github.com/pgvector/pgvector.git "$TMPDIR/pgvector"
     cd "$TMPDIR/pgvector"
@@ -86,8 +91,16 @@ else
     make install PG_CONFIG="$PG_CONFIG"
     cd -
     rm -rf "$TMPDIR"
-    echo "✅ pgvector built and installed"
   fi
+
+  # Final verify
+  if [ -f "$VECTOR_CONTROL" ]; then
+    echo "✅ pgvector installed for PostgreSQL $PG_VERSION"
+  else
+    echo "❌ pgvector installation failed. Expected: $VECTOR_CONTROL"
+    exit 1
+  fi
+
   # Restart Postgres to pick up the extension
   brew services restart "postgresql@$PG_VERSION"
   sleep 2
