@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -227,9 +228,78 @@ async def retrieve(
 
     elapsed_ms = round((time.monotonic() - start) * 1000, 2)
 
+    # Fire-and-forget: record analytics event and update Prometheus metrics
+    asyncio.create_task(_record_retrieval_event(
+        auth=auth,
+        query_text=query,
+        memories=memories,
+        min_score=min_score,
+        elapsed_ms=elapsed_ms,
+        fmt=format,
+        effective_project=effective_project,
+    ))
+
     return RetrieveResponse(
         memories=memories,
         formatted=formatted,
         count=len(memories),
         query_time_ms=elapsed_ms,
     )
+
+
+async def _record_retrieval_event(
+    *,
+    auth: AuthContext,
+    query_text: str,
+    memories: List[RetrieveMemory],
+    min_score: float,
+    elapsed_ms: float,
+    fmt: str,
+    effective_project: Optional[str],
+) -> None:
+    """Insert a retrieval_events row and update Prometheus metrics (fire-and-forget)."""
+    try:
+        from lore.server.metrics import (
+            retrieve_queries_total,
+            retrieve_results_total,
+            retrieve_empty_total,
+            retrieve_latency,
+            retrieve_max_score,
+        )
+
+        # Prometheus metrics
+        retrieve_queries_total.inc()
+        retrieve_results_total.inc(amount=float(len(memories)))
+        if not memories:
+            retrieve_empty_total.inc()
+        retrieve_latency.observe(elapsed_ms / 1000.0)
+
+        scores = [m.score for m in memories]
+        max_sc = max(scores) if scores else 0.0
+        if scores:
+            retrieve_max_score.observe(max_sc)
+
+        avg_sc = sum(scores) / len(scores) if scores else None
+        memory_ids = [m.id for m in memories]
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO retrieval_events
+                   (org_id, query, results_count, scores, avg_score, max_score,
+                    min_score_threshold, query_time_ms, project, format, memory_ids)
+                   VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11::jsonb)""",
+                auth.org_id,
+                query_text,
+                len(memories),
+                json.dumps(scores),
+                avg_sc,
+                max_sc if scores else None,
+                min_score,
+                elapsed_ms,
+                effective_project,
+                fmt,
+                json.dumps(memory_ids),
+            )
+    except Exception:
+        logger.warning("Failed to record retrieval event", exc_info=True)

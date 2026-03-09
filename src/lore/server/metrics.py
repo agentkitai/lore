@@ -110,6 +110,17 @@ vector_search_latency = _Histogram("lore_vector_search_latency_seconds", "Vector
 db_pool_size = _Gauge("lore_db_pool_size", "DB connection pool size")
 db_pool_available = _Gauge("lore_db_pool_available", "DB connections available in pool")
 
+# ── Retrieval Metrics ─────────────────────────────────────────────
+
+retrieve_queries_total = _Counter("lore_retrieve_queries_total", "Total retrieve queries")
+retrieve_results_total = _Counter("lore_retrieve_results_total", "Total individual memories returned by retrieve")
+retrieve_empty_total = _Counter("lore_retrieve_empty_total", "Retrieve queries returning 0 results")
+retrieve_latency = _Histogram("lore_retrieve_latency_seconds", "Retrieve endpoint latency")
+retrieve_max_score = _Histogram(
+    "lore_retrieve_max_score", "Max score per retrieve query",
+    buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, float("inf")),
+)
+
 # ── HTTP RED Metrics ───────────────────────────────────────────────
 
 http_requests_total = _Counter("http_requests_total", "Total HTTP requests", ["method", "path", "status"])
@@ -122,6 +133,11 @@ ALL_METRICS = [
     recall_queries_total,
     embedding_latency,
     vector_search_latency,
+    retrieve_queries_total,
+    retrieve_results_total,
+    retrieve_empty_total,
+    retrieve_latency,
+    retrieve_max_score,
     db_pool_size,
     db_pool_available,
     http_requests_total,
