@@ -543,6 +543,11 @@ def build_parser() -> argparse.ArgumentParser:
                          choices=["claude-code", "openclaw", "cursor", "codex"],
                          help="Remove hooks for a runtime")
 
+    # serve
+    p_serve = sub.add_parser("serve", help="Start Lore HTTP server")
+    p_serve.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    p_serve.add_argument("--port", type=int, default=None, help="Port (default: $LORE_PORT or 8765)")
+
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
@@ -1248,6 +1253,22 @@ def cmd_setup(args: argparse.Namespace) -> None:
         setup_codex(server_url=server_url, api_key=api_key)
 
 
+def cmd_serve(args: argparse.Namespace) -> None:
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            "Error: Server dependencies not installed.\n"
+            "Install with: pip install lore-sdk[server]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    port = args.port or int(os.environ.get("LORE_PORT", "8765"))
+    host = args.host
+    print(f"🧠 Starting Lore server on {host}:{port}")
+    uvicorn.run("lore.server.app:app", host=host, port=port)
+
+
 def cmd_mcp(args: argparse.Namespace) -> None:
     try:
         from lore.mcp.server import run_server
@@ -1306,6 +1327,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "add-conversation": cmd_add_conversation,
         "wrap": cmd_wrap,
         "setup": cmd_setup,
+        "serve": cmd_serve,
         "mcp": cmd_mcp,
     }
     handlers[args.command](args)
