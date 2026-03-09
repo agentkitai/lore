@@ -290,16 +290,17 @@ fi
 echo ""
 echo "📎 Setting up agent hooks..."
 
-if command -v claude &>/dev/null; then
-  lore setup claude-code --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" 2>/dev/null && \
-    echo "  ✅ Claude Code hook installed" || echo "  ⚠️  Claude Code setup failed (run manually)"
-fi
+# Always install Claude Code hook (hook script is standalone, doesn't need claude binary)
+lore setup claude-code --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" 2>/dev/null && \
+  echo "  ✅ Claude Code hook installed" || echo "  ⚠️  Claude Code setup failed"
 
-# Cursor (only if .cursor exists in home or common project dirs)
-if [ -d "$HOME/.cursor" ] || [ -d ".cursor" ]; then
-  lore setup cursor --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" 2>/dev/null && \
-    echo "  ✅ Cursor hook installed" || echo "  ⚠️  Cursor setup failed (run manually)"
-fi
+# Always install Codex hook
+lore setup codex --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" 2>/dev/null && \
+  echo "  ✅ Codex CLI hook installed" || echo "  ⚠️  Codex setup failed"
+
+# Cursor is project-level, install in cwd if it looks like a project
+lore setup cursor --server-url "http://localhost:$LORE_PORT" --api-key "$LORE_API_KEY" 2>/dev/null && \
+  echo "  ✅ Cursor hook installed" || echo "  ⚠️  Cursor setup failed (run 'lore setup cursor' in your project dir)"
 
 echo ""
 echo "════════════════════════════════════════"
