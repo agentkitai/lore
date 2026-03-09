@@ -127,26 +127,32 @@ if ! psql lore -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>&1; then
 fi
 echo "✅ pgvector extension enabled"
 
-# ── 5. Python + Lore ──────────────────────────────────────────────
-if ! command -v python3 &>/dev/null; then
-  echo "📦 Installing Python..."
+# ── 5. Python 3.10+ + Lore ────────────────────────────────────────
+# Lore requires Python >=3.10. macOS ships 3.9 which silently installs ancient versions.
+PY_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "0.0")
+echo "  System Python: $PY_VERSION"
+
+if python3 -c "import sys; assert sys.version_info >= (3, 10)" 2>/dev/null; then
+  PY_BIN="python3"
+  PIP_BIN="pip3"
+else
+  echo "⚠️  Python $PY_VERSION is too old (need 3.10+). Installing Python 3.12 via Homebrew..."
   brew install python@3.12
+  PY_BIN="$(brew --prefix python@3.12)/bin/python3.12"
+  PIP_BIN="$PY_BIN -m pip"
+  echo "  Using: $PY_BIN ($(${PY_BIN} --version))"
 fi
 
 echo "📦 Installing Lore SDK..."
-pip3 install --upgrade --quiet "lore-sdk[server,enrichment]"
-LORE_VERSION=$(pip3 show lore-sdk 2>/dev/null | grep Version | cut -d' ' -f2)
-if [ -z "$LORE_VERSION" ]; then
-  echo "❌ lore-sdk failed to install. Trying with --break-system-packages..."
-  pip3 install --upgrade --break-system-packages "lore-sdk[server,enrichment]"
-  LORE_VERSION=$(pip3 show lore-sdk 2>/dev/null | grep Version | cut -d' ' -f2)
-fi
-echo "✅ Lore SDK installed (v$LORE_VERSION)"
-if python3 -c "from packaging.version import Version; assert Version('$LORE_VERSION') >= Version('0.9.0')" 2>/dev/null; then
-  true
-else
-  echo "⚠️  Installed v$LORE_VERSION but v0.9.0+ required for enrichment + hooks."
-  echo "   Try: pip3 install --upgrade --force-reinstall 'lore-sdk[server,enrichment]'"
+$PIP_BIN install --upgrade "lore-sdk[server,enrichment]"
+LORE_VERSION=$($PY_BIN -c "import importlib.metadata; print(importlib.metadata.version('lore-sdk'))" 2>/dev/null || echo "unknown")
+echo "✅ Lore SDK v$LORE_VERSION installed"
+
+if [ "$LORE_VERSION" = "unknown" ] || $PY_BIN -c "from packaging.version import Version; assert Version('$LORE_VERSION') < Version('0.9.0')" 2>/dev/null; then
+  echo "❌ Failed to install lore-sdk >= 0.9.0 (got $LORE_VERSION)"
+  echo "   This usually means pip resolved an old version."
+  echo "   Debug: $PIP_BIN install --upgrade --verbose 'lore-sdk[server,enrichment]'"
+  exit 1
 fi
 
 # ── 6. Claude Max Proxy (optional) ────────────────────────────────
@@ -261,7 +267,32 @@ PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST_FILE="$PLIST_DIR/com.lore.server.plist"
 mkdir -p "$PLIST_DIR"
 
-LORE_BIN=$(command -v lore || echo "$(python3 -c 'import site; print(site.USER_BASE)')/bin/lore")
+# Find lore binary installed by the correct Python
+LORE_BIN=$(command -v lore 2>/dev/null || echo "")
+if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
+  LORE_BIN=$($PY_BIN -c "import site; print(site.USER_BASE + '/bin/lore')" 2>/dev/null || echo "")
+fi
+if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
+  for candidate in \
+    "$($PY_BIN -m site --user-base 2>/dev/null)/bin/lore" \
+    "$(brew --prefix python@3.12 2>/dev/null)/bin/lore" \
+    "/opt/homebrew/bin/lore" \
+    "/usr/local/bin/lore" \
+    "$HOME/.local/bin/lore"; do
+    if [ -f "$candidate" ]; then
+      LORE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
+  echo "⚠️  lore binary not found, using '$PY_BIN -m lore' for LaunchAgent"
+  LORE_BIN="$PY_BIN"
+  LORE_SERVE_ARGS=("-m" "lore" "serve" "--port" "$LORE_PORT")
+else
+  echo "  Lore binary: $LORE_BIN"
+  LORE_SERVE_ARGS=("serve" "--port" "$LORE_PORT")
+fi
 
 cat > "$PLIST_FILE" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -272,10 +303,9 @@ cat > "$PLIST_FILE" <<EOF
     <string>com.lore.server</string>
     <key>ProgramArguments</key>
     <array>
-        <string>$LORE_BIN</string>
-        <string>serve</string>
-        <string>--port</string>
-        <string>$LORE_PORT</string>
+$(for arg in "$LORE_BIN" "${LORE_SERVE_ARGS[@]}"; do
+    echo "        <string>$arg</string>"
+done)
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -325,30 +355,13 @@ fi
 echo ""
 echo "📎 Setting up agent hooks..."
 
-# Find the lore binary (pip may install to different locations on Mac)
-LORE_BIN=$(command -v lore 2>/dev/null || python3 -c "import site; print(site.USER_BASE + '/bin/lore')" 2>/dev/null || echo "")
-if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
-  # Try common pip install locations
-  for candidate in \
-    "$(python3 -m site --user-base 2>/dev/null)/bin/lore" \
-    "/usr/local/bin/lore" \
-    "$HOME/.local/bin/lore" \
-    "$HOME/Library/Python/3.12/bin/lore" \
-    "$HOME/Library/Python/3.11/bin/lore" \
-    "$HOME/Library/Python/3.10/bin/lore"; do
-    if [ -f "$candidate" ]; then
-      LORE_BIN="$candidate"
-      break
-    fi
-  done
-fi
-
-if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
-  echo "  ⚠️  'lore' binary not found in PATH. Falling back to python3 -m lore"
-  LORE_CMD="python3 -m lore"
-else
-  echo "  Using: $LORE_BIN"
+# Reuse LORE_BIN from step 8, or fall back to python module
+if [ -n "$LORE_BIN" ] && [ -f "$LORE_BIN" ] && [ "$LORE_BIN" != "$PY_BIN" ]; then
   LORE_CMD="$LORE_BIN"
+  echo "  Using: $LORE_CMD"
+else
+  LORE_CMD="$PY_BIN -m lore"
+  echo "  Using: $LORE_CMD"
 fi
 
 # Claude Code hook
@@ -368,7 +381,7 @@ $LORE_CMD setup cursor --server-url "http://localhost:$LORE_PORT" --api-key "$LO
 
 # Verify Claude Code hook specifically
 if [ -f "$HOME/.claude/settings.json" ]; then
-  if python3 -c "import json; s=json.load(open('$HOME/.claude/settings.json')); assert s.get('hooks',{}).get('UserPromptSubmit')" 2>/dev/null; then
+  if $PY_BIN -c "import json; s=json.load(open('$HOME/.claude/settings.json')); assert s.get('hooks',{}).get('UserPromptSubmit')" 2>/dev/null; then
     echo "  ✓ Verified: Claude Code UserPromptSubmit hook registered"
   else
     echo "  ⚠️  Claude Code settings.json exists but hook not registered"
