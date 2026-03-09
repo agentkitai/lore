@@ -285,13 +285,22 @@ if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
     fi
   done
 fi
+
+# Build ProgramArguments as a plain string (arrays don't survive heredoc subshells)
 if [ -z "$LORE_BIN" ] || [ ! -f "$LORE_BIN" ]; then
   echo "⚠️  lore binary not found, using '$PY_BIN -m lore' for LaunchAgent"
-  LORE_BIN="$PY_BIN"
-  LORE_SERVE_ARGS=("-m" "lore" "serve" "--port" "$LORE_PORT")
+  PLIST_ARGS="        <string>$PY_BIN</string>
+        <string>-m</string>
+        <string>lore</string>
+        <string>serve</string>
+        <string>--port</string>
+        <string>$LORE_PORT</string>"
 else
   echo "  Lore binary: $LORE_BIN"
-  LORE_SERVE_ARGS=("serve" "--port" "$LORE_PORT")
+  PLIST_ARGS="        <string>$LORE_BIN</string>
+        <string>serve</string>
+        <string>--port</string>
+        <string>$LORE_PORT</string>"
 fi
 
 cat > "$PLIST_FILE" <<EOF
@@ -303,9 +312,7 @@ cat > "$PLIST_FILE" <<EOF
     <string>com.lore.server</string>
     <key>ProgramArguments</key>
     <array>
-$(for arg in "$LORE_BIN" "${LORE_SERVE_ARGS[@]}"; do
-    echo "        <string>$arg</string>"
-done)
+$PLIST_ARGS
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -327,14 +334,19 @@ done < "$LORE_ENV")
 </plist>
 EOF
 
+# Verify plist
+echo "  LaunchAgent plist:"
+grep -A 2 "ProgramArguments" "$PLIST_FILE" | head -5
+echo "  ..."
+
 # Load (or reload) the service
 launchctl unload "$PLIST_FILE" 2>/dev/null || true
 launchctl load "$PLIST_FILE"
-echo "✅ Lore server started (auto-starts on login)"
+echo "✅ Lore server LaunchAgent loaded"
 
 # ── 9. Wait for server to be ready ───────────────────────────────
 echo -n "⏳ Waiting for server..."
-for i in $(seq 1 15); do
+for i in $(seq 1 20); do
   if curl -sf "http://localhost:$LORE_PORT/health" &>/dev/null; then
     echo " ready!"
     break
@@ -345,8 +357,27 @@ done
 
 if ! curl -sf "http://localhost:$LORE_PORT/health" &>/dev/null; then
   echo ""
-  echo "⚠️  Server didn't start. Check logs: tail -f /tmp/lore-server.log"
-  echo "   You can start manually: source ~/.lore/env && lore serve"
+  echo "❌ Server didn't start after 20s. Diagnosing..."
+  echo ""
+  echo "  Log output:"
+  tail -20 /tmp/lore-server.log 2>/dev/null || echo "  (no log file)"
+  echo ""
+  echo "  LaunchAgent plist contents:"
+  cat "$PLIST_FILE"
+  echo ""
+  echo "  Trying to start manually to see the error:"
+  source "$LORE_ENV" 2>/dev/null
+  timeout 5 $LORE_BIN serve --port $LORE_PORT 2>&1 || $PY_BIN -m lore serve --port $LORE_PORT 2>&1 &
+  MANUAL_PID=$!
+  sleep 3
+  if curl -sf "http://localhost:$LORE_PORT/health" &>/dev/null; then
+    echo "  ✅ Manual start worked! Killing manual process, fixing LaunchAgent..."
+    kill $MANUAL_PID 2>/dev/null
+  else
+    kill $MANUAL_PID 2>/dev/null
+    echo "  ❌ Manual start also failed. Check errors above."
+    exit 1
+  fi
 else
   echo "✅ Server healthy at http://localhost:$LORE_PORT"
 fi
