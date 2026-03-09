@@ -1,0 +1,25 @@
+src/lore/server/routes/memories.py
+  ffccac539aabc52f 95-96,108-125
+src/lore/setup.py
+  ffccac539aabc52f 23,26-31,45-66,271,275-277,279-286,291-299,430,432-439,501,505-512
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.8",
+  "base_commit_sha": "1430aea4eccff27480a048191b033eec82846ac3",
+  "prompts": {
+    "ffccac539aabc52f": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "635d74af-8e78-4824-95c5-910be4d80bcd",
+        "model": "claude-sonnet-4-5-20250929"
+      },
+      "human_author": "Amit Paz <amit.p@mstone.ai>",
+      "messages": [],
+      "total_additions": 94,
+      "total_deletions": 24,
+      "accepted_lines": 89,
+      "overriden_lines": 0
+    }
+  }
+}
