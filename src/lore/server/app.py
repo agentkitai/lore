@@ -30,13 +30,13 @@ from lore.server.config import settings
 from lore.server.db import close_pool, get_pool, init_pool, run_migrations
 from lore.server.logging_config import setup_logging
 from lore.server.middleware import install_middleware
+from lore.server.routes.analytics import router as analytics_router
 from lore.server.routes.conversations import router as conversations_router
 from lore.server.routes.ingest import router as ingest_router
 from lore.server.routes.keys import router as keys_router
 from lore.server.routes.lessons import router as lessons_router
 from lore.server.routes.memories import router as memories_router
 from lore.server.routes.retrieve import router as retrieve_router
-from lore.server.routes.analytics import router as analytics_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
 
