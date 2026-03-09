@@ -260,11 +260,11 @@ async def _record_retrieval_event(
     """Insert a retrieval_events row and update Prometheus metrics (fire-and-forget)."""
     try:
         from lore.server.metrics import (
-            retrieve_queries_total,
-            retrieve_results_total,
             retrieve_empty_total,
             retrieve_latency,
             retrieve_max_score,
+            retrieve_queries_total,
+            retrieve_results_total,
         )
 
         # Prometheus metrics

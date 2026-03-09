@@ -182,12 +182,12 @@ class TestPrometheusMetrics:
 
     def test_retrieve_metrics_exist(self):
         from lore.server.metrics import (
-            retrieve_queries_total,
-            retrieve_results_total,
+            ALL_METRICS,
             retrieve_empty_total,
             retrieve_latency,
             retrieve_max_score,
-            ALL_METRICS,
+            retrieve_queries_total,
+            retrieve_results_total,
         )
 
         assert retrieve_queries_total is not None
