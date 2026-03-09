@@ -2,6 +2,7 @@
 # Lore — Full Mac Install (Postgres + pgvector + enrichment pipeline)
 # Usage: curl -sSL <url> | bash
 #    or: bash install-mac.sh [--api-key YOUR_KEY] [--llm-provider anthropic|openai] [--llm-key sk-...]
+#    or: bash install-mac.sh --max-proxy    (uses Claude Max subscription, zero cost)
 set -euo pipefail
 
 # ── Defaults ───────────────────────────────────────────────────────
@@ -9,7 +10,9 @@ LORE_PORT=8765
 LORE_API_KEY="${LORE_API_KEY:-lore_$(openssl rand -hex 16)}"
 LLM_PROVIDER="${LORE_LLM_PROVIDER:-}"
 LLM_KEY=""
-ENRICHMENT_MODEL="claude-haiku-4"
+ENRICHMENT_MODEL="claude-haiku-4-5"
+USE_MAX_PROXY=false
+MAX_PROXY_PORT=3456
 
 # ── Parse args ─────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -19,6 +22,7 @@ while [[ $# -gt 0 ]]; do
     --llm-key)    LLM_KEY="$2"; shift 2 ;;
     --model)      ENRICHMENT_MODEL="$2"; shift 2 ;;
     --port)       LORE_PORT="$2"; shift 2 ;;
+    --max-proxy)  USE_MAX_PROXY=true; shift ;;
     *) echo "Unknown arg: $1"; exit 1 ;;
   esac
 done
@@ -110,7 +114,76 @@ echo "📦 Installing Lore SDK..."
 pip3 install --quiet "lore-sdk[server,enrichment]"
 echo "✅ Lore SDK installed ($(pip3 show lore-sdk 2>/dev/null | grep Version | cut -d' ' -f2))"
 
-# ── 6. Environment file ──────────────────────────────────────────
+# ── 6. Claude Max Proxy (optional) ────────────────────────────────
+if [ "$USE_MAX_PROXY" = true ]; then
+  echo "📦 Installing Claude Max API Proxy..."
+  if ! command -v node &>/dev/null; then
+    brew install node
+  fi
+  npm install -g claude-max-api-proxy 2>/dev/null
+
+  # Find the binary (npm global bin might not be in PATH)
+  MAX_PROXY_BIN=$(npm bin -g 2>/dev/null)/claude-max-api-proxy
+  if [ ! -f "$MAX_PROXY_BIN" ]; then
+    MAX_PROXY_BIN=$(npm prefix -g)/bin/claude-max-api-proxy
+  fi
+
+  # Ensure npm global bin is in PATH
+  NPM_BIN_DIR=$(npm prefix -g)/bin
+  if ! echo "$PATH" | grep -q "$NPM_BIN_DIR"; then
+    SHELL_RC="$HOME/.zshrc"
+    [ -f "$HOME/.bashrc" ] && [ ! -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.bashrc"
+    if ! grep -q "npm prefix" "$SHELL_RC" 2>/dev/null; then
+      echo 'export PATH="$(npm prefix -g)/bin:$PATH"' >> "$SHELL_RC"
+      echo "  Added npm bin to PATH in $SHELL_RC"
+    fi
+    export PATH="$NPM_BIN_DIR:$PATH"
+  fi
+
+  # Create LaunchAgent for the proxy
+  PROXY_PLIST="$HOME/Library/LaunchAgents/com.claude-max-api-proxy.plist"
+  cat > "$PROXY_PLIST" <<PXML
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude-max-api-proxy</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$MAX_PROXY_BIN</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/claude-max-proxy.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/claude-max-proxy.log</string>
+</dict>
+</plist>
+PXML
+  launchctl unload "$PROXY_PLIST" 2>/dev/null || true
+  launchctl load "$PROXY_PLIST"
+
+  # Wait for proxy to start
+  echo -n "⏳ Waiting for Max proxy..."
+  for i in $(seq 1 10); do
+    if curl -sf "http://localhost:$MAX_PROXY_PORT/v1/models" &>/dev/null; then
+      echo " ready!"
+      break
+    fi
+    sleep 1
+    echo -n "."
+  done
+  echo "✅ Claude Max API Proxy running on port $MAX_PROXY_PORT"
+
+  # Set LLM provider to route through proxy
+  LLM_PROVIDER="openai"
+fi
+
+# ── 7. Environment file ──────────────────────────────────────────
 LORE_ENV="$HOME/.lore/env"
 mkdir -p "$HOME/.lore"
 
@@ -137,7 +210,9 @@ if [ -n "$LLM_PROVIDER" ]; then
 LORE_LLM_PROVIDER=$LLM_PROVIDER
 LORE_ENRICHMENT_MODEL=$ENRICHMENT_MODEL
 EOF
-  if [ "$LLM_PROVIDER" = "anthropic" ] && [ -n "$LLM_KEY" ]; then
+  if [ "$USE_MAX_PROXY" = true ]; then
+    echo "OPENAI_API_BASE=http://localhost:$MAX_PROXY_PORT/v1" >> "$LORE_ENV"
+  elif [ "$LLM_PROVIDER" = "anthropic" ] && [ -n "$LLM_KEY" ]; then
     echo "ANTHROPIC_API_KEY=$LLM_KEY" >> "$LORE_ENV"
   elif [ "$LLM_PROVIDER" = "openai" ] && [ -n "$LLM_KEY" ]; then
     echo "OPENAI_API_KEY=$LLM_KEY" >> "$LORE_ENV"
@@ -146,7 +221,7 @@ fi
 
 echo "✅ Config saved to $LORE_ENV"
 
-# ── 7. LaunchAgent (auto-start on login) ──────────────────────────
+# ── 8. LaunchAgent (auto-start on login) ──────────────────────────
 PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST_FILE="$PLIST_DIR/com.lore.server.plist"
 mkdir -p "$PLIST_DIR"
@@ -192,7 +267,7 @@ launchctl unload "$PLIST_FILE" 2>/dev/null || true
 launchctl load "$PLIST_FILE"
 echo "✅ Lore server started (auto-starts on login)"
 
-# ── 8. Wait for server to be ready ───────────────────────────────
+# ── 9. Wait for server to be ready ───────────────────────────────
 echo -n "⏳ Waiting for server..."
 for i in $(seq 1 15); do
   if curl -sf "http://localhost:$LORE_PORT/health" &>/dev/null; then
@@ -211,7 +286,7 @@ else
   echo "✅ Server healthy at http://localhost:$LORE_PORT"
 fi
 
-# ── 9. Setup agent hooks ─────────────────────────────────────────
+# ── 10. Setup agent hooks ────────────────────────────────────────
 echo ""
 echo "📎 Setting up agent hooks..."
 
@@ -242,9 +317,13 @@ echo "  lore setup claude-code --server-url http://localhost:$LORE_PORT --api-ke
 echo "  lore setup cursor     --server-url http://localhost:$LORE_PORT --api-key $LORE_API_KEY"
 echo "  lore setup codex      --server-url http://localhost:$LORE_PORT --api-key $LORE_API_KEY"
 echo ""
-if [ -z "$LLM_PROVIDER" ]; then
+if [ "$USE_MAX_PROXY" = true ]; then
+  echo "  Max Proxy: http://localhost:$MAX_PROXY_PORT (LaunchAgent)"
+  echo "  Proxy Log: /tmp/claude-max-proxy.log"
+  echo ""
+elif [ -z "$LLM_PROVIDER" ]; then
   echo "⚠️  No LLM provider configured. Enrichment will skip LLM features."
-  echo "   Add to ~/.lore/env:"
+  echo "   Re-run with --max-proxy (free, uses Max sub) or add manually:"
   echo "   LORE_LLM_PROVIDER=anthropic"
   echo "   ANTHROPIC_API_KEY=sk-ant-..."
   echo "   Then: launchctl unload ~/Library/LaunchAgents/com.lore.server.plist"
