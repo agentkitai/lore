@@ -134,8 +134,20 @@ if ! command -v python3 &>/dev/null; then
 fi
 
 echo "📦 Installing Lore SDK..."
-pip3 install --quiet "lore-sdk[server,enrichment]"
-echo "✅ Lore SDK installed ($(pip3 show lore-sdk 2>/dev/null | grep Version | cut -d' ' -f2))"
+pip3 install --upgrade --quiet "lore-sdk[server,enrichment]"
+LORE_VERSION=$(pip3 show lore-sdk 2>/dev/null | grep Version | cut -d' ' -f2)
+if [ -z "$LORE_VERSION" ]; then
+  echo "❌ lore-sdk failed to install. Trying with --break-system-packages..."
+  pip3 install --upgrade --break-system-packages "lore-sdk[server,enrichment]"
+  LORE_VERSION=$(pip3 show lore-sdk 2>/dev/null | grep Version | cut -d' ' -f2)
+fi
+echo "✅ Lore SDK installed (v$LORE_VERSION)"
+if python3 -c "from packaging.version import Version; assert Version('$LORE_VERSION') >= Version('0.9.0')" 2>/dev/null; then
+  true
+else
+  echo "⚠️  Installed v$LORE_VERSION but v0.9.0+ required for enrichment + hooks."
+  echo "   Try: pip3 install --upgrade --force-reinstall 'lore-sdk[server,enrichment]'"
+fi
 
 # ── 6. Claude Max Proxy (optional) ────────────────────────────────
 if [ "$USE_MAX_PROXY" = true ]; then
