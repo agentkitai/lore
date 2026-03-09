@@ -20,9 +20,15 @@ set -euo pipefail
 LORE_SERVER_URL="${{LORE_API_URL:-{server_url}}}"
 LORE_KEY="${{LORE_API_KEY:-{api_key}}}"
 
-# Read the user's message from stdin (hook receives JSON with user_message)
+# Read the user's message from stdin
 INPUT=$(cat)
-USER_MSG=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('user_message',''))" 2>/dev/null || echo "")
+
+# Claude Code sends "prompt" in hook input JSON
+USER_MSG=$(echo "$INPUT" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print(d.get('prompt', '') or d.get('user_message', ''))
+" 2>/dev/null || echo "")
 
 if [ -z "$USER_MSG" ] || [ "${{#USER_MSG}}" -lt 10 ]; then
     exit 0
@@ -36,7 +42,28 @@ RESULT=$(curl -sf -H "Authorization: Bearer $LORE_KEY" \\
 FORMATTED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('formatted',''))" 2>/dev/null || echo "")
 
 if [ -n "$FORMATTED" ]; then
-    echo "$FORMATTED"
+    # Escape for JSON embedding
+    escape_for_json() {{
+        local s="$1"
+        s="${{s//\\\\/\\\\\\\\}}"
+        s="${{s//\\"/\\\\\\"}}"
+        s="${{s//\\$'\\n'/\\\\n}}"
+        s="${{s//\\$'\\r'/\\\\r}}"
+        s="${{s//\\$'\\t'/\\\\t}}"
+        printf '%s' "$s"
+    }}
+
+    ESCAPED=$(escape_for_json "$FORMATTED")
+
+    # Return JSON with hookSpecificOutput for Claude Code context injection
+    cat <<EOF
+{{
+  "hookSpecificOutput": {{
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "${{ESCAPED}}"
+  }}
+}}
+EOF
 fi
 """
 
@@ -241,22 +268,35 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Add or update the hook entry
+    # Add or update the hook entry (new format with matcher + hooks array)
     hooks = settings.setdefault("hooks", {})
     prompt_hooks = hooks.setdefault("UserPromptSubmit", [])
 
-    # Check if already registered (idempotent)
-    hook_entry = {
-        "type": "command",
-        "command": str(hook_path),
-    }
+    hook_cmd = str(hook_path)
+
+    # Check if already registered (idempotent) — check both old and new format
     already_exists = any(
-        h.get("command") == str(hook_path)
+        (isinstance(h, dict) and h.get("command") == hook_cmd)
+        or (
+            isinstance(h, dict)
+            and any(
+                inner.get("command") == hook_cmd
+                for inner in h.get("hooks", [])
+                if isinstance(inner, dict)
+            )
+        )
         for h in prompt_hooks
-        if isinstance(h, dict)
     )
     if not already_exists:
-        prompt_hooks.append(hook_entry)
+        prompt_hooks.append({
+            "matcher": "",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": hook_cmd,
+                }
+            ],
+        })
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
@@ -387,10 +427,18 @@ def show_status() -> None:
         try:
             s = json.loads(settings.read_text())
             hooks = s.get("hooks", {}).get("UserPromptSubmit", [])
+            hook_cmd = str(hook)
             registered = any(
-                h.get("command") == str(hook)
+                (isinstance(h, dict) and h.get("command") == hook_cmd)
+                or (
+                    isinstance(h, dict)
+                    and any(
+                        inner.get("command") == hook_cmd
+                        for inner in h.get("hooks", [])
+                        if isinstance(inner, dict)
+                    )
+                )
                 for h in hooks
-                if isinstance(h, dict)
             )
             print(f"  Settings: {settings} {'[registered]' if registered else '[not registered]'}")
         except (json.JSONDecodeError, OSError):
@@ -450,9 +498,20 @@ def remove_runtime(runtime: str) -> None:
             try:
                 settings = json.loads(settings_path.read_text())
                 hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
+                hook_cmd = str(hook)
                 settings["hooks"]["UserPromptSubmit"] = [
                     h for h in hooks
-                    if not (isinstance(h, dict) and h.get("command") == str(hook))
+                    if not (
+                        (isinstance(h, dict) and h.get("command") == hook_cmd)
+                        or (
+                            isinstance(h, dict)
+                            and any(
+                                inner.get("command") == hook_cmd
+                                for inner in h.get("hooks", [])
+                                if isinstance(inner, dict)
+                            )
+                        )
+                    )
                 ]
                 settings_path.write_text(json.dumps(settings, indent=2) + "\n")
                 print(f"  Updated settings: {settings_path}")
