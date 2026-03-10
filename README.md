@@ -219,10 +219,20 @@ npm install lore-sdk
 
 ## Features
 
-### Auto-Retrieval (v0.8.3)
+### Auto-Retrieval (v0.9.5)
 **GET /v1/retrieve** · **runtime hooks** · **fail-open design**
 
 The headline feature. Semantic search + formatted output designed for prompt injection. Supports XML, Markdown, and raw JSON formats. Configurable score threshold, result limit, and timeout.
+
+### Multi-Agent Setup (v0.9.2+)
+**`lore setup claude-code`** · **`lore setup openclaw`** · **`lore setup cursor`** · **`lore setup codex`**
+
+One-command hook installation for all major AI agents. Auto-retrieval injected into every prompt — no code changes needed.
+
+### Retrieval Analytics (v0.9.3+)
+**GET /v1/analytics/retrieval** · **Prometheus metrics**
+
+Track hit rate, score distribution, memory utilization, and latency. Know whether memories are actually helping your agents.
 
 ### Memory Management
 **remember** · **recall** · **forget** · **list_memories** · **stats** · **upvote** · **downvote**
