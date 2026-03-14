@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import List, Optional
 
 try:
-    from fastapi import APIRouter, Depends, HTTPException
+    from fastapi import APIRouter, Depends
     from pydantic import BaseModel, Field
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")

@@ -14,7 +14,7 @@ from lore.store.memory import MemoryStore
 @pytest.fixture
 def lore_instance(tmp_path):
     from lore import Lore
-    db = str(tmp_path / "lore.db")
+    str(tmp_path / "lore.db")
     return Lore(store=MemoryStore())
 
 

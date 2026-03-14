@@ -33,7 +33,6 @@ from lore.graph.relationships import RelationshipManager
 from lore.graph.traverser import GraphTraverser
 from lore.graph.visualization import to_d3_json, to_text_tree
 from lore.store.memory import MemoryStore
-from lore.store.memory import MemoryStore
 from lore.types import (
     VALID_ENTITY_TYPES,
     VALID_REL_TYPES,
@@ -62,11 +61,6 @@ def store(request, tmp_path):
     yield s
     if hasattr(s, "close"):
         s.close()
-
-
-@pytest.fixture
-def memory_store():
-    return MemoryStore()
 
 
 @pytest.fixture
@@ -1482,7 +1476,7 @@ class TestGraphEnvVars:
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("LORE_GRAPH_CONFIDENCE_THRESHOLD", "0.8")
             from lore.lore import Lore
-            db = str(tmp_path / "test.db")
+            str(tmp_path / "test.db")
             lore = Lore(store=MemoryStore())
             assert lore._graph_confidence_threshold == 0.8
             lore.close()
@@ -1491,7 +1485,7 @@ class TestGraphEnvVars:
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("LORE_GRAPH_CO_OCCURRENCE", "false")
             from lore.lore import Lore
-            db = str(tmp_path / "test.db")
+            str(tmp_path / "test.db")
             lore = Lore(store=MemoryStore())
             assert lore._graph_co_occurrence is False
             lore.close()
@@ -1500,7 +1494,7 @@ class TestGraphEnvVars:
         with pytest.MonkeyPatch.context() as mp:
             mp.setenv("LORE_GRAPH_CO_OCCURRENCE_WEIGHT", "0.7")
             from lore.lore import Lore
-            db = str(tmp_path / "test.db")
+            str(tmp_path / "test.db")
             lore = Lore(store=MemoryStore())
             assert lore._graph_co_occurrence_weight == 0.7
             lore.close()

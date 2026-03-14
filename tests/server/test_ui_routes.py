@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import pytest
-from datetime import datetime, timedelta, timezone
-
 from fastapi.testclient import TestClient
-
 from lore.server.ui_app import create_ui_app
+
 from lore.store.memory import MemoryStore
 from lore.types import Entity, EntityMention, Memory, Relationship
 

@@ -312,8 +312,8 @@ async def _record_retrieval_event(
 async def _bump_access_counts(memory_ids: List[str]) -> None:
     """Bump access_count, last_accessed_at, and recalculate importance (fire-and-forget)."""
     try:
+
         from lore.server.db import get_pool
-        from math import log2
 
         pool = await get_pool()
         async with pool.acquire() as conn:

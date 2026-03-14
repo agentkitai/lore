@@ -13,7 +13,7 @@ from lore.store.memory import MemoryStore
 @pytest.fixture
 def lore_classify(tmp_path):
     """Lore instance with classification enabled (rule-based, no LLM)."""
-    db_path = str(tmp_path / "test.db")
+    str(tmp_path / "test.db")
     lore = Lore(store=MemoryStore(), classify=True, redact=False)
     yield lore
     lore.close()
@@ -22,7 +22,7 @@ def lore_classify(tmp_path):
 @pytest.fixture
 def lore_no_classify(tmp_path):
     """Lore instance with classification disabled (default)."""
-    db_path = str(tmp_path / "test.db")
+    str(tmp_path / "test.db")
     lore = Lore(store=MemoryStore(), classify=False, redact=False)
     yield lore
     lore.close()
@@ -141,7 +141,7 @@ class TestRecallWithFilters:
         assert len(results) >= 1  # backward compatible
 
     def test_unclassified_excluded_with_filter(self, tmp_path):
-        db_path = str(tmp_path / "mixed.db")
+        str(tmp_path / "mixed.db")
         # Store one without classification
         lore_off = Lore(store=MemoryStore(), classify=False, redact=False)
         lore_off.remember("I prefer dark mode")

@@ -566,7 +566,11 @@ class Lore:
             for r in rels:
                 other = r.target_entity_id if r.source_entity_id == entity.id else r.source_entity_id
                 related_ids.add(other)
-            results.append(TopicSummary(entity_id=entity.id, name=entity.name, entity_type=entity.entity_type, mention_count=entity.mention_count, first_seen_at=entity.first_seen_at, last_seen_at=entity.last_seen_at, related_entity_count=len(related_ids)))
+            results.append(TopicSummary(
+                entity_id=entity.id, name=entity.name, entity_type=entity.entity_type,
+                mention_count=entity.mention_count, first_seen_at=entity.first_seen_at,
+                last_seen_at=entity.last_seen_at, related_entity_count=len(related_ids),
+            ))
         return results
 
     def topic_detail(self, name, *, max_memories=20, include_summary=True):
@@ -627,7 +631,11 @@ class Lore:
                         self._topic_summary_cache.set(entity.id, summary, summary_method)
                 except Exception:
                     logger.warning("Topic LLM summary failed", exc_info=True)
-        return TopicDetail(entity=entity, related_entities=related, memories=memories, summary=summary, summary_method=summary_method, summary_generated_at=summary_generated_at, memory_count=memory_count)
+        return TopicDetail(
+            entity=entity, related_entities=related, memories=memories,
+            summary=summary, summary_method=summary_method,
+            summary_generated_at=summary_generated_at, memory_count=memory_count,
+        )
 
 
     def recall(

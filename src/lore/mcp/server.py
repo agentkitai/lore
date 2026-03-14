@@ -1231,7 +1231,9 @@ def save_snapshot(content: str, title=None, session_id=None, tags=None) -> str:
         lore = _get_lore()
         memory = lore.save_snapshot(content, title=title, session_id=session_id, tags=tags)
         meta = memory.metadata or {}
-        return f"Snapshot saved (id={memory.id}, session={meta.get('session_id', '?')}, method={meta.get('extraction_method', 'raw')}). It will surface in the next session's recent_activity."
+        sid = meta.get('session_id', '?')
+        method = meta.get('extraction_method', 'raw')
+        return f"Snapshot saved (id={memory.id}, session={sid}, method={method}). It will surface in the next session's recent_activity."
     except Exception as e:
         return f"Failed to save snapshot: {e}"
 

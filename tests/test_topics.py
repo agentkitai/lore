@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from lore import Lore
 from lore.graph.cache import TopicSummaryCache
@@ -14,8 +15,8 @@ from lore.types import (
     Entity,
     EntityMention,
     Memory,
-    Relationship,
     RelatedEntity,
+    Relationship,
     TopicDetail,
     TopicSummary,
 )
@@ -36,8 +37,9 @@ def _make_lore(**kwargs) -> Lore:
 
 def _populate_entities(store: MemoryStore, count: int = 5) -> list:
     """Create entities with varying mention counts and linked memories."""
-    from ulid import ULID
     from datetime import datetime, timezone
+
+    from ulid import ULID
 
     now = datetime.now(timezone.utc).isoformat()
     entities = []
@@ -118,7 +120,7 @@ class TestTopicDataTypes:
         assert re.direction == "outgoing"
 
     def test_types_importable(self):
-        from lore.types import TopicSummary, TopicDetail, RelatedEntity
+        from lore.types import RelatedEntity, TopicDetail, TopicSummary
         assert TopicSummary is not None
         assert TopicDetail is not None
         assert RelatedEntity is not None
@@ -171,8 +173,9 @@ class TestCacheInvalidation:
         mgr = EntityManager(store, topic_summary_cache=cache)
 
         # Create entity and cache a summary
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
         entity = Entity(
             id=str(ULID()), name="test", entity_type="concept",
@@ -194,8 +197,9 @@ class TestCacheInvalidation:
         cache = TopicSummaryCache()
         mgr = EntityManager(store, topic_summary_cache=cache)
 
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
 
         # Pre-create entities
@@ -225,8 +229,9 @@ class TestCacheInvalidation:
     def test_entity_manager_without_cache(self):
         store = MemoryStore()
         mgr = EntityManager(store)  # No cache
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
         mem = Memory(id=str(ULID()), content="test", created_at=now, updated_at=now)
         store.save(mem)
@@ -240,7 +245,7 @@ class TestCacheInvalidation:
 class TestListTopics:
     def test_default_threshold(self):
         lore = _make_lore()
-        entities = _populate_entities(lore._store, count=5)
+        _populate_entities(lore._store, count=5)
         # Entities have mention_count 1..5
         # Default threshold is 3, so entities with 3, 4, 5 mentions qualify
         results = lore.list_topics()
@@ -287,8 +292,9 @@ class TestListTopics:
         lore = _make_lore()
         entities = _populate_entities(lore._store, count=4)
         # Add a relationship between entity_2 and entity_3
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
         rel = Relationship(
             id=str(ULID()),
@@ -309,8 +315,9 @@ class TestListTopics:
 
 class TestTopicDetailStructured:
     def _setup_entity(self, lore):
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
 
         entity = Entity(
@@ -366,8 +373,9 @@ class TestTopicDetailStructured:
 
     def test_max_memories_cap(self):
         lore = _make_lore()
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
         entity = Entity(
             id=str(ULID()), name="big", entity_type="concept",
@@ -389,8 +397,9 @@ class TestTopicDetailStructured:
 
     def test_related_entities(self):
         lore = _make_lore()
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
 
         e1 = Entity(id=str(ULID()), name="source", entity_type="concept",
@@ -414,8 +423,9 @@ class TestTopicDetailStructured:
 
     def test_no_relationships(self):
         lore = _make_lore()
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
         entity = Entity(id=str(ULID()), name="lonely", entity_type="concept",
                         first_seen_at=now, last_seen_at=now, created_at=now, updated_at=now)
@@ -442,8 +452,9 @@ class TestTopicDetailStructured:
 class TestTopicLLMSummary:
     def test_llm_summary_generated(self):
         lore = _make_lore()
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
         entity = Entity(
             id=str(ULID()), name="llmtopic", entity_type="concept",
@@ -470,8 +481,9 @@ class TestTopicLLMSummary:
 
     def test_llm_summary_cached(self):
         lore = _make_lore()
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
         entity = Entity(
             id=str(ULID()), name="cached", entity_type="concept",
@@ -488,8 +500,9 @@ class TestTopicLLMSummary:
 
     def test_llm_failure_falls_back(self):
         lore = _make_lore()
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
         now = datetime.now(timezone.utc).isoformat()
         entity = Entity(
             id=str(ULID()), name="failsafe", entity_type="concept",

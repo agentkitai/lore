@@ -20,7 +20,7 @@ from lore.types import (
 
 @pytest.fixture
 def store(tmp_path):
-    db = str(tmp_path / "test.db")
+    str(tmp_path / "test.db")
     return MemoryStore()
 
 
@@ -282,14 +282,14 @@ class TestImportGraphIntegrity:
 class TestLoreImportData:
     def test_lore_import_data(self, tmp_path):
         from lore import Lore
-        db1 = str(tmp_path / "src.db")
+        str(tmp_path / "src.db")
         lore1 = Lore(store=MemoryStore())
         lore1.remember("import test memory")
         output = str(tmp_path / "export.json")
         lore1.export_data(output=output)
         lore1.close()
 
-        db2 = str(tmp_path / "dst.db")
+        str(tmp_path / "dst.db")
         lore2 = Lore(store=MemoryStore())
         result = lore2.import_data(output, skip_embeddings=True)
         lore2.close()
@@ -297,14 +297,14 @@ class TestLoreImportData:
 
     def test_lore_import_data_dry_run(self, tmp_path):
         from lore import Lore
-        db1 = str(tmp_path / "src.db")
+        str(tmp_path / "src.db")
         lore1 = Lore(store=MemoryStore())
         lore1.remember("dry run test")
         output = str(tmp_path / "export.json")
         lore1.export_data(output=output)
         lore1.close()
 
-        db2 = str(tmp_path / "dst.db")
+        str(tmp_path / "dst.db")
         lore2 = Lore(store=MemoryStore())
         result = lore2.import_data(output, dry_run=True, skip_embeddings=True)
         assert result.imported == 1

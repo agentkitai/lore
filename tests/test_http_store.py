@@ -763,8 +763,8 @@ class TestLoreRemoteInit:
 
     def test_default_store_is_http(self):
         """Default Lore() now uses HttpStore (Postgres-backed)."""
-        from lore.store.memory import MemoryStore
         from lore.lore import Lore
+        from lore.store.memory import MemoryStore
         store = MemoryStore()
         lore = Lore(store=store)
         assert isinstance(lore._store, MemoryStore)

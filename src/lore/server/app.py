@@ -34,8 +34,6 @@ from lore.server.middleware import install_middleware
 from lore.server.routes.analytics import router as analytics_router
 from lore.server.routes.conversations import router as conversations_router
 from lore.server.routes.export import router as export_router
-from lore.server.routes.snapshots import router as snapshots_router
-from lore.server.routes.topics import router as topics_router
 from lore.server.routes.graph import router as graph_router
 from lore.server.routes.ingest import router as ingest_router
 from lore.server.routes.keys import router as keys_router
@@ -45,6 +43,7 @@ from lore.server.routes.recent import router as recent_router
 from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
+from lore.server.routes.topics import router as topics_router
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -87,8 +86,8 @@ app.include_router(graph_router)
 app.include_router(topics_router)
 
 # ── UI static files ────────────────────────────────────────────────
-import importlib.resources as _pkg_resources
-import pathlib as _pathlib
+import importlib.resources as _pkg_resources  # noqa: E402
+import pathlib as _pathlib  # noqa: E402
 
 _ui_dist = None
 try:

@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from lore import Lore
 from lore.store.memory import MemoryStore
-from lore.types import VALID_MEMORY_TYPES, TIER_DECAY_HALF_LIVES
+from lore.types import TIER_DECAY_HALF_LIVES, VALID_MEMORY_TYPES
 
 
 def _stub_embed(text: str):

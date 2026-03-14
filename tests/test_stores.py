@@ -213,14 +213,14 @@ class TestLore:
 
     def test_context_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = os.path.join(tmpdir, "test.db")
+            os.path.join(tmpdir, "test.db")
             with Lore(store=MemoryStore(), embedding_fn=_stub_embed) as lore:
                 mid = lore.remember("test")
                 assert lore.get(mid) is not None
 
     def test_sqlite_default_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            db = os.path.join(tmpdir, "test.db")
+            os.path.join(tmpdir, "test.db")
             lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
             mid = lore.remember("test")
             assert lore.get(mid) is not None

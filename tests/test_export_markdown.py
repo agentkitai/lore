@@ -20,7 +20,7 @@ from lore.types import (
 
 @pytest.fixture
 def store(tmp_path):
-    db = str(tmp_path / "test.db")
+    str(tmp_path / "test.db")
     return MemoryStore()
 
 
@@ -234,7 +234,7 @@ class TestMarkdownUnicode:
 class TestMarkdownFormatBoth:
     def test_format_both(self, tmp_path):
         from lore import Lore
-        db = str(tmp_path / "lore.db")
+        str(tmp_path / "lore.db")
         lore = Lore(store=MemoryStore())
         lore.remember("both format test", type="code")
         json_out = str(tmp_path / "export.json")

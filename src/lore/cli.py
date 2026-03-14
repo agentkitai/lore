@@ -11,6 +11,7 @@ from typing import List, Optional, Sequence
 
 def _get_lore(db: Optional[str] = None) -> "Lore":  # noqa: F821
     import os
+
     from lore import Lore
 
     # Auto-enable enrichment if API key is available

@@ -16,7 +16,6 @@ import pytest
 
 from lore.lore import Lore
 from lore.store.memory import MemoryStore
-from lore.store.memory import MemoryStore
 from lore.types import (
     TIER_DEFAULT_TTL,
     TIER_RECALL_WEIGHT,
@@ -127,7 +126,7 @@ class TestMemoryStoreTierFiltering:
 class TestMemoryStoreTier:
     @pytest.fixture
     def memory_store(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory():
             store = MemoryStore()
             yield store
             store.close()

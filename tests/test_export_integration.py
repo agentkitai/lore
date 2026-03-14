@@ -372,7 +372,7 @@ class TestMCPTools:
     def test_mcp_export_tool(self, tmp_path, monkeypatch):
         from lore import Lore
 
-        db = str(tmp_path / "lore.db")
+        str(tmp_path / "lore.db")
         lore = Lore(store=MemoryStore())
         lore.remember("mcp export test")
 
@@ -388,7 +388,7 @@ class TestMCPTools:
     def test_mcp_snapshot_tool(self, tmp_path, monkeypatch):
         from lore import Lore
 
-        db = str(tmp_path / "lore.db")
+        str(tmp_path / "lore.db")
         lore = Lore(store=MemoryStore())
         lore.remember("snapshot test")
 
@@ -404,7 +404,7 @@ class TestMCPTools:
         from lore import Lore
         from lore.export import snapshot as snap_mod
 
-        db = str(tmp_path / "lore.db")
+        str(tmp_path / "lore.db")
         lore = Lore(store=MemoryStore())
 
         import lore.mcp.server as mcp_mod

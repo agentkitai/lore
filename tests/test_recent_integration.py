@@ -7,11 +7,11 @@ import os
 import struct
 import subprocess
 import sys
-
-import pytest
 from datetime import datetime, timedelta, timezone
 from typing import List
 from unittest.mock import patch
+
+import pytest
 
 from lore.lore import Lore
 from lore.store.memory import MemoryStore

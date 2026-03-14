@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from lore.store.memory import MemoryStore
-from lore.store.memory import MemoryStore
 from lore.types import ConflictEntry, Fact, Memory
 
 # ---------------------------------------------------------------------------
@@ -17,7 +16,7 @@ def store(request, tmp_path):
     if request.param == "memory":
         return MemoryStore()
     else:
-        db_path = str(tmp_path / "test.db")
+        str(tmp_path / "test.db")
         s = MemoryStore()
         return s
 

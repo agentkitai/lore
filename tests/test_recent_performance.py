@@ -19,7 +19,7 @@ def _stub_embed(text: str) -> List[float]:
 class TestRecentActivityPerformance:
     def test_500_memories_under_200ms(self, tmp_path):
         """Insert 500 memories, call recent_activity, assert latency < 500ms (CI-safe)."""
-        db = str(tmp_path / "perf.db")
+        str(tmp_path / "perf.db")
         store = MemoryStore()
 
         now = datetime.now(timezone.utc)

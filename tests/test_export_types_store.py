@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 
 from lore.store.memory import MemoryStore
-from lore.store.memory import MemoryStore
 from lore.types import (
     ConflictEntry,
     ConsolidationLogEntry,
@@ -99,7 +98,7 @@ def _make_consolidation_log(lid: str = "cl1") -> ConsolidationLogEntry:
 
 @pytest.fixture
 def memory_store(tmp_path):
-    db_path = str(tmp_path / "test.db")
+    str(tmp_path / "test.db")
     return MemoryStore()
 
 

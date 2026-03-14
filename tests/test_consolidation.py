@@ -169,7 +169,7 @@ class TestStorePersistence:
     def test_sqlite_round_trip_archived(self, tmp_path):
         from lore.store.memory import MemoryStore
 
-        db = str(tmp_path / "test.db")
+        str(tmp_path / "test.db")
         store = MemoryStore()
         m = _make_memory("m1", archived=True, consolidated_into="c1")
         store.save(m)
@@ -182,7 +182,7 @@ class TestStorePersistence:
     def test_sqlite_consolidation_log_round_trip(self, tmp_path):
         from lore.store.memory import MemoryStore
 
-        db = str(tmp_path / "test.db")
+        str(tmp_path / "test.db")
         store = MemoryStore()
         entry = ConsolidationLogEntry(
             id="log1",
@@ -240,7 +240,7 @@ class TestArchivedFiltering:
     def test_sqlite_list_excludes_archived(self, tmp_path):
         from lore.store.memory import MemoryStore
 
-        db = str(tmp_path / "test.db")
+        str(tmp_path / "test.db")
         store = MemoryStore()
         store.save(_make_memory("m1"))
         store.save(_make_memory("m2", archived=True))

@@ -24,7 +24,7 @@ from lore.types import (
 
 @pytest.fixture
 def store(tmp_path):
-    db = str(tmp_path / "test.db")
+    str(tmp_path / "test.db")
     return MemoryStore()
 
 
@@ -302,7 +302,7 @@ class TestJsonExportOptions:
 class TestLoreExportData:
     def test_lore_export_data_json(self, tmp_path):
         from lore import Lore
-        db = str(tmp_path / "lore.db")
+        str(tmp_path / "lore.db")
         lore = Lore(store=MemoryStore())
         lore.remember("test memory", type="code")
         output = str(tmp_path / "export.json")
@@ -313,7 +313,7 @@ class TestLoreExportData:
 
     def test_lore_export_data_with_filters(self, tmp_path):
         from lore import Lore
-        db = str(tmp_path / "lore.db")
+        str(tmp_path / "lore.db")
         lore = Lore(store=MemoryStore())
         lore.remember("test code", type="code", project="proj1")
         lore.remember("test lesson", type="lesson", project="proj2")
