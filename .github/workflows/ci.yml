@@ -22,7 +22,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if python -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)"; then
-            pip install -e ".[dev,mcp]"
+            pip install -e ".[dev,mcp,server]"
           else
             pip install -e ".[dev]"
           fi
