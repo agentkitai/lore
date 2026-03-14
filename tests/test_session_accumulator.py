@@ -268,7 +268,7 @@ class TestAutoInjectSessionContext:
         lore.remember("regular memory about databases", type="general")
         # Save a snapshot — with stub embeddings it may match the query too,
         # but _get_session_context deduplicates, so we mock it to test the label
-        snapshot_mem = lore.save_snapshot("Session context info", session_id="s1")
+        lore.save_snapshot("Session context info", session_id="s1")
 
         # Mock _get_session_context to return session context lines
         mock_lines = [
