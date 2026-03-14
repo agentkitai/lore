@@ -37,20 +37,25 @@ export class DetailPanel {
     this.container.appendChild(loading);
 
     const node = this.state.getNode(id);
-    if (!node) {
-      loading.textContent = 'Node not found';
-      return;
-    }
+    // Determine kind: from graph node, or guess from ID prefix/context
+    const kind = node ? node.kind : null;
 
     try {
-      if (node.kind === 'memory') {
-        const data = await fetchMemoryDetail(id);
-        if (this._currentId !== id) return; // Selection changed
-        this._renderMemory(data);
-      } else {
+      if (kind === 'entity') {
         const data = await fetchEntityDetail(id);
         if (this._currentId !== id) return;
         this._renderEntity(data);
+      } else {
+        // Try memory first (most common), fall back to entity
+        try {
+          const data = await fetchMemoryDetail(id);
+          if (this._currentId !== id) return;
+          this._renderMemory(data);
+        } catch (memErr) {
+          const data = await fetchEntityDetail(id);
+          if (this._currentId !== id) return;
+          this._renderEntity(data);
+        }
       }
     } catch (err) {
       this.container.textContent = '';

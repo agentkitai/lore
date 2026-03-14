@@ -764,7 +764,7 @@ async def get_entity_detail(entity_id: str) -> EntityDetailResponse:
             entity_id,
         )
         for m in mem_rows:
-            label = (m["content"] or "")[:80].replace("\n", " ")
+            label = (m["content"] or "")[:200].replace("\n", " ")
             connected_memories.append({
                 "id": m["id"],
                 "label": label,
