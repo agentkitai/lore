@@ -176,8 +176,9 @@ export class InteractionManager {
         // Focus mode: fetch and highlight neighbors
         fetchNeighbors(node.id).then(result => {
           const { ids, nodes: nbrNodes } = result;
-          // Add missing neighbor nodes to the graph dynamically
+          // Add missing neighbor nodes and edges to the graph dynamically
           const clickedNode = this.state.getNode(node.id);
+          let addedAny = false;
           for (const nbr of nbrNodes) {
             if (!this.state.getNode(nbr.id)) {
               // Position near the clicked node with some random offset
@@ -187,15 +188,32 @@ export class InteractionManager {
               nbr.y = (clickedNode ? clickedNode.y : 0) + Math.sin(angle) * dist;
               nbr.importance = 0.5;
               nbr.confidence = 1.0;
-              nbr._dynamic = true; // Mark as dynamically added
+              nbr._dynamic = true;
               this.state.nodes.push(nbr);
               this.state._nodeMap.set(nbr.id, nbr);
               this.state.filteredNodeIds.add(nbr.id);
-              // Add to simulation
-              this.simulation.nodes(this.state.nodes);
+              addedAny = true;
+            }
+            // Add edge between clicked node and neighbor if not already present
+            const hasEdge = this.state.edges.some(e => {
+              const sid = typeof e.source === 'object' ? e.source.id : e.source;
+              const tid = typeof e.target === 'object' ? e.target.id : e.target;
+              return (sid === node.id && tid === nbr.id) || (sid === nbr.id && tid === node.id);
+            });
+            if (!hasEdge) {
+              this.state.edges.push({
+                source: node.id,
+                target: nbr.id,
+                weight: 0.5,
+                rel_type: 'connected',
+                _dynamic: true,
+              });
+              addedAny = true;
             }
           }
-          if (nbrNodes.some(n => n._dynamic)) {
+          if (addedAny) {
+            this.simulation.nodes(this.state.nodes);
+            this.simulation.force('link').links(this.state.edges);
             this.simulation.alpha(0.3).restart();
             this.rebuildQuadtree();
           }
