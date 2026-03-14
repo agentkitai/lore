@@ -41,9 +41,9 @@ from lore.server.routes.lessons import router as lessons_router
 from lore.server.routes.memories import router as memories_router
 from lore.server.routes.recent import router as recent_router
 from lore.server.routes.retrieve import router as retrieve_router
+from lore.server.routes.review import router as review_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
-from lore.server.routes.review import router as review_router
 from lore.server.routes.topics import router as topics_router
 
 setup_logging()

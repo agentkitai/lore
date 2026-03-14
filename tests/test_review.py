@@ -12,8 +12,6 @@ Covers:
 
 from __future__ import annotations
 
-import subprocess
-import sys
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -28,7 +26,6 @@ from lore.types import (
     Relationship,
     ReviewItem,
 )
-
 
 # ── Fixtures ──────────────────────────────────────────────────────
 
@@ -304,9 +301,8 @@ class TestCLIReview:
         assert "Nothing to review" in out
 
     def test_review_lists_pending(self, capsys):
-        from lore.cli import main
         # Seed data through the shared MemoryStore fixture
-        from lore.cli import _get_lore
+        from lore.cli import _get_lore, main
         lore = _get_lore()
         store = lore._store
         _make_entities(store)
@@ -318,7 +314,7 @@ class TestCLIReview:
         assert "uses" in out
 
     def test_review_approve(self, capsys):
-        from lore.cli import main, _get_lore
+        from lore.cli import _get_lore, main
         lore = _get_lore()
         store = lore._store
         _make_entities(store)
@@ -329,7 +325,7 @@ class TestCLIReview:
         assert store.get_relationship("rel-1").status == "approved"
 
     def test_review_reject(self, capsys):
-        from lore.cli import main, _get_lore
+        from lore.cli import _get_lore, main
         lore = _get_lore()
         store = lore._store
         _make_entities(store)
@@ -344,7 +340,7 @@ class TestCLIReview:
             main(["review", "--approve", "nonexistent"])
 
     def test_review_approve_all(self, capsys):
-        from lore.cli import main, _get_lore
+        from lore.cli import _get_lore, main
         lore = _get_lore()
         store = lore._store
         _make_entities(store)
@@ -355,7 +351,7 @@ class TestCLIReview:
         assert "Approved 2" in out
 
     def test_review_reject_all(self, capsys):
-        from lore.cli import main, _get_lore
+        from lore.cli import _get_lore, main
         lore = _get_lore()
         store = lore._store
         _make_entities(store)
