@@ -239,6 +239,10 @@ async def retrieve(
         effective_project=effective_project,
     ))
 
+    # Fire-and-forget: bump access_count + recalculate importance for returned memories
+    if memories:
+        asyncio.create_task(_bump_access_counts([m.id for m in memories]))
+
     return RetrieveResponse(
         memories=memories,
         formatted=formatted,
@@ -303,3 +307,25 @@ async def _record_retrieval_event(
             )
     except Exception:
         logger.warning("Failed to record retrieval event", exc_info=True)
+
+
+async def _bump_access_counts(memory_ids: List[str]) -> None:
+    """Bump access_count, last_accessed_at, and recalculate importance (fire-and-forget)."""
+    try:
+        from lore.server.db import get_pool
+        from math import log2
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """UPDATE memories
+                   SET access_count = COALESCE(access_count, 0) + 1,
+                       last_accessed_at = now(),
+                       importance_score = COALESCE(confidence, 1.0)
+                           * GREATEST(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1)
+                           * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
+                   WHERE id = ANY($1)""",
+                memory_ids,
+            )
+    except Exception:
+        logger.warning("Failed to bump access counts", exc_info=True)
