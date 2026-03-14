@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import struct
 
-import pytest
-
 from lore.export.serializers import (
     conflict_to_dict,
     consolidation_log_to_dict,

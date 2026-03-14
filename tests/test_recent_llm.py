@@ -5,9 +5,7 @@ from __future__ import annotations
 import struct
 from datetime import datetime, timedelta, timezone
 from typing import List
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from lore.lore import Lore
 from lore.store.memory import MemoryStore

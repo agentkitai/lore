@@ -238,7 +238,7 @@ class TestMarkdownFormatBoth:
         lore = Lore(db_path=db)
         lore.remember("both format test", type="code")
         json_out = str(tmp_path / "export.json")
-        result = lore.export_data(format="both", output=json_out)
+        lore.export_data(format="both", output=json_out)
         lore.close()
         # JSON file exists
         assert os.path.exists(json_out)

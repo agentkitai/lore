@@ -25,10 +25,10 @@ from lore.importance import (
     resolve_half_life,
     time_adjusted_importance,
 )
+from lore.recent import group_memories_by_project
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
-from lore.recent import group_memories_by_project
 from lore.types import (
     DECAY_HALF_LIVES,
     TIER_DEFAULT_TTL,
@@ -37,12 +37,15 @@ from lore.types import (
     VALID_TIERS,
     ConflictEntry,
     ConversationJob,
+    ExportResult,
     Fact,
     GraphContext,
+    ImportResult,
     Memory,
     MemoryStats,
-    RecentActivityResult,
+    ProjectGroup,
     RecallResult,
+    RecentActivityResult,
 )
 
 # Type alias for user-provided embedding functions
@@ -1601,7 +1604,7 @@ class Lore:
         pretty: bool = False,
     ) -> "ExportResult":
         from lore.export.exporter import Exporter
-        from lore.types import ExportFilter, ExportResult
+        from lore.types import ExportFilter
 
         filters = ExportFilter(
             project=project, type=type, tier=tier, since=since,

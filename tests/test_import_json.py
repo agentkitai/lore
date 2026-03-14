@@ -3,23 +3,18 @@
 from __future__ import annotations
 
 import json
-import os
 
 import pytest
 
 from lore.export.exporter import Exporter
 from lore.export.importer import Importer
-from lore.export.schema import EXPORT_SCHEMA_VERSION, compute_content_hash
+from lore.export.schema import compute_content_hash
 from lore.store.sqlite import SqliteStore
 from lore.types import (
-    ConflictEntry,
-    ConsolidationLogEntry,
     Entity,
     EntityMention,
-    ExportFilter,
     Fact,
     Memory,
-    Relationship,
 )
 
 

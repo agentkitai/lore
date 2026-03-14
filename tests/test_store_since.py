@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from lore.store.memory import MemoryStore

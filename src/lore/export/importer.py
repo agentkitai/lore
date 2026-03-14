@@ -6,7 +6,7 @@ import json
 import logging
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from lore.export.schema import validate_schema_version, verify_content_hash
 from lore.export.serializers import (

@@ -7,8 +7,6 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import List
 
-import pytest
-
 from lore.lore import Lore
 from lore.store.sqlite import SqliteStore
 from lore.types import Memory

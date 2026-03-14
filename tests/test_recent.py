@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from lore.recent import (
     _format_time,
     format_brief,

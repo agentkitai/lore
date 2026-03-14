@@ -16,9 +16,7 @@ from lore.types import (
     Fact,
     ImportResult,
     Memory,
-    Relationship,
 )
-
 
 # ── Type tests ──────────────────────────────────────────────────────
 

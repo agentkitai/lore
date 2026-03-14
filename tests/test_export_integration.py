@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
 import struct
-
-import pytest
 
 from lore.export.exporter import Exporter
 from lore.export.importer import Importer
@@ -178,7 +175,7 @@ class TestFullRoundTrip:
         Importer(dst_store).import_file(export1)
 
         export2 = str(tmp_path / "export2.json")
-        r2 = Exporter(dst_store).export(output=export2, include_embeddings=True)
+        Exporter(dst_store).export(output=export2, include_embeddings=True)
 
         with open(export1) as f:
             d1 = json.load(f)

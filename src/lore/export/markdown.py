@@ -12,11 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from lore.export.serializers import (
-    entity_to_dict,
-    fact_to_dict,
-    memory_to_dict,
     memory_to_filename,
-    relationship_to_dict,
     slugify,
 )
 from lore.store.base import Store
@@ -27,7 +23,6 @@ from lore.types import (
     ExportResult,
     Fact,
     Memory,
-    Relationship,
 )
 
 
@@ -250,7 +245,7 @@ class MarkdownRenderer:
             "# Export Metadata",
             "",
             f"- **Exported at:** {datetime.now(timezone.utc).isoformat()}",
-            f"- **Lore version:** 0.9.5",
+            "- **Lore version:** 0.9.5",
             f"- **Memories:** {len(memories)}",
             f"- **Entities:** {len(entities)}",
             f"- **Relationships:** {len(all_relationships)}",

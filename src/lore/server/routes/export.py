@@ -10,7 +10,7 @@ from typing import Optional
 
 try:
     from fastapi import APIRouter, Depends, HTTPException, Request
-    from fastapi.responses import JSONResponse, StreamingResponse
+    from fastapi.responses import JSONResponse
     from pydantic import BaseModel
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
