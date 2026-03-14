@@ -11,12 +11,153 @@ Configure via environment variables:
 
 from __future__ import annotations
 
+import logging
 import os
+import threading
+import time
 from typing import Any, Dict, List, Optional
 
 from mcp.server.fastmcp import FastMCP
 
 from lore.lore import Lore
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Session Accumulator — auto-snapshots when content exceeds threshold
+# ---------------------------------------------------------------------------
+
+_SNAPSHOT_THRESHOLD = int(os.environ.get("LORE_SNAPSHOT_THRESHOLD", "30000"))
+
+
+class SessionAccumulator:
+    """Tracks cumulative content per session and auto-saves snapshots.
+
+    Thread-safe. Fire-and-forget snapshot saves never block callers.
+    """
+
+    def __init__(self, threshold: int = _SNAPSHOT_THRESHOLD) -> None:
+        self._lock = threading.Lock()
+        self._threshold = threshold
+        # Per-session state: session_key -> {chars, topics, queries, contents}
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+
+    def _default_session_key(self) -> str:
+        """PID + process start time as fallback session identifier."""
+        pid = os.getpid()
+        try:
+            import psutil  # noqa: F811
+
+            start_time = psutil.Process(pid).create_time()
+        except Exception:
+            # psutil unavailable — use PID only (stable for process lifetime)
+            start_time = 0
+        return f"pid-{pid}-{int(start_time)}"
+
+    def _ensure_session(self, key: str) -> Dict[str, Any]:
+        if key not in self._sessions:
+            self._sessions[key] = {
+                "chars": 0,
+                "contents": [],
+                "queries": [],
+                "started_at": time.time(),
+            }
+        return self._sessions[key]
+
+    def add_content(
+        self,
+        content: str,
+        *,
+        session_id: Optional[str] = None,
+        is_query: bool = False,
+    ) -> Optional[str]:
+        """Accumulate content. Returns session_key if threshold was crossed."""
+        key = session_id or self._default_session_key()
+        with self._lock:
+            state = self._ensure_session(key)
+            state["chars"] += len(content)
+            if is_query:
+                state["queries"].append(content)
+            else:
+                state["contents"].append(content)
+            if state["chars"] >= self._threshold:
+                return key
+        return None
+
+    def drain(self, session_key: str) -> Optional[Dict[str, Any]]:
+        """Pop accumulated state for a session. Returns None if empty."""
+        with self._lock:
+            state = self._sessions.pop(session_key, None)
+        return state
+
+    def build_snapshot_content(self, state: Dict[str, Any]) -> str:
+        """Build a structured summary from accumulated state."""
+        lines: List[str] = ["[Auto-snapshot — session accumulator threshold reached]\n"]
+
+        if state.get("contents"):
+            lines.append("## Content saved this session")
+            for i, c in enumerate(state["contents"], 1):
+                # Truncate individual items to keep snapshot reasonable
+                summary = c[:500] + "..." if len(c) > 500 else c
+                lines.append(f"{i}. {summary}")
+            lines.append("")
+
+        if state.get("queries"):
+            lines.append("## Queries made this session")
+            for q in state["queries"]:
+                lines.append(f"- {q}")
+            lines.append("")
+
+        return "\n".join(lines)
+
+
+# Module-level accumulator instance
+_accumulator = SessionAccumulator()
+
+
+def _fire_and_forget_snapshot(
+    lore: Lore,
+    session_key: str,
+    state: Dict[str, Any],
+) -> None:
+    """Save a snapshot in a background thread. Never raises."""
+
+    def _save() -> None:
+        try:
+            content = _accumulator.build_snapshot_content(state)
+            lore.save_snapshot(
+                content,
+                title=f"Auto-snapshot (session {session_key})",
+                session_id=session_key,
+                tags=["auto_snapshot"],
+            )
+            logger.info("Auto-snapshot saved for session %s", session_key)
+        except Exception:
+            logger.warning(
+                "Failed to auto-save snapshot for session %s",
+                session_key,
+                exc_info=True,
+            )
+
+    thread = threading.Thread(target=_save, daemon=True)
+    thread.start()
+
+
+def _maybe_auto_snapshot(
+    lore: Lore,
+    content: str,
+    *,
+    session_id: Optional[str] = None,
+    is_query: bool = False,
+) -> None:
+    """Feed content to accumulator; trigger snapshot if threshold crossed."""
+    triggered_key = _accumulator.add_content(
+        content, session_id=session_id, is_query=is_query,
+    )
+    if triggered_key is not None:
+        state = _accumulator.drain(triggered_key)
+        if state:
+            _fire_and_forget_snapshot(lore, triggered_key, state)
 
 # ---------------------------------------------------------------------------
 # Lore instance (created lazily so import doesn't trigger side-effects)
@@ -111,6 +252,7 @@ def remember(
     source: Optional[str] = None,
     project: Optional[str] = None,
     ttl: Optional[int] = None,
+    session_id: Optional[str] = None,
 ) -> str:
     """Store a memory in Lore."""
     try:
@@ -125,6 +267,7 @@ def remember(
             project=project,
             ttl=ttl,
         )
+        _maybe_auto_snapshot(lore, content, session_id=session_id)
         return f"Memory saved (ID: {memory_id}, tier: {tier})"
     except Exception as e:
         return f"Failed to save memory: {e}"
@@ -176,6 +319,8 @@ def recall(
     after: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    session_id: Optional[str] = None,
+    include_session_context: bool = True,
 ) -> str:
     """Search Lore memory for relevant memories. Set verbatim=true for raw original content."""
     try:
@@ -194,7 +339,16 @@ def recall(
             before=before, after=after,
             date_from=date_from, date_to=date_to,
         )
-        if not results:
+
+        # Feed query to session accumulator
+        _maybe_auto_snapshot(lore, query, session_id=session_id, is_query=True)
+
+        # Auto-inject recent session snapshots
+        session_context_lines: List[str] = []
+        if include_session_context:
+            session_context_lines = _get_session_context(lore, results)
+
+        if not results and not session_context_lines:
             return "No relevant memories found. Try a different query or broader terms."
 
         if verbatim:
@@ -211,6 +365,8 @@ def recall(
                 )
                 lines.append(mem.content)
                 lines.append("")
+            if session_context_lines:
+                lines.extend(session_context_lines)
             return "\n".join(lines)
 
         lines = [f"Found {len(results)} relevant memory(ies):\n"]
@@ -257,9 +413,51 @@ def recall(
                 lines.append(f"Project: {mem.project}")
             lines.append("")
 
+        if session_context_lines:
+            lines.extend(session_context_lines)
+
         return "\n".join(lines)
     except Exception as e:
         return f"Failed to recall memories: {e}"
+
+
+def _get_session_context(
+    lore: Lore,
+    existing_results: list,
+) -> List[str]:
+    """Query for recent session_snapshot memories (last 24h) not already in results."""
+    try:
+        snapshots = lore.recall(
+            query="session context",
+            type="session_snapshot",
+            hours_ago=24,
+            limit=3,
+        )
+        if not snapshots:
+            return []
+
+        # Deduplicate against existing results
+        existing_ids = {r.memory.id for r in existing_results}
+        unique = [s for s in snapshots if s.memory.id not in existing_ids]
+        if not unique:
+            return []
+
+        lines: List[str] = [
+            f"{'─' * 60}",
+            "[Session Context] Recent session snapshots (last 24h):\n",
+        ]
+        for i, r in enumerate(unique, 1):
+            mem = r.memory
+            created = mem.created_at[:19] if mem.created_at else "unknown"
+            meta = mem.metadata or {}
+            title = meta.get("title", "Untitled")
+            lines.append(f"  Snapshot {i}: {title} (created: {created})")
+            lines.append(f"  {mem.content[:500]}")
+            lines.append("")
+        return lines
+    except Exception:
+        logger.warning("Failed to fetch session context", exc_info=True)
+        return []
 
 
 @mcp.tool(

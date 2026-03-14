@@ -115,6 +115,9 @@ async def retrieve(
     min_score: float = Query(0.3, ge=0.0, le=1.0, description="Minimum relevance score"),
     format: str = Query("xml", description="Output format: xml, markdown, raw"),
     project: Optional[str] = Query(None, description="Filter by project"),
+    include_session_context: bool = Query(
+        True, description="Append recent session_snapshot memories (last 24h)",
+    ),
     auth: AuthContext = Depends(get_auth_context),
 ) -> RetrieveResponse:
     """Retrieve relevant memories for a query.
@@ -221,6 +224,16 @@ async def retrieve(
             project=rd.get("project"),
             tags=tags,
         ))
+
+    # Auto-inject recent session snapshots (last 24h)
+    if include_session_context:
+        existing_ids = {m.id for m in memories}
+        session_memories = await _fetch_session_snapshots(
+            auth=auth,
+            effective_project=effective_project,
+            exclude_ids=existing_ids,
+        )
+        memories.extend(session_memories)
 
     # Format output
     formatter = _FORMATTERS[format]
@@ -329,3 +342,71 @@ async def _bump_access_counts(memory_ids: List[str]) -> None:
             )
     except Exception:
         logger.warning("Failed to bump access counts", exc_info=True)
+
+
+async def _fetch_session_snapshots(
+    *,
+    auth: AuthContext,
+    effective_project: Optional[str],
+    exclude_ids: set,
+    max_snapshots: int = 3,
+) -> List[RetrieveMemory]:
+    """Fetch recent session_snapshot memories from the last 24 hours."""
+    try:
+        where_parts: list[str] = ["org_id = $1"]
+        params: list = [auth.org_id]
+
+        if effective_project is not None:
+            params.append(effective_project)
+            where_parts.append(f"project = ${len(params)}")
+
+        where_parts.append("(expires_at IS NULL OR expires_at > now())")
+        where_parts.append("meta->>'type' = 'session_snapshot'")
+        where_parts.append("created_at > now() - interval '24 hours'")
+
+        where_sql = " AND ".join(where_parts)
+
+        params.append(max_snapshots)
+        limit_idx = len(params)
+
+        sql = f"""
+            SELECT id, content,
+                   COALESCE(meta->>'type', 'unknown') AS type,
+                   COALESCE(meta->>'tier', 'long') AS tier,
+                   source, project, tags, created_at
+            FROM memories
+            WHERE {where_sql}
+            ORDER BY created_at DESC
+            LIMIT ${limit_idx}
+        """
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+
+        result: List[RetrieveMemory] = []
+        for r in rows:
+            rd = dict(r)
+            if rd["id"] in exclude_ids:
+                continue
+            tags = rd.get("tags") or []
+            if isinstance(tags, str):
+                tags = json.loads(tags)
+            created_at = rd.get("created_at")
+            if hasattr(created_at, "isoformat"):
+                created_at = created_at.isoformat()
+            result.append(RetrieveMemory(
+                id=rd["id"],
+                content=f"[Session Context] {rd['content']}",
+                type=rd.get("type", "session_snapshot"),
+                tier=rd.get("tier", "long"),
+                score=0.0,
+                created_at=str(created_at or ""),
+                source=rd.get("source"),
+                project=rd.get("project"),
+                tags=tags,
+            ))
+        return result
+    except Exception:
+        logger.warning("Failed to fetch session snapshots", exc_info=True)
+        return []
