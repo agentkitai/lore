@@ -9,7 +9,7 @@ import pytest
 
 from lore.export.exporter import Exporter
 from lore.export.schema import verify_content_hash
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import (
     ConflictEntry,
     ConsolidationLogEntry,
@@ -25,7 +25,7 @@ from lore.types import (
 @pytest.fixture
 def store(tmp_path):
     db = str(tmp_path / "test.db")
-    return SqliteStore(db, knowledge_graph=True)
+    return MemoryStore()
 
 
 def _seed_data(store):
@@ -303,7 +303,7 @@ class TestLoreExportData:
     def test_lore_export_data_json(self, tmp_path):
         from lore import Lore
         db = str(tmp_path / "lore.db")
-        lore = Lore(db_path=db)
+        lore = Lore(store=MemoryStore())
         lore.remember("test memory", type="code")
         output = str(tmp_path / "export.json")
         result = lore.export_data(format="json", output=output)
@@ -314,7 +314,7 @@ class TestLoreExportData:
     def test_lore_export_data_with_filters(self, tmp_path):
         from lore import Lore
         db = str(tmp_path / "lore.db")
-        lore = Lore(db_path=db)
+        lore = Lore(store=MemoryStore())
         lore.remember("test code", type="code", project="proj1")
         lore.remember("test lesson", type="lesson", project="proj2")
         output = str(tmp_path / "filtered.json")

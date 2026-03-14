@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from lore.cli import build_parser, cmd_ui
 
@@ -37,31 +36,27 @@ class TestUICommandParser:
 
 
 class TestUICommand:
-    def test_security_warning_on_0000(self, capsys):
-        mock_uvicorn = MagicMock()
-        mock_lore = MagicMock()
-        mock_lore._store = MagicMock()
-
-        parser = build_parser()
-        args = parser.parse_args(["ui", "--host", "0.0.0.0", "--no-open"])
-
-        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}), \
-             patch("lore.cli._get_lore", return_value=mock_lore):
-            cmd_ui(args)
-
-        captured = capsys.readouterr()
-        assert "Security warning" in captured.err
-
-    def test_no_browser_with_no_open(self):
-        mock_uvicorn = MagicMock()
-        mock_lore = MagicMock()
-        mock_lore._store = MagicMock()
-
+    def test_opens_correct_url(self, capsys):
         parser = build_parser()
         args = parser.parse_args(["ui", "--no-open"])
 
-        with patch.dict(sys.modules, {"uvicorn": mock_uvicorn}), \
-             patch("lore.cli._get_lore", return_value=mock_lore), \
-             patch("webbrowser.open") as mock_open:
+        cmd_ui(args)
+
+        captured = capsys.readouterr()
+        assert "http://127.0.0.1:8766/ui" in captured.out
+
+    def test_no_browser_with_no_open(self):
+        parser = build_parser()
+        args = parser.parse_args(["ui", "--no-open"])
+
+        with patch("webbrowser.open") as mock_open:
             cmd_ui(args)
             mock_open.assert_not_called()
+
+    def test_browser_opens_without_no_open(self):
+        parser = build_parser()
+        args = parser.parse_args(["ui"])
+
+        with patch("webbrowser.open") as mock_open:
+            cmd_ui(args)
+            mock_open.assert_called_once()

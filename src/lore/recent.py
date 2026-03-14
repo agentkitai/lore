@@ -52,7 +52,8 @@ def format_brief(result: RecentActivityResult) -> str:
                 content = m.content[:100]
                 if len(m.content) > 100:
                     content += "..."
-                lines.append(f"- [{ts}] {m.type}: {content}")
+                prefix = "[Session Snapshot] " if m.type == "session_snapshot" else ""
+                lines.append(f"- [{ts}] {prefix}{m.type}: {content}")
             overflow = group.count - shown
             if overflow > 0:
                 lines.append(f"- ({overflow} more)")
@@ -72,7 +73,8 @@ def format_detailed(result: RecentActivityResult) -> str:
             lines.append(f"**Summary:** {group.summary}\n")
         for m in group.memories:
             ts = _format_time(m.created_at)
-            lines.append(f"**[{ts}] {m.type}** (tier: {m.tier}, importance: {m.importance_score:.2f})")
+            prefix = "[Session Snapshot] " if m.type == "session_snapshot" else ""
+            lines.append(f"**[{ts}] {prefix}{m.type}** (tier: {m.tier}, importance: {m.importance_score:.2f})")
             lines.append(m.content)
             if m.tags:
                 lines.append(f"Tags: {', '.join(m.tags)}")
@@ -127,7 +129,8 @@ def format_cli(result: RecentActivityResult) -> str:
                 content = m.content[:100]
                 if len(m.content) > 100:
                     content += "..."
-                lines.append(f"  [{ts}] {m.type}: {content}")
+                prefix = "[Session Snapshot] " if m.type == "session_snapshot" else ""
+                lines.append(f"  [{ts}] {prefix}{m.type}: {content}")
         lines.append("")
     return "\n".join(lines)
 

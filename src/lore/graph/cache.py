@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from lore.store.base import Store
 from lore.types import Entity
@@ -27,6 +27,28 @@ class EntityCache:
 
     def invalidate(self) -> None:
         self._cache = None
+
+
+class TopicSummaryCache:
+    def __init__(self, ttl_seconds: int = 3600) -> None:
+        self.ttl = ttl_seconds
+        self._cache: Dict[str, Tuple[str, str, float]] = {}
+
+    def get(self, entity_id: str) -> Optional[Tuple[str, str]]:
+        entry = self._cache.get(entity_id)
+        if entry is None:
+            return None
+        text, method, cached_at = entry
+        if time.time() - cached_at > self.ttl:
+            del self._cache[entity_id]
+            return None
+        return text, method
+
+    def set(self, entity_id: str, summary: str, method: str) -> None:
+        self._cache[entity_id] = (summary, method, time.time())
+
+    def invalidate(self, entity_id: str) -> None:
+        self._cache.pop(entity_id, None)
 
 
 def find_query_entities(query: str, cache: EntityCache) -> List[Entity]:

@@ -51,6 +51,7 @@ class TestDecayHalfLivesConstant:
 
     def test_half_lives_overridable_via_constructor(self) -> None:
         lore = Lore(
+
             store=MemoryStore(),
             embedding_fn=_seeded_embed,
             decay_half_lives={"code": 7, "custom": 90},
@@ -90,6 +91,7 @@ class TestMultiplicativeScoring:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             lore = Lore(
+
                 store=store,
                 embedding_fn=_fixed_embed,
                 decay_similarity_weight=0.5,
@@ -267,6 +269,7 @@ class TestScoringBackwardCompatibility:
         """The old decay_half_life_days param is still respected as global default."""
         store = MemoryStore()
         lore = Lore(
+
             store=store,
             embedding_fn=_fixed_embed,
             decay_half_life_days=7,

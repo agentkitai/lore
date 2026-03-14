@@ -167,10 +167,10 @@ class TestTypes:
 
 class TestStorePersistence:
     def test_sqlite_round_trip_archived(self, tmp_path):
-        from lore.store.sqlite import SqliteStore
+        from lore.store.memory import MemoryStore
 
         db = str(tmp_path / "test.db")
-        store = SqliteStore(db)
+        store = MemoryStore()
         m = _make_memory("m1", archived=True, consolidated_into="c1")
         store.save(m)
         loaded = store.get("m1")
@@ -180,10 +180,10 @@ class TestStorePersistence:
         store.close()
 
     def test_sqlite_consolidation_log_round_trip(self, tmp_path):
-        from lore.store.sqlite import SqliteStore
+        from lore.store.memory import MemoryStore
 
         db = str(tmp_path / "test.db")
-        store = SqliteStore(db)
+        store = MemoryStore()
         entry = ConsolidationLogEntry(
             id="log1",
             consolidated_memory_id="c1",
@@ -238,10 +238,10 @@ class TestArchivedFiltering:
         assert len(store.list(include_archived=True)) == 2
 
     def test_sqlite_list_excludes_archived(self, tmp_path):
-        from lore.store.sqlite import SqliteStore
+        from lore.store.memory import MemoryStore
 
         db = str(tmp_path / "test.db")
-        store = SqliteStore(db)
+        store = MemoryStore()
         store.save(_make_memory("m1"))
         store.save(_make_memory("m2", archived=True))
         store.save(_make_memory("m3"))
@@ -792,6 +792,7 @@ class TestFullPipeline:
 
         store = MemoryStore()
         lore = Lore(
+
             store=store,
             consolidation_config={"dedup_threshold": 0.90},
         )

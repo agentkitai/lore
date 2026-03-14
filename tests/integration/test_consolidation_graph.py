@@ -34,6 +34,7 @@ class TestConsolidation:
         """
         store = MemoryStore()
         lore = Lore(
+
             store=store,
             embedding_fn=_stub_embed,
             redact=False,
@@ -71,6 +72,7 @@ class TestConsolidation:
         """Distinct memories should not be grouped as duplicates."""
         store = MemoryStore()
         lore = Lore(
+
             store=store,
             embedding_fn=_stub_embed,
             redact=False,

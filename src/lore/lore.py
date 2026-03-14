@@ -28,7 +28,7 @@ from lore.importance import (
 from lore.recent import group_memories_by_project
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
-from lore.store.sqlite import SqliteStore
+from lore.store.http import HttpStore
 from lore.types import (
     DECAY_HALF_LIVES,
     TIER_DEFAULT_TTL,
@@ -46,6 +46,9 @@ from lore.types import (
     ProjectGroup,
     RecallResult,
     RecentActivityResult,
+    RelatedEntity,
+    TopicDetail,
+    TopicSummary,
 )
 
 # Type alias for user-provided embedding functions
@@ -190,17 +193,11 @@ class Lore:
 
         if isinstance(store, str) and store != "remote":
             raise ValueError(f"store must be a Store instance or 'remote', got {store!r}")
-        if isinstance(store, str) and store == "remote":
-            from lore.store.http import HttpStore
-            self._store: Store = HttpStore(api_url=api_url, api_key=api_key)
-        elif isinstance(store, Store):
+        if isinstance(store, Store):
             self._store: Store = store
         else:
-            if db_path is None:
-                db_path = os.path.join(
-                    os.path.expanduser("~"), ".lore", "default.db"
-                )
-            self._store = SqliteStore(db_path, knowledge_graph=self._knowledge_graph_enabled)
+            # Default to HttpStore (Postgres-backed server)
+            self._store = HttpStore(api_url=api_url, api_key=api_key)
 
         # Resolve embedder: explicit embedder > embedding_fn > default local
         self._dual_embedding = dual_embedding
@@ -282,17 +279,19 @@ class Lore:
                 )
 
         # Knowledge graph setup
+        self._topic_summary_cache = None
         self._entity_manager = None
         self._relationship_manager = None
         self._graph_traverser = None
         self._entity_cache = None
         if self._knowledge_graph_enabled:
-            from lore.graph.cache import EntityCache
+            from lore.graph.cache import EntityCache, TopicSummaryCache
             from lore.graph.entities import EntityManager
             from lore.graph.relationships import RelationshipManager
             from lore.graph.traverser import GraphTraverser
 
-            self._entity_manager = EntityManager(self._store)
+            self._topic_summary_cache = TopicSummaryCache(ttl_seconds=3600)
+            self._entity_manager = EntityManager(self._store, topic_summary_cache=self._topic_summary_cache)
             self._relationship_manager = RelationshipManager(self._store, self._entity_manager)
             self._graph_traverser = GraphTraverser(self._store)
             self._entity_cache = EntityCache(self._store)
@@ -491,6 +490,145 @@ class Lore:
                 logger.warning("Graph update failed, memory saved without graph", exc_info=True)
 
         return memory.id
+
+    # ------------------------------------------------------------------
+    # Session Snapshots (E3)
+    # ------------------------------------------------------------------
+
+    _SNAPSHOT_EXTRACTION_PROMPT = ("You are extracting key information from a conversation session "
+        "that is about to be compacted. Extract ONLY what would be critical "
+        "to know in a future session. Be concise.\n\n"
+        "Extract:\n1. Key decisions made (with rationale)\n"
+        "2. Current task state (what's in progress, what's blocked)\n"
+        "3. Action items or next steps\n"
+        "4. Important context that wouldn't be obvious from code alone\n\n"
+        "Format as a bulleted list. Omit categories with nothing to report. Max 300 words.")
+
+    def save_snapshot(self, content: str, *, title=None, session_id=None, tags=None):
+        """Save a session snapshot as a high-importance memory."""
+        if not content or not content.strip():
+            raise ValueError("content must be non-empty")
+        import uuid
+        if session_id is None:
+            session_id = uuid.uuid4().hex[:12]
+        if title is None:
+            title = content[:80].strip()
+        extraction_method = "raw"
+        context = None
+        if self._enrichment_pipeline and len(content) > 500:
+            try:
+                extracted = self._enrichment_pipeline._llm.complete(self._SNAPSHOT_EXTRACTION_PROMPT + "\n\n" + content[:4000])
+                if extracted and extracted.strip():
+                    context = content
+                    content = extracted.strip()
+                    extraction_method = "llm"
+            except Exception:
+                logger.warning("Snapshot LLM extraction failed, saving raw", exc_info=True)
+        all_tags = ["session_snapshot", session_id] + (tags or [])
+        metadata = {"session_id": session_id, "title": title, "extraction_method": extraction_method}
+        memory_id = self.remember(content=content, type="session_snapshot", tier="long", context=context, tags=all_tags, metadata=metadata, confidence=1.0)
+        memory = self._store.get(memory_id)
+        if memory:
+            memory.importance_score = 0.95
+            self._store.update(memory)
+        return memory
+
+    # ------------------------------------------------------------------
+    # Topic Notes (E4)
+    # ------------------------------------------------------------------
+
+    _TOPIC_SUMMARY_PROMPT = ("You are summarizing everything known about a specific topic based on "
+        "memory entries. Write 2-4 sentences covering: what it is, key decisions "
+        "made about it, and its current state. Be factual.\n\n")
+
+    def list_topics(self, *, entity_type=None, min_mentions=3, limit=50, project=None):
+        """List auto-detected topics."""
+        if not self._knowledge_graph_enabled:
+            return []
+        entities = self._store.list_entities(entity_type=entity_type, limit=10000)
+        candidates = [e for e in entities if e.mention_count >= min_mentions]
+        if project:
+            filtered = []
+            for entity in candidates:
+                mentions = self._store.get_entity_mentions_for_entity(entity.id)
+                for mention in mentions:
+                    mem = self._store.get(mention.memory_id)
+                    if mem and mem.project == project:
+                        filtered.append(entity)
+                        break
+            candidates = filtered
+        candidates.sort(key=lambda e: e.mention_count, reverse=True)
+        candidates = candidates[:limit]
+        results = []
+        for entity in candidates:
+            rels = self._store.list_relationships(entity_id=entity.id, limit=100)
+            related_ids = set()
+            for r in rels:
+                other = r.target_entity_id if r.source_entity_id == entity.id else r.source_entity_id
+                related_ids.add(other)
+            results.append(TopicSummary(entity_id=entity.id, name=entity.name, entity_type=entity.entity_type, mention_count=entity.mention_count, first_seen_at=entity.first_seen_at, last_seen_at=entity.last_seen_at, related_entity_count=len(related_ids)))
+        return results
+
+    def topic_detail(self, name, *, max_memories=20, include_summary=True):
+        """Get comprehensive detail for a topic by entity name."""
+        if not self._knowledge_graph_enabled:
+            return None
+        entity = self._store.get_entity_by_name(name.lower())
+        if entity is None:
+            entity = self._store.get_entity_by_alias(name.lower())
+        if entity is None:
+            return None
+        mentions = self._store.get_entity_mentions_for_entity(entity.id)
+        memories = []
+        seen_ids = set()
+        for mention in mentions:
+            if mention.memory_id not in seen_ids:
+                mem = self._store.get(mention.memory_id)
+                if mem:
+                    memories.append(mem)
+                    seen_ids.add(mention.memory_id)
+        memory_count = len(memories)
+        memories.sort(key=lambda m: m.created_at, reverse=True)
+        memories = memories[:max_memories]
+        rels = self._store.list_relationships(entity_id=entity.id, limit=100)
+        related = []
+        for r in rels:
+            if r.source_entity_id == entity.id:
+                target = self._store.get_entity(r.target_entity_id)
+                if target:
+                    related.append(RelatedEntity(name=target.name, entity_type=target.entity_type, relationship=r.rel_type, direction="outgoing"))
+            else:
+                source = self._store.get_entity(r.source_entity_id)
+                if source:
+                    related.append(RelatedEntity(name=source.name, entity_type=source.entity_type, relationship=r.rel_type, direction="incoming"))
+        summary = None
+        summary_method = "structured"
+        summary_generated_at = None
+        if include_summary and self._topic_summary_cache is not None:
+            cached = self._topic_summary_cache.get(entity.id)
+            if cached is not None:
+                summary, summary_method = cached
+                summary_generated_at = entity.updated_at
+            elif self._enrichment_pipeline and memories:
+                try:
+                    related_names = ", ".join(r.name for r in related[:10])
+                    mem_text = ""
+                    for m in memories[:10]:
+                        piece = f"- {m.content}\n"
+                        if len(mem_text) + len(piece) > 3000:
+                            break
+                        mem_text += piece
+                    prompt = self._TOPIC_SUMMARY_PROMPT + f"Topic: {entity.name} ({entity.entity_type})\nRelated entities: {related_names}\nMemories:\n{mem_text}"
+                    result = self._enrichment_pipeline._llm.complete(prompt)
+                    if result and result.strip():
+                        summary = result.strip()
+                        summary_method = "llm"
+                        summary_generated_at = datetime.now(timezone.utc).isoformat()
+                        self._topic_summary_cache.set(entity.id, summary, summary_method)
+                except Exception:
+                    logger.warning("Topic LLM summary failed", exc_info=True)
+        return TopicDetail(entity=entity, related_entities=related, memories=memories, summary=summary, summary_method=summary_method, summary_generated_at=summary_generated_at, memory_count=memory_count)
+
 
     def recall(
         self,

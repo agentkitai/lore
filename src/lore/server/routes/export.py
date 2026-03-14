@@ -49,7 +49,7 @@ async def export_data(
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             tmp_path = tmp.name
 
-        lore = Lore(db_path=os.environ.get("LORE_DB_PATH", "~/.lore/memories.db"))
+        lore = Lore()
         result = lore.export_data(
             format="json",
             output=tmp_path,
@@ -97,7 +97,7 @@ async def import_data(
             tmp.write(body)
             tmp_path = tmp.name
 
-        lore = Lore(db_path=os.environ.get("LORE_DB_PATH", "~/.lore/memories.db"))
+        lore = Lore()
         result = lore.import_data(
             file_path=tmp_path,
             overwrite=overwrite,
@@ -130,7 +130,7 @@ async def create_snapshot(
     from lore.export.snapshot import SnapshotManager
 
     try:
-        lore = Lore(db_path=os.environ.get("LORE_DB_PATH", "~/.lore/memories.db"))
+        lore = Lore()
         mgr = SnapshotManager(lore)
         info = mgr.create()
         lore.close()
@@ -153,7 +153,7 @@ async def list_snapshots(
     from lore.export.snapshot import SnapshotManager
 
     try:
-        lore = Lore(db_path=os.environ.get("LORE_DB_PATH", "~/.lore/memories.db"))
+        lore = Lore()
         mgr = SnapshotManager(lore)
         snapshots = mgr.list()
         lore.close()
@@ -173,7 +173,7 @@ async def delete_snapshot(
     from lore.export.snapshot import SnapshotManager
 
     try:
-        lore = Lore(db_path=os.environ.get("LORE_DB_PATH", "~/.lore/memories.db"))
+        lore = Lore()
         mgr = SnapshotManager(lore)
         if mgr.delete(name):
             lore.close()

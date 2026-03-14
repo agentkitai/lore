@@ -7,7 +7,7 @@ import os
 import pytest
 
 from lore.export.markdown import MarkdownRenderer
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import (
     Entity,
     EntityMention,
@@ -21,7 +21,7 @@ from lore.types import (
 @pytest.fixture
 def store(tmp_path):
     db = str(tmp_path / "test.db")
-    return SqliteStore(db, knowledge_graph=True)
+    return MemoryStore()
 
 
 def _seed_data(store):
@@ -235,7 +235,7 @@ class TestMarkdownFormatBoth:
     def test_format_both(self, tmp_path):
         from lore import Lore
         db = str(tmp_path / "lore.db")
-        lore = Lore(db_path=db)
+        lore = Lore(store=MemoryStore())
         lore.remember("both format test", type="code")
         json_out = str(tmp_path / "export.json")
         lore.export_data(format="both", output=json_out)

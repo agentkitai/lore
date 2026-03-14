@@ -8,13 +8,14 @@ import time
 import pytest
 
 from lore.export.snapshot import SnapshotManager
+from lore.store.memory import MemoryStore
 
 
 @pytest.fixture
 def lore_instance(tmp_path):
     from lore import Lore
     db = str(tmp_path / "lore.db")
-    return Lore(db_path=db)
+    return Lore(store=MemoryStore())
 
 
 @pytest.fixture
@@ -124,14 +125,14 @@ class TestSnapshotRestore:
         snapshots_dir = str(tmp_path / "snapshots")
 
         # Create and snapshot
-        lore1 = Lore(db_path=str(tmp_path / "lore.db"))
+        lore1 = Lore(store=MemoryStore())
         lore1.remember("restore test")
         mgr1 = SnapshotManager(lore1, snapshots_dir=snapshots_dir)
         info = mgr1.create()
         lore1.close()
 
         # Restore into fresh DB
-        lore2 = Lore(db_path=str(tmp_path / "lore2.db"))
+        lore2 = Lore(store=MemoryStore())
         mgr2 = SnapshotManager(lore2, snapshots_dir=snapshots_dir)
         result = mgr2.restore(info["name"])
         assert result.imported == 1
@@ -142,13 +143,13 @@ class TestSnapshotRestore:
 
         snapshots_dir = str(tmp_path / "snapshots")
 
-        lore1 = Lore(db_path=str(tmp_path / "lore.db"))
+        lore1 = Lore(store=MemoryStore())
         lore1.remember("latest test")
         mgr = SnapshotManager(lore1, snapshots_dir=snapshots_dir)
         mgr.create()
         lore1.close()
 
-        lore2 = Lore(db_path=str(tmp_path / "lore2.db"))
+        lore2 = Lore(store=MemoryStore())
         mgr2 = SnapshotManager(lore2, snapshots_dir=snapshots_dir)
         result = mgr2.restore("__latest__")
         assert result.imported == 1

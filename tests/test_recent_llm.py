@@ -39,7 +39,7 @@ def _lore_with_enrichment(memories, llm_response="- Key point A\n- Key point B")
     for m in memories:
         store.save(m)
 
-    lore = Lore(embedding_fn=_stub_embed)
+    lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
     lore._store = store
 
     # Mock the enrichment pipeline
@@ -62,7 +62,7 @@ class TestLLMSummary:
     def test_summary_disabled_without_enrichment(self):
         store = MemoryStore()
         store.save(_make_memory("m1", "test"))
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
 
         result = lore.recent_activity(format="brief")

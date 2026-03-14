@@ -113,7 +113,7 @@ export class FilterPanel {
     slider.type = 'range';
     slider.min = '0';
     slider.max = '100';
-    slider.value = String((this.state.filters.minImportance || 0) * 100);
+    slider.value = String(Math.round((this.state.filters.minImportance || 0) * 100));
     slider.className = 'filter-slider';
     const sliderVal = document.createElement('span');
     sliderVal.className = 'slider-value';
@@ -153,6 +153,10 @@ export class FilterPanel {
       dr[1] = until.value || null;
       this.state.setFilter('dateRange', dr);
     };
+    // Pre-populate from state
+    if (this.state.filters.dateRange[0]) since.value = this.state.filters.dateRange[0];
+    if (this.state.filters.dateRange[1]) until.value = this.state.filters.dateRange[1];
+
     dateRow.appendChild(since);
     dateRow.appendChild(until);
     inner.appendChild(dateRow);

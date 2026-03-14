@@ -88,4 +88,14 @@ export async function fetchTimeline(bucket = 'day', project = null) {
   return fetchJSON(`/v1/ui/timeline?${params}`);
 }
 
+export async function fetchTopics(minMentions = 3, limit = 20) {
+  const params = new URLSearchParams({ min_mentions: minMentions, limit });
+  return fetchJSON(`/v1/ui/topics?${params}`);
+}
+
+export async function fetchTopicDetail(name, maxMemories = 20) {
+  const params = new URLSearchParams({ max_memories: maxMemories });
+  return fetchJSON(`/v1/ui/topics/${encodeURIComponent(name)}?${params}`);
+}
+
 export { cache };

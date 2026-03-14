@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lore.store.memory import MemoryStore
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import (
     ConflictEntry,
     ConsolidationLogEntry,
@@ -98,9 +98,9 @@ def _make_consolidation_log(lid: str = "cl1") -> ConsolidationLogEntry:
 
 
 @pytest.fixture
-def sqlite_store(tmp_path):
+def memory_store(tmp_path):
     db_path = str(tmp_path / "test.db")
-    return SqliteStore(db_path, knowledge_graph=True)
+    return MemoryStore()
 
 
 class TestBaseStoreDefaults:
@@ -113,79 +113,79 @@ class TestBaseStoreDefaults:
 
 
 class TestSqliteListAllFacts:
-    def test_returns_all_facts(self, sqlite_store):
-        sqlite_store.save(_make_memory("m1"))
-        sqlite_store.save(_make_memory("m2"))
-        sqlite_store.save_fact(_make_fact("f1", "m1"))
-        sqlite_store.save_fact(_make_fact("f2", "m2"))
-        facts = sqlite_store.list_all_facts()
+    def test_returns_all_facts(self, memory_store):
+        memory_store.save(_make_memory("m1"))
+        memory_store.save(_make_memory("m2"))
+        memory_store.save_fact(_make_fact("f1", "m1"))
+        memory_store.save_fact(_make_fact("f2", "m2"))
+        facts = memory_store.list_all_facts()
         assert len(facts) == 2
 
-    def test_filtered_by_memory_ids(self, sqlite_store):
-        sqlite_store.save(_make_memory("m1"))
-        sqlite_store.save(_make_memory("m2"))
-        sqlite_store.save_fact(_make_fact("f1", "m1"))
-        sqlite_store.save_fact(_make_fact("f2", "m2"))
-        facts = sqlite_store.list_all_facts(memory_ids=["m1"])
+    def test_filtered_by_memory_ids(self, memory_store):
+        memory_store.save(_make_memory("m1"))
+        memory_store.save(_make_memory("m2"))
+        memory_store.save_fact(_make_fact("f1", "m1"))
+        memory_store.save_fact(_make_fact("f2", "m2"))
+        facts = memory_store.list_all_facts(memory_ids=["m1"])
         assert len(facts) == 1
         assert facts[0].memory_id == "m1"
 
-    def test_empty_filter_returns_empty(self, sqlite_store):
-        sqlite_store.save(_make_memory("m1"))
-        sqlite_store.save_fact(_make_fact("f1", "m1"))
-        facts = sqlite_store.list_all_facts(memory_ids=[])
+    def test_empty_filter_returns_empty(self, memory_store):
+        memory_store.save(_make_memory("m1"))
+        memory_store.save_fact(_make_fact("f1", "m1"))
+        facts = memory_store.list_all_facts(memory_ids=[])
         assert facts == []
 
 
 class TestSqliteListAllEntityMentions:
-    def test_returns_all_mentions(self, sqlite_store):
-        sqlite_store.save(_make_memory("m1"))
+    def test_returns_all_mentions(self, memory_store):
+        memory_store.save(_make_memory("m1"))
         e = Entity(
             id="e1", name="test", entity_type="tool",
             first_seen_at="2026-01-01", last_seen_at="2026-01-01",
             created_at="2026-01-01", updated_at="2026-01-01",
         )
-        sqlite_store.save_entity(e)
+        memory_store.save_entity(e)
         em = EntityMention(
             id="em1", entity_id="e1", memory_id="m1",
             created_at="2026-01-01",
         )
-        sqlite_store.save_entity_mention(em)
-        mentions = sqlite_store.list_all_entity_mentions()
+        memory_store.save_entity_mention(em)
+        mentions = memory_store.list_all_entity_mentions()
         assert len(mentions) == 1
 
-    def test_filtered_by_memory_ids(self, sqlite_store):
-        sqlite_store.save(_make_memory("m1"))
-        sqlite_store.save(_make_memory("m2"))
+    def test_filtered_by_memory_ids(self, memory_store):
+        memory_store.save(_make_memory("m1"))
+        memory_store.save(_make_memory("m2"))
         e = Entity(
             id="e1", name="test", entity_type="tool",
             first_seen_at="2026-01-01", last_seen_at="2026-01-01",
             created_at="2026-01-01", updated_at="2026-01-01",
         )
-        sqlite_store.save_entity(e)
-        sqlite_store.save_entity_mention(EntityMention(
+        memory_store.save_entity(e)
+        memory_store.save_entity_mention(EntityMention(
             id="em1", entity_id="e1", memory_id="m1", created_at="2026-01-01",
         ))
-        sqlite_store.save_entity_mention(EntityMention(
+        memory_store.save_entity_mention(EntityMention(
             id="em2", entity_id="e1", memory_id="m2", created_at="2026-01-01",
         ))
-        mentions = sqlite_store.list_all_entity_mentions(memory_ids=["m1"])
+        mentions = memory_store.list_all_entity_mentions(memory_ids=["m1"])
         assert len(mentions) == 1
         assert mentions[0].memory_id == "m1"
 
 
 class TestSqliteListAllConflicts:
-    def test_returns_all_conflicts(self, sqlite_store):
-        sqlite_store.save(_make_memory("m2"))
-        sqlite_store.save_conflict(_make_conflict("c1"))
-        sqlite_store.save_conflict(_make_conflict("c2"))
-        conflicts = sqlite_store.list_all_conflicts()
+    def test_returns_all_conflicts(self, memory_store):
+        memory_store.save(_make_memory("m2"))
+        memory_store.save_conflict(_make_conflict("c1"))
+        memory_store.save_conflict(_make_conflict("c2"))
+        conflicts = memory_store.list_all_conflicts()
         assert len(conflicts) == 2
 
 
 class TestSqliteListAllConsolidationLogs:
-    def test_returns_all_logs(self, sqlite_store):
-        sqlite_store.save_consolidation_log(_make_consolidation_log("cl1"))
-        sqlite_store.save_consolidation_log(_make_consolidation_log("cl2"))
-        logs = sqlite_store.list_all_consolidation_logs()
+    def test_returns_all_logs(self, memory_store):
+        memory_store.save_consolidation_log(_make_consolidation_log("cl1"))
+        memory_store.save_consolidation_log(_make_consolidation_log("cl2"))
+        logs = memory_store.list_all_consolidation_logs()
         assert len(logs) == 2

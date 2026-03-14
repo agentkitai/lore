@@ -29,6 +29,10 @@ class MemoryStore(Store):
         self._entity_mentions: List[EntityMention] = []
         self._consolidation_log: List[ConsolidationLogEntry] = []
 
+    def close(self) -> None:
+        """No-op for in-memory store."""
+        pass
+
     def save(self, memory: Memory) -> None:
         self._memories[memory.id] = memory
 
@@ -372,3 +376,16 @@ class MemoryStore(Store):
         entries = list(self._consolidation_log)
         entries.sort(key=lambda e: e.created_at, reverse=True)
         return entries[:limit]
+
+    def list_all_facts(self, memory_ids: Optional[List[str]] = None) -> List[Fact]:
+        facts = list(self._facts.values())
+        if memory_ids is not None:
+            id_set = set(memory_ids)
+            facts = [f for f in facts if f.memory_id in id_set]
+        return facts
+
+    def list_all_conflicts(self, limit: int = 10000) -> List[ConflictEntry]:
+        return list(self._conflict_log[:limit])
+
+    def list_all_consolidation_logs(self, limit: int = 10000) -> List[ConsolidationLogEntry]:
+        return list(self._consolidation_log[:limit])

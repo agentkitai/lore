@@ -67,10 +67,7 @@ def _send_local(
     try:
         from lore import Lore
 
-        kwargs: Dict = {"enrichment": True}
-        if db:
-            kwargs["db_path"] = db
-        lore = Lore(**kwargs)
+        lore = Lore(enrichment=True)
         result = lore.add_conversation(
             messages,
             user_id=user_id,

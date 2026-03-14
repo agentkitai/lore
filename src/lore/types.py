@@ -162,6 +162,7 @@ TIER_DECAY_HALF_LIVES: Dict[str, Dict[str, float]] = {
         "convention": 3,
         "fact": 2,
         "preference": 2,
+        "session_snapshot": 0.5,
     },
     "short": {
         "default": 7,
@@ -171,6 +172,7 @@ TIER_DECAY_HALF_LIVES: Dict[str, Dict[str, float]] = {
         "convention": 14,
         "fact": 10,
         "preference": 10,
+        "session_snapshot": 3,
     },
     "long": {
         "default": 30,
@@ -180,6 +182,7 @@ TIER_DECAY_HALF_LIVES: Dict[str, Dict[str, float]] = {
         "convention": 60,
         "fact": 90,
         "preference": 90,
+        "session_snapshot": 7,
     },
 }
 
@@ -199,6 +202,7 @@ VALID_MEMORY_TYPES = frozenset(
         "preference",    # user/agent preferences
         "debug",         # debugging insights
         "pattern",       # recurring patterns
+        "session_snapshot",   # session context rescue (E3)
     ]
 )
 
@@ -413,3 +417,43 @@ class ImportResult:
     embeddings_regenerated: int = 0
     duration_ms: int = 0
 
+
+
+# ------------------------------------------------------------------
+# Topic Notes types (E4)
+# ------------------------------------------------------------------
+
+@dataclass
+class TopicSummary:
+    """A topic in the list view."""
+
+    entity_id: str
+    name: str
+    entity_type: str
+    mention_count: int
+    first_seen_at: str
+    last_seen_at: str
+    related_entity_count: int = 0
+
+
+@dataclass
+class TopicDetail:
+    """Full detail for a single topic."""
+
+    entity: Entity
+    related_entities: List["RelatedEntity"]
+    memories: List[Memory]
+    summary: Optional[str] = None
+    summary_method: Optional[str] = None
+    summary_generated_at: Optional[str] = None
+    memory_count: int = 0
+
+
+@dataclass
+class RelatedEntity:
+    """An entity related to a topic via a knowledge graph edge."""
+
+    name: str
+    entity_type: str
+    relationship: str
+    direction: str

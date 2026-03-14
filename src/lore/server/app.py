@@ -10,7 +10,8 @@ from typing import AsyncIterator
 
 try:
     from fastapi import FastAPI, HTTPException, Request
-    from fastapi.responses import JSONResponse, Response
+    from fastapi.responses import HTMLResponse, JSONResponse, Response
+    from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
     raise ImportError(
@@ -33,6 +34,9 @@ from lore.server.middleware import install_middleware
 from lore.server.routes.analytics import router as analytics_router
 from lore.server.routes.conversations import router as conversations_router
 from lore.server.routes.export import router as export_router
+from lore.server.routes.snapshots import router as snapshots_router
+from lore.server.routes.topics import router as topics_router
+from lore.server.routes.graph import router as graph_router
 from lore.server.routes.ingest import router as ingest_router
 from lore.server.routes.keys import router as keys_router
 from lore.server.routes.lessons import router as lessons_router
@@ -79,6 +83,31 @@ app.include_router(analytics_router)
 app.include_router(conversations_router)
 app.include_router(recent_router)
 app.include_router(export_router)
+app.include_router(graph_router)
+app.include_router(topics_router)
+
+# ── UI static files ────────────────────────────────────────────────
+import importlib.resources as _pkg_resources
+import pathlib as _pathlib
+
+_ui_dist = None
+try:
+    _ui_pkg = _pkg_resources.files("lore") / "ui" / "dist"
+    _ui_path = _pathlib.Path(str(_ui_pkg))
+    if _ui_path.is_dir():
+        _ui_dist = _ui_path
+except Exception:
+    pass
+
+if _ui_dist:
+    _index_html = (_ui_dist / "index.html").read_text()
+
+    @app.get("/ui/", response_class=HTMLResponse)
+    @app.get("/ui/{path:path}", response_class=HTMLResponse)
+    async def serve_ui(path: str = "") -> HTMLResponse:
+        return HTMLResponse(_index_html)
+
+    app.mount("/static", StaticFiles(directory=str(_ui_dist)), name="static")
 
 # Install middleware and error handlers
 install_middleware(app)

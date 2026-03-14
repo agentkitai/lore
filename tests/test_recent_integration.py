@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
 import subprocess
 import sys
+
+import pytest
 from datetime import datetime, timedelta, timezone
 from typing import List
 from unittest.mock import patch
@@ -60,7 +63,7 @@ class TestMcpRecentActivityTool:
 
         store = MemoryStore()
         store.save(_make_memory("m1", "Test memory"))
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
 
         old = mcp_server._lore
@@ -78,7 +81,7 @@ class TestMcpRecentActivityTool:
 
         store = MemoryStore()
         store.save(_make_memory("m1", "Test memory"))
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
 
         old = mcp_server._lore
@@ -113,6 +116,10 @@ class TestMcpRecentActivityTool:
 # =========================================================================
 
 
+@pytest.mark.skipif(
+    not os.environ.get("LORE_API_URL"),
+    reason="CLI subprocess tests require LORE_API_URL",
+)
 class TestCliRecent:
     def test_cli_recent_runs(self, tmp_path):
         """lore recent should run and exit 0."""

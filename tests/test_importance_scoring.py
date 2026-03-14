@@ -341,6 +341,7 @@ class TestBackwardCompat:
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
             Lore(
+
                 store=MemoryStore(),
                 embedding_fn=_fixed_embed,
                 decay_similarity_weight=0.5,

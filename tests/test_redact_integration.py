@@ -12,6 +12,7 @@ from lore.store.memory import MemoryStore
 def _make_lore(**kwargs) -> Lore:
     """Create a Lore instance with in-memory store and dummy embedder."""
     return Lore(
+
         store=MemoryStore(),
         embedding_fn=lambda text: [0.0] * 384,
         **kwargs,

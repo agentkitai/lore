@@ -7,7 +7,7 @@ import struct
 
 from lore.export.exporter import Exporter
 from lore.export.importer import Importer
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import (
     ConflictEntry,
     ConsolidationLogEntry,
@@ -131,7 +131,7 @@ class TestFullRoundTrip:
 
     def test_full_roundtrip(self, tmp_path):
         # 1. Create source data
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         _make_full_dataset(src_store)
 
         # 2. Export (no embeddings)
@@ -145,7 +145,7 @@ class TestFullRoundTrip:
         assert r1.consolidation_logs == 1
 
         # 3. Import into fresh DB
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         importer = Importer(dst_store)
         ir = importer.import_file(export1)
         assert ir.imported == 3
@@ -165,13 +165,13 @@ class TestFullRoundTrip:
         assert r1.content_hash == r2.content_hash
 
     def test_roundtrip_with_embeddings(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         _make_full_dataset(src_store)
 
         export1 = str(tmp_path / "export1.json")
         Exporter(src_store).export(output=export1, include_embeddings=True)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         Importer(dst_store).import_file(export1)
 
         export2 = str(tmp_path / "export2.json")
@@ -185,13 +185,13 @@ class TestFullRoundTrip:
         assert d1["data"] == d2["data"]
 
     def test_roundtrip_graph_integrity(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         _make_full_dataset(src_store)
 
         export_path = str(tmp_path / "export.json")
         Exporter(src_store).export(output=export_path)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         Importer(dst_store).import_file(export_path)
 
         # Verify entities
@@ -209,13 +209,13 @@ class TestFullRoundTrip:
         assert len(mentions) == 2
 
     def test_roundtrip_facts_and_conflicts(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         _make_full_dataset(src_store)
 
         export_path = str(tmp_path / "export.json")
         Exporter(src_store).export(output=export_path)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         Importer(dst_store).import_file(export_path)
 
         facts = dst_store.list_all_facts()
@@ -231,20 +231,20 @@ class TestFullRoundTrip:
         assert logs[0].strategy == "merge"
 
     def test_roundtrip_with_project_override(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         _make_full_dataset(src_store)
 
         export_path = str(tmp_path / "export.json")
         Exporter(src_store).export(output=export_path)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         Importer(dst_store).import_file(export_path, project_override="new-project")
 
         for m in dst_store.list(include_archived=True):
             assert m.project == "new-project"
 
     def test_roundtrip_filtered_export(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         _make_full_dataset(src_store)
 
         export_path = str(tmp_path / "filtered.json")
@@ -252,7 +252,7 @@ class TestFullRoundTrip:
         r = Exporter(src_store).export(output=export_path, filters=filters)
         assert r.memories == 1
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         ir = Importer(dst_store).import_file(export_path)
         assert ir.imported == 1
         assert dst_store.get("m1") is not None
@@ -261,7 +261,7 @@ class TestFullRoundTrip:
 
 class TestEdgeCases:
     def test_export_empty_database(self, tmp_path):
-        store = SqliteStore(str(tmp_path / "empty.db"), knowledge_graph=True)
+        store = MemoryStore()
         output = str(tmp_path / "empty.json")
         r = Exporter(store).export(output=output)
         assert r.memories == 0
@@ -270,7 +270,7 @@ class TestEdgeCases:
         assert data["counts"]["memories"] == 0
 
     def test_export_unicode_and_emoji(self, tmp_path):
-        store = SqliteStore(str(tmp_path / "unicode.db"), knowledge_graph=True)
+        store = MemoryStore()
         store.save(Memory(
             id="m-emoji", content="🎉 日本語 عربي Ñoño",
             type="general",
@@ -280,13 +280,13 @@ class TestEdgeCases:
         output = str(tmp_path / "unicode.json")
         Exporter(store).export(output=output)
 
-        dst = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst = MemoryStore()
         Importer(dst).import_file(output)
         m = dst.get("m-emoji")
         assert m.content == "🎉 日本語 عربي Ñoño"
 
     def test_export_very_long_content(self, tmp_path):
-        store = SqliteStore(str(tmp_path / "long.db"), knowledge_graph=True)
+        store = MemoryStore()
         long_content = "x" * 100_000
         store.save(Memory(
             id="m-long", content=long_content,
@@ -296,13 +296,13 @@ class TestEdgeCases:
         output = str(tmp_path / "long.json")
         Exporter(store).export(output=output)
 
-        dst = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst = MemoryStore()
         Importer(dst).import_file(output)
         m = dst.get("m-long")
         assert len(m.content) == 100_000
 
     def test_export_null_everywhere(self, tmp_path):
-        store = SqliteStore(str(tmp_path / "nulls.db"), knowledge_graph=True)
+        store = MemoryStore()
         store.save(Memory(
             id="m-null", content="minimal",
             context=None, metadata=None, source=None, project=None,
@@ -314,7 +314,7 @@ class TestEdgeCases:
         output = str(tmp_path / "nulls.json")
         Exporter(store).export(output=output)
 
-        dst = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst = MemoryStore()
         Importer(dst).import_file(output)
         m = dst.get("m-null")
         assert m.context is None
@@ -322,7 +322,7 @@ class TestEdgeCases:
         assert m.source is None
 
     def test_export_archived_memories(self, tmp_path):
-        store = SqliteStore(str(tmp_path / "archived.db"), knowledge_graph=True)
+        store = MemoryStore()
         store.save(Memory(
             id="m-archived", content="archived", archived=True,
             created_at="2026-01-01", updated_at="2026-01-01",
@@ -333,7 +333,7 @@ class TestEdgeCases:
         assert r.memories == 1
 
     def test_export_expired_memories(self, tmp_path):
-        store = SqliteStore(str(tmp_path / "expired.db"), knowledge_graph=True)
+        store = MemoryStore()
         store.save(Memory(
             id="m-expired", content="expired",
             expires_at="2020-01-01T00:00:00Z",
@@ -360,7 +360,7 @@ class TestEdgeCases:
         with open(path, "w") as f:
             json.dump(envelope, f)
 
-        store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        store = MemoryStore()
         result = Importer(store).import_file(path)
         assert result.imported == 1
         assert result.errors == 0
@@ -373,7 +373,7 @@ class TestMCPTools:
         from lore import Lore
 
         db = str(tmp_path / "lore.db")
-        lore = Lore(db_path=db)
+        lore = Lore(store=MemoryStore())
         lore.remember("mcp export test")
 
         import lore.mcp.server as mcp_mod
@@ -389,7 +389,7 @@ class TestMCPTools:
         from lore import Lore
 
         db = str(tmp_path / "lore.db")
-        lore = Lore(db_path=db)
+        lore = Lore(store=MemoryStore())
         lore.remember("snapshot test")
 
         import lore.mcp.server as mcp_mod
@@ -405,7 +405,7 @@ class TestMCPTools:
         from lore.export import snapshot as snap_mod
 
         db = str(tmp_path / "lore.db")
-        lore = Lore(db_path=db)
+        lore = Lore(store=MemoryStore())
 
         import lore.mcp.server as mcp_mod
         monkeypatch.setattr(mcp_mod, "_lore", lore)

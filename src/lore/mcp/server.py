@@ -42,10 +42,21 @@ def _get_lore() -> Lore:
             api_key=os.environ.get("LORE_API_KEY"),
         )
     elif store_type == "local":
-        enrichment = os.environ.get("LORE_ENRICHMENT_ENABLED", "").lower() in ("true", "1", "yes")
+        _enrich_env = os.environ.get("LORE_ENRICHMENT_ENABLED", "").lower()
+        # Default to true if OPENAI_API_KEY is available and not explicitly disabled
+        if _enrich_env in ("true", "1", "yes"):
+            enrichment = True
+        elif _enrich_env in ("false", "0", "no"):
+            enrichment = False
+        else:
+            # Auto-enable if an API key is available
+            enrichment = bool(os.environ.get("OPENAI_API_KEY"))
         enrichment_model = os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
         _lore = Lore(
             project=project,
+            store="remote",
+            api_url=os.environ.get("LORE_API_URL"),
+            api_key=os.environ.get("LORE_API_KEY"),
             enrichment=enrichment,
             enrichment_model=enrichment_model,
         )
@@ -68,7 +79,9 @@ mcp = FastMCP(
         "Lore is a cross-agent memory system. "
         "IMPORTANT: Call recent_activity at the start of every session "
         "for continuity with prior work. Use recall for semantic search. "
-        "Use remember to save knowledge worth preserving."
+        "Use remember to save knowledge worth preserving.\n"
+        "Call save_snapshot when context is getting long. "
+        "Call topics to see recurring concepts, topic_detail for deep context."
     ),
 )
 
@@ -1159,6 +1172,68 @@ def snapshot_list() -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Failed to list snapshots: {e}"
+
+
+
+@mcp.tool(description="List auto-detected topics — recurring concepts across multiple memories.")
+def topics(entity_type=None, min_mentions: int = 3, limit: int = 20, project=None) -> str:
+    try:
+        lore = _get_lore()
+        if not lore._knowledge_graph_enabled:
+            return "Topics require the knowledge graph. Set LORE_KNOWLEDGE_GRAPH=true to enable."
+        min_mentions = max(1, min(min_mentions, 100))
+        results = lore.list_topics(entity_type=entity_type, min_mentions=min_mentions, limit=limit, project=project or os.environ.get("LORE_PROJECT"))
+        if not results:
+            return "No topics found meeting the threshold."
+        lines = [f"Topics ({len(results)} found, threshold: {min_mentions}+ mentions):\n"]
+        for t in results:
+            lines.append(f"- {t.name} ({t.entity_type}) — {t.mention_count} memories, {t.related_entity_count} related entities")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list topics: {e}"
+
+
+@mcp.tool(description="Get everything Lore knows about a topic — linked memories, related entities, timeline.")
+def topic_detail(name: str, max_memories: int = 20, format: str = "brief") -> str:
+    try:
+        lore = _get_lore()
+        if not lore._knowledge_graph_enabled:
+            return "Topics require the knowledge graph. Set LORE_KNOWLEDGE_GRAPH=true to enable."
+        detail = lore.topic_detail(name, max_memories=max_memories)
+        if detail is None:
+            return f"No topic found matching '{name}'."
+        entity = detail.entity
+        lines = [f"Topic: {entity.name} ({entity.entity_type})", f"Mentions: {detail.memory_count}"]
+        if detail.summary:
+            lines.append(f"\nSummary ({detail.summary_method}): {detail.summary}")
+        if detail.related_entities:
+            lines.append("\nRelated entities:")
+            for r in detail.related_entities:
+                lines.append(f"  - {r.name} ({r.entity_type}) [{r.relationship}, {r.direction}]")
+        if detail.memories:
+            lines.append(f"\nMemories ({len(detail.memories)} shown of {detail.memory_count}):")
+            for m in detail.memories:
+                ts = m.created_at[:10] if m.created_at else "?"
+                ct = m.content if format == "detailed" else m.content[:100]
+                if format != "detailed" and len(m.content) > 100:
+                    ct += "..."
+                lines.append(f"  [{ts}] {m.type}: {ct}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to get topic detail: {e}"
+
+
+@mcp.tool(description="Save a session snapshot to preserve important context before it is lost.")
+def save_snapshot(content: str, title=None, session_id=None, tags=None) -> str:
+    try:
+        if not content or not content.strip():
+            return "Error: content must be non-empty."
+        lore = _get_lore()
+        memory = lore.save_snapshot(content, title=title, session_id=session_id, tags=tags)
+        meta = memory.metadata or {}
+        return f"Snapshot saved (id={memory.id}, session={meta.get('session_id', '?')}, method={meta.get('extraction_method', 'raw')}). It will surface in the next session's recent_activity."
+    except Exception as e:
+        return f"Failed to save snapshot: {e}"
 
 
 def run_server() -> None:

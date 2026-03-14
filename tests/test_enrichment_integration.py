@@ -28,6 +28,7 @@ def _make_lore(enrichment=False, store=None, **kwargs):
     """Create a Lore instance with mocked embedding and optional enrichment."""
     from lore import Lore
     return Lore(
+
         store=store or MemoryStore(),
         embedding_fn=_stub_embed,
         redact=False,

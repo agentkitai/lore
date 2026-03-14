@@ -16,7 +16,7 @@ import pytest
 
 from lore.lore import Lore
 from lore.store.memory import MemoryStore
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import (
     TIER_DEFAULT_TTL,
     TIER_RECALL_WEIGHT,
@@ -120,106 +120,56 @@ class TestMemoryStoreTierFiltering:
 
 
 # =========================================================================
-# 3. Store Layer — SqliteStore (5 tests)
+# 3. Store Layer — MemoryStore (5 tests)
 # =========================================================================
 
 
-class TestSqliteStoreTier:
+class TestMemoryStoreTier:
     @pytest.fixture
-    def sqlite_store(self):
+    def memory_store(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            store = SqliteStore(f"{tmpdir}/test.db")
+            store = MemoryStore()
             yield store
             store.close()
 
-    def test_save_and_get_tier(self, sqlite_store: SqliteStore):
+    def test_save_and_get_tier(self, memory_store: MemoryStore):
         m = _make_memory(id="t1", tier="working")
-        sqlite_store.save(m)
-        got = sqlite_store.get("t1")
+        memory_store.save(m)
+        got = memory_store.get("t1")
         assert got is not None
         assert got.tier == "working"
 
-    def test_update_persists_tier(self, sqlite_store: SqliteStore):
+    def test_update_persists_tier(self, memory_store: MemoryStore):
         m = _make_memory(id="t2", tier="working")
-        sqlite_store.save(m)
+        memory_store.save(m)
         m.tier = "long"
-        sqlite_store.update(m)
-        got = sqlite_store.get("t2")
+        memory_store.update(m)
+        got = memory_store.get("t2")
         assert got is not None
         assert got.tier == "long"
 
-    def test_list_filter_by_tier(self, sqlite_store: SqliteStore):
-        sqlite_store.save(_make_memory(id="w", tier="working", created_at="2026-01-01T01:00:00+00:00"))
-        sqlite_store.save(_make_memory(id="s", tier="short", created_at="2026-01-01T02:00:00+00:00"))
-        sqlite_store.save(_make_memory(id="l", tier="long", created_at="2026-01-01T03:00:00+00:00"))
+    def test_list_filter_by_tier(self, memory_store: MemoryStore):
+        memory_store.save(_make_memory(id="w", tier="working", created_at="2026-01-01T01:00:00+00:00"))
+        memory_store.save(_make_memory(id="s", tier="short", created_at="2026-01-01T02:00:00+00:00"))
+        memory_store.save(_make_memory(id="l", tier="long", created_at="2026-01-01T03:00:00+00:00"))
 
-        result = sqlite_store.list(tier="short")
+        result = memory_store.list(tier="short")
         assert len(result) == 1
         assert result[0].id == "s"
 
-    def test_count_filter_by_tier(self, sqlite_store: SqliteStore):
-        sqlite_store.save(_make_memory(id="w1", tier="working", created_at="2026-01-01T01:00:00+00:00"))
-        sqlite_store.save(_make_memory(id="w2", tier="working", created_at="2026-01-01T02:00:00+00:00"))
-        sqlite_store.save(_make_memory(id="l", tier="long", created_at="2026-01-01T03:00:00+00:00"))
+    def test_count_filter_by_tier(self, memory_store: MemoryStore):
+        memory_store.save(_make_memory(id="w1", tier="working", created_at="2026-01-01T01:00:00+00:00"))
+        memory_store.save(_make_memory(id="w2", tier="working", created_at="2026-01-01T02:00:00+00:00"))
+        memory_store.save(_make_memory(id="l", tier="long", created_at="2026-01-01T03:00:00+00:00"))
 
-        assert sqlite_store.count(tier="working") == 2
+        assert memory_store.count(tier="working") == 2
 
-    def test_migration_adds_tier_column(self):
-        """Opening a pre-F4 DB (no tier column) should auto-migrate."""
-        import sqlite3
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = f"{tmpdir}/old.db"
-            # Create old schema without tier
-            conn = sqlite3.connect(db_path)
-            conn.execute("""
-                CREATE TABLE memories (
-                    id TEXT PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    type TEXT DEFAULT 'general',
-                    context TEXT,
-                    tags TEXT,
-                    metadata TEXT,
-                    source TEXT,
-                    project TEXT,
-                    embedding BLOB,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    ttl INTEGER,
-                    expires_at TEXT,
-                    confidence REAL DEFAULT 1.0,
-                    upvotes INTEGER DEFAULT 0,
-                    downvotes INTEGER DEFAULT 0
-                )
-            """)
-            conn.execute(
-                "INSERT INTO memories (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                ("old1", "old memory", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
-            )
-            conn.commit()
-            conn.close()
-
-            # Open with SqliteStore — should auto-migrate
-            store = SqliteStore(db_path)
-            got = store.get("old1")
-            assert got is not None
-            assert got.tier == "long"  # DEFAULT value
-
-            # Verify indexes exist
-            indexes = {
-                row[1]
-                for row in store._conn.execute("PRAGMA index_list(memories)").fetchall()
-            }
-            assert "idx_memories_tier" in indexes
-            assert "idx_memories_project_tier" in indexes
-            store.close()
-
-    def test_row_to_memory_default_tier(self, sqlite_store: SqliteStore):
+    def test_row_to_memory_default_tier(self, memory_store: MemoryStore):
         """Defensive: _row_to_memory on a row without tier col returns 'long'."""
         # This is tested implicitly by the migration test above,
         # but let's verify directly that default tier is "long" for new saves.
-        sqlite_store.save(_make_memory(id="d1"))
-        got = sqlite_store.get("d1")
+        memory_store.save(_make_memory(id="d1"))
+        got = memory_store.get("d1")
         assert got is not None
         assert got.tier == "long"
 
@@ -362,46 +312,6 @@ class TestTierTTLIntegration:
         assert mem.ttl is None
         assert mem.expires_at is None
 
-    def test_backward_compat_existing_db(self):
-        """Pre-F4 database memories should all get tier='long'."""
-        import sqlite3
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = f"{tmpdir}/old.db"
-            conn = sqlite3.connect(db_path)
-            conn.execute("""
-                CREATE TABLE memories (
-                    id TEXT PRIMARY KEY,
-                    content TEXT NOT NULL,
-                    type TEXT DEFAULT 'general',
-                    context TEXT,
-                    tags TEXT,
-                    metadata TEXT,
-                    source TEXT,
-                    project TEXT,
-                    embedding BLOB,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    ttl INTEGER,
-                    expires_at TEXT,
-                    confidence REAL DEFAULT 1.0,
-                    upvotes INTEGER DEFAULT 0,
-                    downvotes INTEGER DEFAULT 0
-                )
-            """)
-            for i in range(3):
-                conn.execute(
-                    "INSERT INTO memories (id, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                    (f"old{i}", f"old memory {i}", "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00"),
-                )
-            conn.commit()
-            conn.close()
-
-            store = SqliteStore(db_path)
-            memories = store.list()
-            assert len(memories) == 3
-            assert all(m.tier == "long" for m in memories)
-            store.close()
 
 
 # =========================================================================

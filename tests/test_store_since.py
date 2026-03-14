@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from lore.store.memory import MemoryStore
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import Memory
 
 
@@ -27,7 +27,7 @@ class TestSqliteListSince:
     @pytest.fixture
     def store(self, tmp_path):
         db = str(tmp_path / "test.db")
-        s = SqliteStore(db)
+        s = MemoryStore()
         # Insert memories at different times
         s.save(_make_memory("m1", "2026-03-14T08:00:00+00:00"))
         s.save(_make_memory("m2", "2026-03-14T12:00:00+00:00"))

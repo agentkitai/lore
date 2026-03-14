@@ -18,8 +18,9 @@ def _utc_now_iso() -> str:
 class EntityManager:
     """Manages entity lifecycle: creation, dedup, alias resolution, merge."""
 
-    def __init__(self, store: Store) -> None:
+    def __init__(self, store: Store, topic_summary_cache=None) -> None:
         self.store = store
+        self._topic_summary_cache = topic_summary_cache
 
     @staticmethod
     def _normalize_name(raw: str) -> str:
@@ -129,6 +130,9 @@ class EntityManager:
             entity.updated_at = _utc_now_iso()
             self.store.update_entity(entity)
 
+            if self._topic_summary_cache is not None:
+                self._topic_summary_cache.invalidate(entity.id)
+
             result.append(entity)
         return result
 
@@ -159,5 +163,8 @@ class EntityManager:
             entity.last_seen_at = now
             entity.updated_at = now
             self.store.update_entity(entity)
+
+            if self._topic_summary_cache is not None:
+                self._topic_summary_cache.invalidate(entity.id)
 
         return subject_entity, object_entity

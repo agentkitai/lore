@@ -11,6 +11,7 @@ export class InteractionManager {
     this.state = state;
     this.renderer = renderer;
     this.simulation = simulation;
+    this.layoutManager = null; // set by index.js
     this._quadtree = null;
     this._dragNode = null;
     this._contextMenu = null;
@@ -155,6 +156,17 @@ export class InteractionManager {
 
     this.canvas.addEventListener('click', (e) => {
       if (isDragging) return;
+
+      // Check for cluster click in collapsed mode
+      if (this.layoutManager && this.layoutManager.isCollapsed()) {
+        const { x, y, k } = this.renderer.transform;
+        const gx = (e.offsetX - x) / k;
+        const gy = (e.offsetY - y) / k;
+        if (this.layoutManager.handleClusterClick(gx, gy)) {
+          return;
+        }
+      }
+
       const node = this._findNode(e.offsetX, e.offsetY);
       if (node) {
         this.state.selectNode(node.id);

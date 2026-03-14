@@ -51,6 +51,7 @@ def lore_with_graph(memory_store: MemoryStore) -> Lore:
     but graph infrastructure (traverser, entity manager) is initialized.
     """
     return Lore(
+
         store=memory_store,
         embedding_fn=_stub_embed,
         redact=False,

@@ -175,6 +175,7 @@ class TestLoreDualEmbedding:
         code = FakeCodeEmbedder()
         router = EmbeddingRouter(prose_embedder=prose, code_embedder=code)
         return Lore(
+
             store=MemoryStore(),
             embedder=router,
             redact=False,
@@ -196,6 +197,7 @@ class TestLoreDualEmbedding:
 
     def test_dual_embedding_false_by_default(self) -> None:
         lore = Lore(
+
             store=MemoryStore(),
             embedding_fn=lambda t: [0.5] * _DIM,
             redact=False,
@@ -255,6 +257,7 @@ class TestReindex:
 
         # First create memories with a plain embedder (no embed_model set)
         lore = Lore(
+
             store=MemoryStore(),
             embedding_fn=lambda t: [0.5] * _DIM,
             redact=False,
@@ -280,6 +283,7 @@ class TestReindex:
         router = EmbeddingRouter(prose_embedder=prose, code_embedder=code)
 
         lore = Lore(
+
             store=MemoryStore(),
             embedding_fn=lambda t: [0.5] * _DIM,
             redact=False,
@@ -313,6 +317,7 @@ class TestReindex:
             code_embedder=FakeCodeEmbedder(),
         )
         lore = Lore(
+
             store=MemoryStore(),
             embedding_fn=lambda t: [0.5] * _DIM,
             redact=False,

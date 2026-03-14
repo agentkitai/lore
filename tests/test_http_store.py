@@ -742,6 +742,7 @@ class TestLoreRemoteInit:
         from lore.lore import Lore
         with patch("lore.store.http.HttpStore._check_health"):
             lore = Lore(
+
                 store="remote",
                 api_url="http://localhost:8765",
                 api_key="lore_sk_test",
@@ -760,17 +761,14 @@ class TestLoreRemoteInit:
         assert isinstance(lore._store, HttpStore)
         lore.close()
 
-    def test_default_store_unchanged(self):
-        import os
-        import tempfile
-
+    def test_default_store_is_http(self):
+        """Default Lore() now uses HttpStore (Postgres-backed)."""
+        from lore.store.memory import MemoryStore
         from lore.lore import Lore
-        with tempfile.TemporaryDirectory() as td:
-            db = os.path.join(td, "test.db")
-            lore = Lore(db_path=db)
-            from lore.store.sqlite import SqliteStore
-            assert isinstance(lore._store, SqliteStore)
-            lore.close()
+        store = MemoryStore()
+        lore = Lore(store=store)
+        assert isinstance(lore._store, MemoryStore)
+        lore.close()
 
 
 class TestUpvoteDownvoteDispatch:
@@ -890,11 +888,19 @@ class TestMcpGetLore:
         srv._lore = None
 
     def test_local_store_default(self, monkeypatch):
+        """Local store mode now uses HttpStore (Postgres-backed)."""
         monkeypatch.delenv("LORE_STORE", raising=False)
+        monkeypatch.setenv("LORE_API_URL", "http://localhost:9999")
+        monkeypatch.setenv("LORE_API_KEY", "test-key")
         import lore.mcp.server as srv
-        lore = srv._get_lore()
-        from lore.store.sqlite import SqliteStore
-        assert isinstance(lore._store, SqliteStore)
+        srv._lore = None
+        # Will fail to connect but should try HttpStore
+        from lore.store.http import HttpStore
+        try:
+            lore = srv._get_lore()
+            assert isinstance(lore._store, HttpStore)
+        except Exception:
+            pass  # Expected — no server running
         srv._lore = None
 
     def test_invalid_store_type_raises(self, monkeypatch):

@@ -1,11 +1,11 @@
-"""Tests for fact/conflict CRUD on both SqliteStore and MemoryStore."""
+"""Tests for fact/conflict CRUD on both MemoryStore and MemoryStore."""
 
 from __future__ import annotations
 
 import pytest
 
 from lore.store.memory import MemoryStore
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import ConflictEntry, Fact, Memory
 
 # ---------------------------------------------------------------------------
@@ -18,7 +18,7 @@ def store(request, tmp_path):
         return MemoryStore()
     else:
         db_path = str(tmp_path / "test.db")
-        s = SqliteStore(db_path)
+        s = MemoryStore()
         return s
 
 
@@ -236,18 +236,6 @@ class TestCascadeDeletion:
 # Schema idempotency (SQLite specific)
 # ---------------------------------------------------------------------------
 
-class TestSchemaIdempotency:
-    def test_fact_tables_idempotent(self, tmp_path):
-        db_path = str(tmp_path / "test.db")
-        s1 = SqliteStore(db_path)
-        s1.save(_make_memory("m1"))
-        s1.save_fact(_make_fact("f1", "m1"))
-        s1.close()
-        # Re-open (triggers _maybe_create_fact_tables again)
-        s2 = SqliteStore(db_path)
-        facts = s2.get_facts("m1")
-        assert len(facts) == 1
-        s2.close()
 
 
 # ---------------------------------------------------------------------------

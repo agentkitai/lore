@@ -10,12 +10,18 @@ from typing import List, Optional, Sequence
 
 
 def _get_lore(db: Optional[str] = None) -> "Lore":  # noqa: F821
+    import os
     from lore import Lore
 
-    kwargs = {}
-    if db:
-        kwargs["db_path"] = db
-    return Lore(**kwargs)
+    # Auto-enable enrichment if API key is available
+    enrichment = bool(os.environ.get("OPENAI_API_KEY"))
+    enrichment_model = os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
+
+    return Lore(
+        enrichment=enrichment,
+        enrichment_model=enrichment_model,
+        knowledge_graph=True,
+    )
 
 
 def cmd_remember(args: argparse.Namespace) -> None:
@@ -258,7 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="lore",
         description="Lore SDK — cross-agent memory CLI",
     )
-    parser.add_argument("--db", default=None, help="Path to SQLite database")
+    parser.add_argument("--db", default=None, help=argparse.SUPPRESS)  # deprecated, ignored
 
     sub = parser.add_subparsers(dest="command")
 
@@ -604,6 +610,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-snapshots", type=int, default=50, dest="max_snapshots",
                     help="Maximum snapshots to retain (default: 50)")
 
+    p_ss = sub.add_parser("snapshot-save", help="Save a session snapshot")
+    p_ss.add_argument("content", help="Content to save")
+    p_ss.add_argument("--title", default=None)
+    p_ss.add_argument("--session-id", default=None, dest="session_id")
+
+    p_topics = sub.add_parser("topics", help="List or view topic notes")
+    p_topics.add_argument("name", nargs="?", default=None)
+    p_topics.add_argument("--type", dest="entity_type", default=None)
+    p_topics.add_argument("--min-mentions", type=int, default=3, dest="min_mentions")
+    p_topics.add_argument("--format", dest="fmt", default="brief", choices=["brief", "detailed"])
+    p_topics.add_argument("--limit", type=int, default=50)
+
     # serve
     p_serve = sub.add_parser("serve", help="Start Lore HTTP server")
     p_serve.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
@@ -804,8 +822,6 @@ def cmd_reindex(args: argparse.Namespace) -> None:
     from lore import Lore
 
     kwargs: dict = {}
-    if args.db:
-        kwargs["db_path"] = args.db
     if args.dual:
         kwargs["dual_embedding"] = True
 
@@ -838,10 +854,7 @@ def cmd_enrich(args: argparse.Namespace) -> None:
     from lore import Lore
 
     model = args.model or os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
-    kwargs = {"enrichment": True, "enrichment_model": model}
-    if args.db:
-        kwargs["db_path"] = args.db
-    lore = Lore(**kwargs)
+    lore = Lore(enrichment=True, enrichment_model=model)
 
     if args.memory_id:
         result = lore.enrich_memories(memory_ids=[args.memory_id], force=args.force)
@@ -948,7 +961,7 @@ def cmd_backfill_facts(args: argparse.Namespace) -> None:
 def cmd_graph(args: argparse.Namespace) -> None:
     from lore import Lore
 
-    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    lore = Lore(knowledge_graph=True)
     if not lore._knowledge_graph_enabled:
         print("Knowledge graph is not enabled.", file=sys.stderr)
         lore.close()
@@ -986,7 +999,7 @@ def cmd_graph(args: argparse.Namespace) -> None:
 def cmd_entities(args: argparse.Namespace) -> None:
     from lore import Lore
 
-    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    lore = Lore(knowledge_graph=True)
     entities = lore._store.list_entities(entity_type=args.entity_type, limit=args.limit)
     lore.close()
 
@@ -1009,7 +1022,7 @@ def cmd_entities(args: argparse.Namespace) -> None:
 def cmd_relationships(args: argparse.Namespace) -> None:
     from lore import Lore
 
-    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    lore = Lore(knowledge_graph=True)
 
     entity_id = None
     if args.entity:
@@ -1046,7 +1059,7 @@ def cmd_relationships(args: argparse.Namespace) -> None:
 def cmd_graph_backfill(args: argparse.Namespace) -> None:
     from lore import Lore
 
-    lore = Lore(db_path=args.db, knowledge_graph=True) if args.db else Lore(knowledge_graph=True)
+    lore = Lore(knowledge_graph=True)
     count = lore.graph_backfill(project=args.project, limit=args.limit)
     lore.close()
     print(f"Processed {count} memory(ies) into the knowledge graph.")
@@ -1490,53 +1503,65 @@ def cmd_mcp(args: argparse.Namespace) -> None:
 
 
 def cmd_ui(args: argparse.Namespace) -> None:
-    """Start graph visualization UI server."""
-    try:
-        import uvicorn
-    except ImportError:
-        print(
-            "Error: Server dependencies not installed.\n"
-            "Install with: pip install lore-sdk[server]",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    """Open graph visualization UI in the browser."""
+    import webbrowser
 
-    from pathlib import Path
+    host = getattr(args, "host", "localhost")
+    port = getattr(args, "port", 8765)
+    url = f"http://{host}:{port}/ui"
 
-    from lore.server.ui_app import create_ui_app
-
-    static_dir = str(Path(__file__).parent / "ui" / "dist")
-    if not os.path.isdir(static_dir):
-        print(
-            f"Warning: UI assets not found at {static_dir}\n"
-            "The API will work but the web UI won't be served.",
-            file=sys.stderr,
-        )
-
-    app = create_ui_app(static_dir)
-
-    # Attach store to app state
-    lore = _get_lore(args.db)
-    app.state.store = lore._store
-
-    host = args.host
-    port = args.port
-
-    if host == "0.0.0.0":
-        print(
-            "⚠️  Security warning: binding to 0.0.0.0 exposes the UI to your network.",
-            file=sys.stderr,
-        )
-
-    url = f"http://{'localhost' if host == '127.0.0.1' else host}:{port}"
-    print(f"🧠 Lore Graph UI: {url}")
-
-    if not args.no_open:
-        import webbrowser
+    print(f"Opening Lore Graph UI: {url}")
+    if not getattr(args, "no_open", False):
         webbrowser.open(url)
 
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+def cmd_snapshot_save(args):
+    if not args.content or not args.content.strip():
+        print("Error: content must be non-empty", file=sys.stderr)
+        sys.exit(1)
+    lore = _get_lore(args.db)
+    try:
+        memory = lore.save_snapshot(content=args.content, title=args.title, session_id=args.session_id)
+    except ValueError as exc:
+        lore.close()
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
     lore.close()
+    print(f"Snapshot saved: {memory.id}")
+
+
+def cmd_topics(args):
+    lore = _get_lore(args.db)
+    if not lore._knowledge_graph_enabled:
+        lore.close()
+        print("Topics require the knowledge graph. Run `lore config set knowledge_graph true`.")
+        return
+    if args.name:
+        detail = lore.topic_detail(args.name, max_memories=20, include_summary=True)
+        lore.close()
+        if detail is None:
+            print(f"No topic found matching '{args.name}'.")
+            return
+        entity = detail.entity
+        print(f"Topic: {entity.name} ({entity.entity_type})")
+        print(f"Mentions: {detail.memory_count}")
+        if detail.memories:
+            print(f"Memories ({len(detail.memories)} of {detail.memory_count}):")
+            for m in detail.memories:
+                ts = m.created_at[:10] if m.created_at else "?"
+                ct = m.content if args.fmt == "detailed" else m.content[:100]
+                if args.fmt != "detailed" and len(m.content) > 100:
+                    ct += "..."
+                print(f"  [{ts}] {m.type}: {ct}")
+    else:
+        results = lore.list_topics(entity_type=args.entity_type, min_mentions=args.min_mentions, limit=args.limit)
+        lore.close()
+        if not results:
+            print(f"No topics found (threshold: {args.min_mentions}+ mentions).")
+            return
+        print(f"Topics ({len(results)} found, threshold: {args.min_mentions}+ mentions):")
+        for t in results:
+            print(f"  {t.name} ({t.entity_type}) — {t.mention_count} memories")
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -1588,6 +1613,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "export": cmd_export,
         "import": cmd_import,
         "snapshot": cmd_snapshot,
+        "snapshot-save": cmd_snapshot_save,
+        "topics": cmd_topics,
         "serve": cmd_serve,
         "mcp": cmd_mcp,
         "ui": cmd_ui,

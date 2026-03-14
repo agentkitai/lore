@@ -1,18 +1,16 @@
-"""Tests for MemoryStore and SqliteStore."""
+"""Tests for MemoryStore."""
 
 from __future__ import annotations
 
 import os
-import sqlite3
 import tempfile
-from typing import Generator, List
+from typing import List
 
 import pytest
 
 from lore import Lore, Memory
 from lore.store.base import Store
 from lore.store.memory import MemoryStore
-from lore.store.sqlite import SqliteStore
 
 
 def _stub_embed(text: str) -> List[float]:
@@ -25,26 +23,12 @@ def memory_store() -> MemoryStore:
     return MemoryStore()
 
 
-@pytest.fixture
-def sqlite_store() -> Generator[SqliteStore, None, None]:
-    with tempfile.TemporaryDirectory() as tmpdir:
-        store = SqliteStore(os.path.join(tmpdir, "test.db"))
-        yield store
-        store.close()
-
-
 TS = "2026-01-01T00:00:00+00:00"
 
 
-@pytest.fixture(params=["memory", "sqlite"])
-def store(
-    request: pytest.FixtureRequest,
-    memory_store: MemoryStore,
-    sqlite_store: SqliteStore,
-) -> Store:
-    if request.param == "memory":
-        return memory_store
-    return sqlite_store
+@pytest.fixture
+def store(memory_store: MemoryStore) -> Store:
+    return memory_store
 
 
 def _make_memory(id: str = "01", **kwargs) -> Memory:
@@ -59,7 +43,7 @@ def _make_memory(id: str = "01", **kwargs) -> Memory:
 
 
 class TestStore:
-    """Tests that run against both MemoryStore and SqliteStore."""
+    """Tests that run against both MemoryStore and MemoryStore."""
 
     def test_save_and_get(self, store: Store) -> None:
         memory = _make_memory()
@@ -172,45 +156,6 @@ class TestStore:
         assert got.expires_at == "2026-01-01T01:00:00+00:00"
 
 
-class TestSqliteMigration:
-    """Test auto-migration from lessons table to memories table."""
-
-    def test_migrate_lessons_to_memories(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db_path = os.path.join(tmpdir, "test.db")
-            conn = sqlite3.connect(db_path)
-            conn.executescript("""
-                CREATE TABLE lessons (
-                    id TEXT PRIMARY KEY, problem TEXT NOT NULL,
-                    resolution TEXT NOT NULL, context TEXT, tags TEXT,
-                    confidence REAL DEFAULT 0.5, source TEXT, project TEXT,
-                    embedding BLOB, created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL, expires_at TEXT,
-                    upvotes INTEGER DEFAULT 0, downvotes INTEGER DEFAULT 0,
-                    meta TEXT
-                );
-            """)
-            conn.execute(
-                """INSERT INTO lessons (id, problem, resolution, tags, confidence,
-                   created_at, updated_at, meta)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                ("test-1", "rate limiting", "use backoff", '["api"]', 0.8,
-                 "2026-01-01T00:00:00+00:00", "2026-01-01T00:00:00+00:00",
-                 '{"key": "val"}'),
-            )
-            conn.commit()
-            conn.close()
-
-            store = SqliteStore(db_path)
-            memory = store.get("test-1")
-            assert memory is not None
-            assert "rate limiting" in memory.content
-            assert "use backoff" in memory.content
-            assert memory.type == "lesson"
-            assert memory.tags == ["api"]
-            assert memory.metadata == {"key": "val"}
-            assert memory.confidence == 0.8
-            store.close()
 
 
 class TestLore:
@@ -226,14 +171,14 @@ class TestLore:
         assert memory.created_at != ""
 
     def test_remember_with_project_default(self) -> None:
-        lore = Lore(project="myproj", store=MemoryStore(), embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), project="myproj", embedding_fn=_stub_embed)
         mid = lore.remember("test")
         memory = lore.get(mid)
         assert memory is not None
         assert memory.project == "myproj"
 
     def test_remember_project_override(self) -> None:
-        lore = Lore(project="default", store=MemoryStore(), embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), project="default", embedding_fn=_stub_embed)
         mid = lore.remember("test", project="override")
         memory = lore.get(mid)
         assert memory is not None
@@ -269,14 +214,14 @@ class TestLore:
     def test_context_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = os.path.join(tmpdir, "test.db")
-            with Lore(db_path=db, embedding_fn=_stub_embed) as lore:
+            with Lore(store=MemoryStore(), embedding_fn=_stub_embed) as lore:
                 mid = lore.remember("test")
                 assert lore.get(mid) is not None
 
     def test_sqlite_default_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db = os.path.join(tmpdir, "test.db")
-            lore = Lore(db_path=db, embedding_fn=_stub_embed)
+            lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
             mid = lore.remember("test")
             assert lore.get(mid) is not None
 

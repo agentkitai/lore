@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List
 
 from lore.lore import Lore
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import Memory
 
 
@@ -20,7 +20,7 @@ class TestRecentActivityPerformance:
     def test_500_memories_under_200ms(self, tmp_path):
         """Insert 500 memories, call recent_activity, assert latency < 500ms (CI-safe)."""
         db = str(tmp_path / "perf.db")
-        store = SqliteStore(db)
+        store = MemoryStore()
 
         now = datetime.now(timezone.utc)
         embedding = struct.pack("384f", *([0.1] * 384))
@@ -39,7 +39,7 @@ class TestRecentActivityPerformance:
             )
             store.save(m)
 
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
 
         start = time.monotonic()

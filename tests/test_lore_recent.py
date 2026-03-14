@@ -51,7 +51,7 @@ def lore_with_memories():
     store.save(_make_memory("m3", "Deployed v2.3", project="app", hours_ago=3))
     store.save(_make_memory("m4", "Old memory", project="lore", hours_ago=48))
 
-    lore = Lore(embedding_fn=_stub_embed)
+    lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
     lore._store = store
     return lore
 
@@ -120,7 +120,7 @@ class TestRecentActivityParams:
 class TestRecentActivityEdgeCases:
     def test_empty_store(self):
         store = MemoryStore()
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
         result = lore.recent_activity()
         assert result.total_count == 0
@@ -132,7 +132,7 @@ class TestRecentActivityEdgeCases:
         store.save(_make_memory("m1", "expired", hours_ago=2, expires_at=expired_at))
         store.save(_make_memory("m2", "valid", hours_ago=2))
 
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
         result = lore.recent_activity()
         assert result.total_count == 1
@@ -143,7 +143,7 @@ class TestRecentActivityEdgeCases:
         store.save(_make_memory("m2", "short", tier="short", hours_ago=0.5))
         store.save(_make_memory("m3", "long", tier="long", hours_ago=0.5))
 
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
         result = lore.recent_activity()
         tiers = {m.tier for g in result.groups for m in g.memories}
@@ -152,7 +152,7 @@ class TestRecentActivityEdgeCases:
     def test_store_error_returns_empty(self):
         """Store errors should return empty result, not crash."""
         store = MemoryStore()
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
 
         # Monkey-patch store to raise
@@ -169,7 +169,7 @@ class TestRecentActivityEdgeCases:
         store.save(_make_memory("m1", "in lore", project="lore", hours_ago=1))
         store.save(_make_memory("m2", "in other", project="other", hours_ago=1))
 
-        lore = Lore(embedding_fn=_stub_embed)
+        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
         lore._store = store
 
         with patch.dict(os.environ, {"LORE_PROJECT": "lore"}):

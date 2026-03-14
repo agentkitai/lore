@@ -1,6 +1,6 @@
 // Canvas-based graph renderer
 
-import { getNodeColor } from '../colors.js';
+import { getNodeColor, MEMORY_COLORS } from '../colors.js';
 import { truncateText, hexToRgba } from '../utils.js';
 import { getNodeRadius } from './simulation.js';
 
@@ -12,6 +12,7 @@ export class GraphRenderer {
     this.transform = { x: 0, y: 0, k: 1 };
     this._animFrame = null;
     this._pulsePhase = 0;
+    this.layoutManager = null; // set by index.js after creation
   }
 
   setTransform(t) {
@@ -33,6 +34,12 @@ export class GraphRenderer {
     const w = this.canvas.width / (window.devicePixelRatio || 1);
     const h = this.canvas.height / (window.devicePixelRatio || 1);
 
+    // Compute viewport bounds in graph space for culling
+    this._vpLeft = -x / k;
+    this._vpTop = -y / k;
+    this._vpRight = (w - x) / k;
+    this._vpBottom = (h - y) / k;
+
     ctx.save();
     ctx.clearRect(0, 0, w, h);
     ctx.translate(x, y);
@@ -40,13 +47,31 @@ export class GraphRenderer {
 
     this._pulsePhase = (Date.now() % 1500) / 1500;
 
-    // Draw edges
-    this._drawEdges(ctx, k);
+    // If layout is in collapsed cluster mode, draw clusters instead
+    if (this.layoutManager && this.layoutManager.isCollapsed()) {
+      this.layoutManager.drawCollapsedClusters(ctx, k);
+    } else {
+      // Draw cluster hulls if in expanded cluster mode
+      if (this.layoutManager) {
+        this.layoutManager.drawClusterHulls(ctx);
+      }
 
-    // Draw nodes
-    this._drawNodes(ctx, k);
+      // Draw edges
+      this._drawEdges(ctx, k);
+
+      // Draw nodes
+      this._drawNodes(ctx, k);
+    }
 
     ctx.restore();
+
+    // Draw legend (in screen space, not graph space)
+    this._drawLegend(ctx, w, h);
+  }
+
+  _isInViewport(nx, ny, margin) {
+    return nx + margin >= this._vpLeft && nx - margin <= this._vpRight &&
+           ny + margin >= this._vpTop && ny - margin <= this._vpBottom;
   }
 
   _drawEdges(ctx, zoom) {
@@ -57,6 +82,9 @@ export class GraphRenderer {
       const src = typeof edge.source === 'object' ? edge.source : nodeMap.get(edge.source);
       const tgt = typeof edge.target === 'object' ? edge.target : nodeMap.get(edge.target);
       if (!src || !tgt || src.x == null || tgt.x == null) continue;
+      if (src._clusterHidden || tgt._clusterHidden) continue;
+      // Viewport culling: skip edges where both endpoints are off-screen
+      if (!this._isInViewport(src.x, src.y, 50) && !this._isInViewport(tgt.x, tgt.y, 50)) continue;
 
       const srcFiltered = filteredNodeIds.has(src.id);
       const tgtFiltered = filteredNodeIds.has(tgt.id);
@@ -111,6 +139,9 @@ export class GraphRenderer {
 
     for (const node of nodes) {
       if (node.x == null) continue;
+      if (node._clusterHidden) continue;
+      // Viewport culling: skip nodes far outside visible area
+      if (!this._isInViewport(node.x, node.y, 40)) continue;
       const r = getNodeRadius(node);
       const color = getNodeColor(node);
       const isFiltered = filteredNodeIds.has(node.id);
@@ -191,6 +222,42 @@ export class GraphRenderer {
       ctx.lineTo(x + r * Math.cos(angle), y + r * Math.sin(angle));
     }
     ctx.closePath();
+  }
+
+  _drawLegend(ctx, w, h) {
+    const types = Object.entries(MEMORY_COLORS);
+    const boxW = 110;
+    const lineH = 16;
+    const padding = 8;
+    const boxH = padding * 2 + types.length * lineH;
+    const bx = w - boxW - 12;
+    const by = h - boxH - 12;
+
+    // Background
+    ctx.fillStyle = 'rgba(18,18,26,0.85)';
+    ctx.strokeStyle = 'rgba(42,42,58,0.8)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(bx, by, boxW, boxH, 6);
+    ctx.fill();
+    ctx.stroke();
+
+    // Items
+    ctx.font = '11px -apple-system, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    for (let i = 0; i < types.length; i++) {
+      const [name, color] = types[i];
+      const iy = by + padding + i * lineH + lineH / 2;
+      // Dot
+      ctx.beginPath();
+      ctx.arc(bx + padding + 4, iy, 4, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      // Label
+      ctx.fillStyle = '#e2e8f0';
+      ctx.fillText(name, bx + padding + 14, iy);
+    }
   }
 
   startLoop() {

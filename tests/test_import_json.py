@@ -9,7 +9,7 @@ import pytest
 from lore.export.exporter import Exporter
 from lore.export.importer import Importer
 from lore.export.schema import compute_content_hash
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import (
     Entity,
     EntityMention,
@@ -21,7 +21,7 @@ from lore.types import (
 @pytest.fixture
 def store(tmp_path):
     db = str(tmp_path / "test.db")
-    return SqliteStore(db, knowledge_graph=True)
+    return MemoryStore()
 
 
 def _seed_and_export(store, tmp_path):
@@ -68,11 +68,11 @@ def _seed_and_export(store, tmp_path):
 class TestImportFull:
     def test_import_full_json(self, tmp_path):
         # Create source store and export
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         export_path = _seed_and_export(src_store, tmp_path)
 
         # Import into fresh store
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         importer = Importer(dst_store)
         result = importer.import_file(export_path)
 
@@ -82,10 +82,10 @@ class TestImportFull:
         assert dst_store.get("m2") is not None
 
     def test_import_idempotent(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         export_path = _seed_and_export(src_store, tmp_path)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         importer = Importer(dst_store)
         r1 = importer.import_file(export_path)
         r2 = importer.import_file(export_path)
@@ -95,10 +95,10 @@ class TestImportFull:
         assert r2.skipped == 2
 
     def test_import_overwrite(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         export_path = _seed_and_export(src_store, tmp_path)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         importer = Importer(dst_store)
         importer.import_file(export_path)
 
@@ -107,10 +107,10 @@ class TestImportFull:
         assert r2.skipped == 0
 
     def test_import_dry_run(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         export_path = _seed_and_export(src_store, tmp_path)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         importer = Importer(dst_store)
         result = importer.import_file(export_path, dry_run=True)
 
@@ -118,10 +118,10 @@ class TestImportFull:
         assert dst_store.get("m1") is None  # Nothing actually written
 
     def test_import_project_override(self, tmp_path):
-        src_store = SqliteStore(str(tmp_path / "src.db"), knowledge_graph=True)
+        src_store = MemoryStore()
         export_path = _seed_and_export(src_store, tmp_path)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         importer = Importer(dst_store)
         importer.import_file(export_path, project_override="override-proj")
 
@@ -130,11 +130,11 @@ class TestImportFull:
 
     def test_import_empty_database(self, tmp_path):
         # Export from empty store
-        empty_store = SqliteStore(str(tmp_path / "empty.db"), knowledge_graph=True)
+        empty_store = MemoryStore()
         output = str(tmp_path / "empty_export.json")
         Exporter(empty_store).export(output=output)
 
-        dst_store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        dst_store = MemoryStore()
         result = Importer(dst_store).import_file(output)
         assert result.total == 0
         assert result.imported == 0
@@ -152,7 +152,7 @@ class TestImportValidation:
         with open(path, "w") as f:
             json.dump(data, f)
 
-        store = SqliteStore(str(tmp_path / "dst.db"))
+        store = MemoryStore()
         importer = Importer(store)
         with pytest.raises(ValueError, match="newer"):
             importer.import_file(path)
@@ -170,7 +170,7 @@ class TestImportValidation:
         with open(path, "w") as f:
             json.dump(envelope, f)
 
-        store = SqliteStore(str(tmp_path / "dst.db"))
+        store = MemoryStore()
         importer = Importer(store)
         with pytest.raises(ValueError, match="mismatch"):
             importer.import_file(path)
@@ -180,7 +180,7 @@ class TestImportValidation:
         with open(path, "w") as f:
             f.write("{not json")
 
-        store = SqliteStore(str(tmp_path / "dst.db"))
+        store = MemoryStore()
         importer = Importer(store)
         with pytest.raises(ValueError, match="Invalid JSON"):
             importer.import_file(path)
@@ -198,7 +198,7 @@ class TestImportValidation:
         with open(path, "w") as f:
             json.dump(envelope, f)
 
-        store = SqliteStore(str(tmp_path / "dst.db"))
+        store = MemoryStore()
         result = Importer(store).import_file(path)
         assert result.errors == 1
         assert len(result.warnings) == 1
@@ -219,7 +219,7 @@ class TestImportValidation:
         with open(path, "w") as f:
             json.dump(envelope, f)
 
-        store = SqliteStore(str(tmp_path / "dst.db"))
+        store = MemoryStore()
         result = Importer(store).import_file(path)
         assert result.imported == 1
         assert result.errors == 0
@@ -249,7 +249,7 @@ class TestImportGraphIntegrity:
         with open(path, "w") as f:
             json.dump(envelope, f)
 
-        store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        store = MemoryStore()
         result = Importer(store).import_file(path)
         assert any("Orphaned relationship" in w for w in result.warnings)
 
@@ -274,7 +274,7 @@ class TestImportGraphIntegrity:
         with open(path, "w") as f:
             json.dump(envelope, f)
 
-        store = SqliteStore(str(tmp_path / "dst.db"), knowledge_graph=True)
+        store = MemoryStore()
         result = Importer(store).import_file(path)
         assert any("Orphaned mention" in w for w in result.warnings)
 
@@ -283,14 +283,14 @@ class TestLoreImportData:
     def test_lore_import_data(self, tmp_path):
         from lore import Lore
         db1 = str(tmp_path / "src.db")
-        lore1 = Lore(db_path=db1)
+        lore1 = Lore(store=MemoryStore())
         lore1.remember("import test memory")
         output = str(tmp_path / "export.json")
         lore1.export_data(output=output)
         lore1.close()
 
         db2 = str(tmp_path / "dst.db")
-        lore2 = Lore(db_path=db2)
+        lore2 = Lore(store=MemoryStore())
         result = lore2.import_data(output, skip_embeddings=True)
         lore2.close()
         assert result.imported == 1
@@ -298,14 +298,14 @@ class TestLoreImportData:
     def test_lore_import_data_dry_run(self, tmp_path):
         from lore import Lore
         db1 = str(tmp_path / "src.db")
-        lore1 = Lore(db_path=db1)
+        lore1 = Lore(store=MemoryStore())
         lore1.remember("dry run test")
         output = str(tmp_path / "export.json")
         lore1.export_data(output=output)
         lore1.close()
 
         db2 = str(tmp_path / "dst.db")
-        lore2 = Lore(db_path=db2)
+        lore2 = Lore(store=MemoryStore())
         result = lore2.import_data(output, dry_run=True, skip_embeddings=True)
         assert result.imported == 1
         assert lore2._store.count() == 0  # nothing written

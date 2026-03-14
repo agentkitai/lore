@@ -6,12 +6,12 @@ import json
 from unittest.mock import MagicMock
 
 from lore import Lore
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 
 
 def _make_lore_with_mock_llm():
     """Create a Lore instance with real store/embedder but mocked LLM."""
-    store = SqliteStore(":memory:")
+    store = MemoryStore()
     lore = Lore(store=store, enrichment=False)
 
     # Manually wire up a mock enrichment pipeline

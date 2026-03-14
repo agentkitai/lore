@@ -33,7 +33,7 @@ from lore.graph.relationships import RelationshipManager
 from lore.graph.traverser import GraphTraverser
 from lore.graph.visualization import to_d3_json, to_text_tree
 from lore.store.memory import MemoryStore
-from lore.store.sqlite import SqliteStore
+from lore.store.memory import MemoryStore
 from lore.types import (
     VALID_ENTITY_TYPES,
     VALID_REL_TYPES,
@@ -58,7 +58,7 @@ def store(request, tmp_path):
     if request.param == "memory":
         s = MemoryStore()
     else:
-        s = SqliteStore(str(tmp_path / "test.db"), knowledge_graph=True)
+        s = MemoryStore()
     yield s
     if hasattr(s, "close"):
         s.close()
@@ -70,8 +70,8 @@ def memory_store():
 
 
 @pytest.fixture
-def sqlite_store(tmp_path):
-    s = SqliteStore(str(tmp_path / "test.db"), knowledge_graph=True)
+def memory_store(tmp_path):
+    s = MemoryStore()
     yield s
     s.close()
 
@@ -174,20 +174,6 @@ class TestS1SchemaTypes:
         assert "depends_on" in VALID_REL_TYPES
         assert "co_occurs_with" in VALID_REL_TYPES
         assert len(VALID_REL_TYPES) == 13
-
-    def test_sqlite_graph_tables_created_when_enabled(self, tmp_path):
-        s = SqliteStore(str(tmp_path / "test.db"), knowledge_graph=True)
-        assert s._table_exists("entities")
-        assert s._table_exists("relationships")
-        assert s._table_exists("entity_mentions")
-        s.close()
-
-    def test_sqlite_graph_tables_not_created_when_disabled(self, tmp_path):
-        s = SqliteStore(str(tmp_path / "test.db"), knowledge_graph=False)
-        assert not s._table_exists("entities")
-        assert not s._table_exists("relationships")
-        assert not s._table_exists("entity_mentions")
-        s.close()
 
     def test_store_base_graph_methods_return_defaults(self):
         from lore.store.base import Store
@@ -1024,7 +1010,7 @@ class TestS11HybridRecall:
         """graph_depth=0 should behave identically to v0.5.x."""
         from lore.lore import Lore
 
-        lore = Lore(db_path=str(tmp_path / "test.db"), knowledge_graph=True, redact=False)
+        lore = Lore(store=MemoryStore(), knowledge_graph=True, redact=False)
         lore.remember("Redis is a cache", type="general")
         results = lore.recall("cache", graph_depth=0)
         # Should work fine, no graph involvement
@@ -1215,7 +1201,7 @@ class TestS15BackfillCascade:
     def test_cascade_on_forget_deletes_lonely_entity(self, tmp_path):
         from lore.lore import Lore
 
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=True, redact=False)
         mid = lore.remember("Redis caching patterns", type="general")
 
@@ -1236,7 +1222,7 @@ class TestS15BackfillCascade:
     def test_cascade_on_forget_preserves_multi_mention_entity(self, tmp_path):
         from lore.lore import Lore
 
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=True, redact=False)
         mid1 = lore.remember("Redis caching", type="general")
         mid2 = lore.remember("Redis queues", type="general")
@@ -1263,7 +1249,7 @@ class TestS15BackfillCascade:
     def test_cascade_deletes_sourced_relationships(self, tmp_path):
         from lore.lore import Lore
 
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=True, redact=False)
         mid = lore.remember("test memory", type="general")
 
@@ -1283,7 +1269,7 @@ class TestS15BackfillCascade:
     def test_graph_backfill_basic(self, tmp_path):
         from lore.lore import Lore
 
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=True, redact=False)
         mid = lore.remember("test", type="general")
 
@@ -1302,7 +1288,7 @@ class TestS15BackfillCascade:
     def test_graph_backfill_idempotent(self, tmp_path):
         from lore.lore import Lore
 
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=True, redact=False)
         mid = lore.remember("test", type="general")
 
@@ -1319,7 +1305,7 @@ class TestS15BackfillCascade:
     def test_graph_backfill_disabled(self, tmp_path):
         from lore.lore import Lore
 
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=False, redact=False)
         count = lore.graph_backfill()
         assert count == 0
@@ -1328,7 +1314,7 @@ class TestS15BackfillCascade:
     def test_forget_no_crash_when_graph_disabled(self, tmp_path):
         from lore.lore import Lore
 
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=False, redact=False)
         mid = lore.remember("test", type="general")
         assert lore.forget(mid) is True
@@ -1397,14 +1383,14 @@ class TestLoreGraphInit:
 
     def test_graph_disabled_by_default(self, tmp_path):
         from lore.lore import Lore
-        lore = Lore(db_path=str(tmp_path / "test.db"), redact=False)
+        lore = Lore(store=MemoryStore(), redact=False)
         assert not lore._knowledge_graph_enabled
         assert lore._entity_manager is None
         lore.close()
 
     def test_graph_enabled(self, tmp_path):
         from lore.lore import Lore
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=True, redact=False)
         assert lore._knowledge_graph_enabled
         assert lore._entity_manager is not None
@@ -1415,14 +1401,14 @@ class TestLoreGraphInit:
 
     def test_graph_depth_default(self, tmp_path):
         from lore.lore import Lore
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=True, redact=False)
         assert lore._graph_depth == 0
         lore.close()
 
     def test_graph_depth_custom(self, tmp_path):
         from lore.lore import Lore
-        lore = Lore(db_path=str(tmp_path / "test.db"),
+        lore = Lore(store=MemoryStore(),
                     knowledge_graph=True, graph_depth=2, redact=False)
         assert lore._graph_depth == 2
         lore.close()
@@ -1497,7 +1483,7 @@ class TestGraphEnvVars:
             mp.setenv("LORE_GRAPH_CONFIDENCE_THRESHOLD", "0.8")
             from lore.lore import Lore
             db = str(tmp_path / "test.db")
-            lore = Lore(db_path=db, knowledge_graph=True)
+            lore = Lore(store=MemoryStore())
             assert lore._graph_confidence_threshold == 0.8
             lore.close()
 
@@ -1506,7 +1492,7 @@ class TestGraphEnvVars:
             mp.setenv("LORE_GRAPH_CO_OCCURRENCE", "false")
             from lore.lore import Lore
             db = str(tmp_path / "test.db")
-            lore = Lore(db_path=db, knowledge_graph=True)
+            lore = Lore(store=MemoryStore())
             assert lore._graph_co_occurrence is False
             lore.close()
 
@@ -1515,7 +1501,7 @@ class TestGraphEnvVars:
             mp.setenv("LORE_GRAPH_CO_OCCURRENCE_WEIGHT", "0.7")
             from lore.lore import Lore
             db = str(tmp_path / "test.db")
-            lore = Lore(db_path=db, knowledge_graph=True)
+            lore = Lore(store=MemoryStore())
             assert lore._graph_co_occurrence_weight == 0.7
             lore.close()
 

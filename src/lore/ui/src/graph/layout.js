@@ -1,8 +1,11 @@
 // Layout modes: force, cluster-by-project, cluster-by-type
+// Cluster view: collapsed (big circles) or expanded (individual nodes)
 
 import { fetchClusters } from '../api.js';
 import { hexToRgba } from '../utils.js';
 import { MEMORY_COLORS, ENTITY_COLORS } from '../colors.js';
+
+const COLOR_MAP = { ...MEMORY_COLORS, ...ENTITY_COLORS };
 
 export class LayoutManager {
   constructor(state, simulation, renderer) {
@@ -10,15 +13,23 @@ export class LayoutManager {
     this.simulation = simulation;
     this.renderer = renderer;
     this._clusters = null;
+    // Collapsed cluster view: show clusters as big circles
+    this._collapsed = true;
+    this._expandedCluster = null; // label of expanded cluster, or null
+    this._clusterPositions = new Map(); // label -> {x, y, r, count, color, node_ids}
   }
 
   async switchMode(mode) {
     this.state.setViewMode(mode);
 
     if (mode === 'force') {
-      // Restore force simulation
       this.simulation.alpha(0.5).restart();
       this._clusters = null;
+      this._collapsed = false;
+      this._expandedCluster = null;
+      this._clusterPositions.clear();
+      // Unhide all nodes
+      for (const n of this.state.nodes) { n._clusterHidden = false; }
       return;
     }
 
@@ -26,33 +37,87 @@ export class LayoutManager {
     try {
       const data = await fetchClusters(groupBy);
       this._clusters = data.clusters;
-      this._applyClusterPositions(data.clusters);
+      this._collapsed = true;
+      this._expandedCluster = null;
+      this._computeClusterPositions();
+      // Hide all individual nodes in collapsed mode
+      for (const n of this.state.nodes) { n._clusterHidden = true; }
+      this.simulation.stop();
+      this.renderer.render();
     } catch {
       // Fall back to force
     }
   }
 
-  _applyClusterPositions(clusters) {
-    // Arrange clusters in a grid
-    const cols = Math.ceil(Math.sqrt(clusters.length));
-    const spacing = 300;
+  _computeClusterPositions() {
+    if (!this._clusters) return;
+    this._clusterPositions.clear();
+    const cols = Math.ceil(Math.sqrt(this._clusters.length));
+    const spacing = 250;
+
+    for (let i = 0; i < this._clusters.length; i++) {
+      const cluster = this._clusters[i];
+      const count = cluster.node_ids.length;
+      const color = COLOR_MAP[cluster.label] || '#6b8afd';
+      const r = 30 + Math.sqrt(count) * 8; // radius scales with sqrt of count
+      this._clusterPositions.set(cluster.label, {
+        x: (i % cols) * spacing + spacing / 2,
+        y: Math.floor(i / cols) * spacing + spacing / 2,
+        r,
+        count,
+        color,
+        node_ids: cluster.node_ids,
+        label: cluster.label,
+      });
+    }
+  }
+
+  isCollapsed() {
+    return this._collapsed && this._clusters != null;
+  }
+
+  getExpandedCluster() {
+    return this._expandedCluster;
+  }
+
+  getClusterPositions() {
+    return this._clusterPositions;
+  }
+
+  // Click handler: check if a cluster circle was clicked
+  handleClusterClick(gx, gy) {
+    if (!this.isCollapsed()) return false;
+
+    for (const [label, cp] of this._clusterPositions) {
+      const dx = gx - cp.x;
+      const dy = gy - cp.y;
+      if (dx * dx + dy * dy <= cp.r * cp.r) {
+        this.expandCluster(label);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  expandCluster(label) {
+    this._expandedCluster = label;
+    this._collapsed = false;
+    const cp = this._clusterPositions.get(label);
+    if (!cp) return;
+
     const nodeMap = this.state._nodeMap;
+    const nodeIds = new Set(cp.node_ids);
 
-    for (let i = 0; i < clusters.length; i++) {
-      const cluster = clusters[i];
-      const cx = (i % cols) * spacing + spacing / 2;
-      const cy = Math.floor(i / cols) * spacing + spacing / 2;
-
-      // Position nodes in this cluster around center
-      const nodeIds = cluster.node_ids;
-      const count = nodeIds.length;
-      for (let j = 0; j < count; j++) {
-        const node = nodeMap.get(nodeIds[j]);
-        if (!node) continue;
-        const angle = (j / count) * Math.PI * 2;
-        const r = 20 + count * 2;
-        node.fx = cx + Math.cos(angle) * r;
-        node.fy = cy + Math.sin(angle) * r;
+    // Show nodes in expanded cluster, hide others
+    for (const n of this.state.nodes) {
+      n._clusterHidden = !nodeIds.has(n.id);
+      if (nodeIds.has(n.id)) {
+        // Position around cluster center
+        const idx = cp.node_ids.indexOf(n.id);
+        const angle = (idx / cp.count) * Math.PI * 2;
+        const r = 20 + cp.count * 2;
+        n.fx = cp.x + Math.cos(angle) * r;
+        n.fy = cp.y + Math.sin(angle) * r;
       }
     }
 
@@ -60,11 +125,56 @@ export class LayoutManager {
 
     // Unpin after settling
     setTimeout(() => {
-      for (const node of this.state.nodes) {
-        node.fx = null;
-        node.fy = null;
+      for (const n of this.state.nodes) {
+        if (!n._clusterHidden) {
+          n.fx = null;
+          n.fy = null;
+        }
       }
     }, 1000);
+  }
+
+  collapseBack() {
+    this._collapsed = true;
+    this._expandedCluster = null;
+    for (const n of this.state.nodes) { n._clusterHidden = true; }
+    this.simulation.stop();
+    this.renderer.render();
+  }
+
+  // Draw collapsed cluster circles
+  drawCollapsedClusters(ctx, zoom) {
+    if (!this.isCollapsed()) return;
+
+    for (const [label, cp] of this._clusterPositions) {
+      // Outer glow
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, cp.r + 4, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(cp.color, 0.1);
+      ctx.fill();
+
+      // Main circle
+      ctx.beginPath();
+      ctx.arc(cp.x, cp.y, cp.r, 0, Math.PI * 2);
+      ctx.fillStyle = hexToRgba(cp.color, 0.35);
+      ctx.fill();
+      ctx.strokeStyle = hexToRgba(cp.color, 0.7);
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Count
+      ctx.font = 'bold ' + Math.max(14, cp.r * 0.5) + 'px -apple-system, sans-serif';
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(cp.count, cp.x, cp.y);
+
+      // Label below
+      ctx.font = '12px -apple-system, sans-serif';
+      ctx.fillStyle = hexToRgba(cp.color, 0.9);
+      ctx.textBaseline = 'top';
+      ctx.fillText(label, cp.x, cp.y + cp.r + 8);
+    }
   }
 
   getClusters() {
@@ -72,24 +182,22 @@ export class LayoutManager {
   }
 
   drawClusterHulls(ctx) {
-    if (!this._clusters) return;
+    if (!this._clusters || this.isCollapsed()) return;
 
     for (const cluster of this._clusters) {
       const points = [];
       for (const id of cluster.node_ids) {
         const node = this.state._nodeMap.get(id);
-        if (node && node.x != null) {
+        if (node && node.x != null && !node._clusterHidden) {
           points.push([node.x, node.y]);
         }
       }
       if (points.length < 3) continue;
 
-      // Simple convex hull (gift wrapping)
       const hull = this._convexHull(points);
       if (hull.length < 3) continue;
 
-      const colorMap = { ...MEMORY_COLORS, ...ENTITY_COLORS };
-      const color = colorMap[cluster.label] || '#6b8afd';
+      const color = COLOR_MAP[cluster.label] || '#6b8afd';
 
       ctx.beginPath();
       ctx.moveTo(hull[0][0], hull[0][1]);
@@ -103,7 +211,6 @@ export class LayoutManager {
       ctx.lineWidth = 1;
       ctx.stroke();
 
-      // Label at center
       const cx = points.reduce((s, p) => s + p[0], 0) / points.length;
       const cy = points.reduce((s, p) => s + p[1], 0) / points.length;
       ctx.font = '12px -apple-system, sans-serif';

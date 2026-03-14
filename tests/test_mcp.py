@@ -110,9 +110,9 @@ class TestMCPAddConversation:
         from unittest.mock import MagicMock
 
         from lore import Lore
-        from lore.store.sqlite import SqliteStore
+        from lore.store.memory import MemoryStore
 
-        store = SqliteStore(":memory:")
+        store = MemoryStore()
         lore = Lore(store=store, embedding_fn=_stub_embed)
 
         # Wire up mock enrichment pipeline

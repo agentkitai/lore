@@ -36,3 +36,5 @@ services:
 
 volumes:
   pgdata:
+    external: true
+    name: agentkit-stack_lore-db-data
