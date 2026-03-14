@@ -174,8 +174,32 @@ export class InteractionManager {
       if (node) {
         this.state.selectNode(node.id);
         // Focus mode: fetch and highlight neighbors
-        fetchNeighbors(node.id).then(nbrIds => {
-          this.state.setFocus(node.id, nbrIds);
+        fetchNeighbors(node.id).then(result => {
+          const { ids, nodes: nbrNodes } = result;
+          // Add missing neighbor nodes to the graph dynamically
+          const clickedNode = this.state.getNode(node.id);
+          for (const nbr of nbrNodes) {
+            if (!this.state.getNode(nbr.id)) {
+              // Position near the clicked node with some random offset
+              const angle = Math.random() * Math.PI * 2;
+              const dist = 60 + Math.random() * 80;
+              nbr.x = (clickedNode ? clickedNode.x : 0) + Math.cos(angle) * dist;
+              nbr.y = (clickedNode ? clickedNode.y : 0) + Math.sin(angle) * dist;
+              nbr.importance = 0.5;
+              nbr.confidence = 1.0;
+              nbr._dynamic = true; // Mark as dynamically added
+              this.state.nodes.push(nbr);
+              this.state._nodeMap.set(nbr.id, nbr);
+              this.state.filteredNodeIds.add(nbr.id);
+              // Add to simulation
+              this.simulation.nodes(this.state.nodes);
+            }
+          }
+          if (nbrNodes.some(n => n._dynamic)) {
+            this.simulation.alpha(0.3).restart();
+            this.rebuildQuadtree();
+          }
+          this.state.setFocus(node.id, ids);
         });
       } else {
         this.state.selectNode(null);

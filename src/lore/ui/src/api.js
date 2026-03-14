@@ -120,39 +120,53 @@ export async function reviewBulk(action, ids, reason = null) {
 }
 
 // Fetch neighbors of a node (connected memories + entities)
+// Returns { ids: string[], nodes: {id, label, kind, type}[] }
 export async function fetchNeighbors(id) {
   const cached = cache.get(`nbr:${id}`);
   if (cached) return cached;
 
+  const ids = [];
+  const nodes = [];
+
   // Try memory detail first (has connected_entities + connected_memories)
   try {
     const data = await fetchMemoryDetail(id);
-    const neighborIds = [];
     if (data.connected_entities) {
-      for (const e of data.connected_entities) neighborIds.push(e.id);
+      for (const e of data.connected_entities) {
+        ids.push(e.id);
+        nodes.push({ id: e.id, label: e.name || e.type, kind: 'entity', type: e.type || 'unknown' });
+      }
     }
     if (data.connected_memories) {
-      for (const m of data.connected_memories) neighborIds.push(m.id);
+      for (const m of data.connected_memories) {
+        ids.push(m.id);
+        nodes.push({ id: m.id, label: (m.label || '').slice(0, 40), kind: 'memory', type: m.type || 'general' });
+      }
     }
-    cache.set(`nbr:${id}`, neighborIds);
-    return neighborIds;
   } catch (_memErr) {
     // Try entity detail
     try {
       const data = await fetchEntityDetail(id);
-      const neighborIds = [];
       if (data.connected_memories) {
-        for (const m of data.connected_memories) neighborIds.push(m.id);
+        for (const m of data.connected_memories) {
+          ids.push(m.id);
+          nodes.push({ id: m.id, label: (m.label || '').slice(0, 40), kind: 'memory', type: m.type || 'general' });
+        }
       }
       if (data.connected_entities) {
-        for (const e of data.connected_entities) neighborIds.push(e.id);
+        for (const e of data.connected_entities) {
+          ids.push(e.id);
+          nodes.push({ id: e.id, label: e.name || e.type, kind: 'entity', type: e.type || 'unknown' });
+        }
       }
-      cache.set(`nbr:${id}`, neighborIds);
-      return neighborIds;
     } catch (_entErr) {
-      return [];
+      // nothing
     }
   }
+
+  const result = { ids, nodes };
+  cache.set(`nbr:${id}`, result);
+  return result;
 }
 
 export { cache };
