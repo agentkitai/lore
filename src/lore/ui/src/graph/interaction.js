@@ -212,10 +212,26 @@ export class InteractionManager {
             }
           }
           if (addedAny) {
+            // Pin all existing nodes so only new ones move
+            for (const n of this.state.nodes) {
+              if (!n._dynamic) {
+                n.fx = n.x;
+                n.fy = n.y;
+              }
+            }
             this.simulation.nodes(this.state.nodes);
             this.simulation.force('link').links(this.state.edges);
-            this.simulation.alpha(0.3).restart();
+            this.simulation.alpha(0.15).restart();
             this.rebuildQuadtree();
+            // Unpin after settling
+            setTimeout(() => {
+              for (const n of this.state.nodes) {
+                if (!n._dynamic) {
+                  n.fx = null;
+                  n.fy = null;
+                }
+              }
+            }, 600);
           }
           this.state.setFocus(node.id, ids);
         });
