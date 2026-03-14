@@ -178,10 +178,11 @@ export class InteractionManager {
           const { ids, nodes: nbrNodes } = result;
           // Add missing neighbor nodes and edges to the graph dynamically
           const clickedNode = this.state.getNode(node.id);
-          let addedAny = false;
+          let addedNodes = false;
+          let addedEdges = false;
           for (const nbr of nbrNodes) {
             if (!this.state.getNode(nbr.id)) {
-              // Position near the clicked node with some random offset
+              // Position near the clicked node
               const angle = Math.random() * Math.PI * 2;
               const dist = 60 + Math.random() * 80;
               nbr.x = (clickedNode ? clickedNode.x : 0) + Math.cos(angle) * dist;
@@ -189,10 +190,13 @@ export class InteractionManager {
               nbr.importance = 0.5;
               nbr.confidence = 1.0;
               nbr._dynamic = true;
+              // Pin new nodes near clicked node (no simulation needed)
+              nbr.fx = nbr.x;
+              nbr.fy = nbr.y;
               this.state.nodes.push(nbr);
               this.state._nodeMap.set(nbr.id, nbr);
               this.state.filteredNodeIds.add(nbr.id);
-              addedAny = true;
+              addedNodes = true;
             }
             // Add edge between clicked node and neighbor if not already present
             const hasEdge = this.state.edges.some(e => {
@@ -208,30 +212,16 @@ export class InteractionManager {
                 rel_type: 'connected',
                 _dynamic: true,
               });
-              addedAny = true;
+              addedEdges = true;
             }
           }
-          if (addedAny) {
-            // Pin all existing nodes so only new ones move
-            for (const n of this.state.nodes) {
-              if (!n._dynamic) {
-                n.fx = n.x;
-                n.fy = n.y;
-              }
-            }
+          if (addedNodes || addedEdges) {
+            // Update simulation data without restarting forces
             this.simulation.nodes(this.state.nodes);
             this.simulation.force('link').links(this.state.edges);
-            this.simulation.alpha(0.15).restart();
             this.rebuildQuadtree();
-            // Unpin after settling
-            setTimeout(() => {
-              for (const n of this.state.nodes) {
-                if (!n._dynamic) {
-                  n.fx = null;
-                  n.fy = null;
-                }
-              }
-            }, 600);
+            // Just re-render, don't restart simulation
+            this.renderer.render();
           }
           this.state.setFocus(node.id, ids);
         });
