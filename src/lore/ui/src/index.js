@@ -38,16 +38,17 @@ async function init() {
   const showAllToggle = document.getElementById('show-all-toggle');
 
   // Smart defaults
-  const DEFAULT_IMPORTANCE = 0.3;
-  const DEFAULT_SINCE = daysAgo(30);
+  const DEFAULT_IMPORTANCE = 0;
+  const DEFAULT_SINCE = null;
+  const DEFAULT_LIMIT = 100;
   let showAll = false;
 
   // Loading state
   statusEl.textContent = 'Loading graph data...';
 
   try {
-    // Smart defaults: last 30 days, min importance 0.3
-    const defaultParams = { since: DEFAULT_SINCE, min_importance: DEFAULT_IMPORTANCE };
+    // Smart defaults: top 100 most important memories
+    const defaultParams = { limit: DEFAULT_LIMIT };
     const data = await fetchGraph(defaultParams);
 
     if (data.nodes.length === 0) {
@@ -55,11 +56,9 @@ async function init() {
       return;
     }
 
-    statusEl.textContent = '';
-
-    // Set default filter state to match smart defaults
-    state.filters.minImportance = DEFAULT_IMPORTANCE;
-    state.filters.dateRange[0] = DEFAULT_SINCE;
+    const mc = data.nodes.filter(n => n.kind === 'memory').length;
+    const ec = data.nodes.filter(n => n.kind === 'entity').length;
+    statusEl.textContent = `Showing top ${mc} memories, ${ec} entities, ${data.edges.length} connections (${data.stats.total_memories} total)`;
 
     // Restore URL state (overrides defaults if present)
     state.restoreFromUrl();
@@ -153,21 +152,17 @@ async function init() {
       showAllToggle.onclick = () => {
         showAll = !showAll;
         showAllToggle.classList.toggle('active', showAll);
-        showAllToggle.textContent = showAll ? 'Recent' : 'Show All';
+        showAllToggle.textContent = showAll ? 'Top 100' : 'Show All';
         if (showAll) {
-          state.filters.minImportance = 0;
-          state.filters.dateRange = [null, null];
-          reloadGraph({});
+          reloadGraph({ limit: 5000 });
         } else {
-          state.filters.minImportance = DEFAULT_IMPORTANCE;
-          state.filters.dateRange[0] = DEFAULT_SINCE;
           reloadGraph(defaultParams);
         }
         state.dispatchEvent(new CustomEvent('filterChange'));
       };
     }
 
-    // Default to force layout (cluster view available via buttons)
+    // Default to force layout
     layout.switchMode('force');
     for (const b of viewBtns) {
       b.classList.toggle('active', b.dataset.mode === 'force');
