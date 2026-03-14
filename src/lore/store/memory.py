@@ -327,6 +327,14 @@ class MemoryStore(Store):
     def get_entity_mentions_for_entity(self, entity_id: str) -> List[EntityMention]:
         return [m for m in self._entity_mentions if m.entity_id == entity_id]
 
+    def list_all_entity_mentions(
+        self, memory_ids: Optional[List[str]] = None
+    ) -> List[EntityMention]:
+        if memory_ids is not None:
+            id_set = set(memory_ids)
+            return [m for m in self._entity_mentions if m.memory_id in id_set]
+        return list(self._entity_mentions)
+
     def transfer_entity_mentions(self, from_id: str, to_id: str) -> None:
         existing_memory_ids = {
             m.memory_id for m in self._entity_mentions if m.entity_id == to_id

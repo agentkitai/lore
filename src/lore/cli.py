@@ -612,6 +612,12 @@ def build_parser() -> argparse.ArgumentParser:
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
+    # ui
+    p_ui = sub.add_parser("ui", help="Open graph visualization in browser")
+    p_ui.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
+    p_ui.add_argument("--port", type=int, default=8766, help="Port (default: 8766)")
+    p_ui.add_argument("--no-open", action="store_true", dest="no_open", help="Don't open browser")
+
     return parser
 
 
@@ -1483,6 +1489,56 @@ def cmd_mcp(args: argparse.Namespace) -> None:
     run_server()
 
 
+def cmd_ui(args: argparse.Namespace) -> None:
+    """Start graph visualization UI server."""
+    try:
+        import uvicorn
+    except ImportError:
+        print(
+            "Error: Server dependencies not installed.\n"
+            "Install with: pip install lore-sdk[server]",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from pathlib import Path
+
+    from lore.server.ui_app import create_ui_app
+
+    static_dir = str(Path(__file__).parent / "ui" / "dist")
+    if not os.path.isdir(static_dir):
+        print(
+            f"Warning: UI assets not found at {static_dir}\n"
+            "The API will work but the web UI won't be served.",
+            file=sys.stderr,
+        )
+
+    app = create_ui_app(static_dir)
+
+    # Attach store to app state
+    lore = _get_lore(args.db)
+    app.state.store = lore._store
+
+    host = args.host
+    port = args.port
+
+    if host == "0.0.0.0":
+        print(
+            "⚠️  Security warning: binding to 0.0.0.0 exposes the UI to your network.",
+            file=sys.stderr,
+        )
+
+    url = f"http://{'localhost' if host == '127.0.0.1' else host}:{port}"
+    print(f"🧠 Lore Graph UI: {url}")
+
+    if not args.no_open:
+        import webbrowser
+        webbrowser.open(url)
+
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+    lore.close()
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1534,6 +1590,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "snapshot": cmd_snapshot,
         "serve": cmd_serve,
         "mcp": cmd_mcp,
+        "ui": cmd_ui,
     }
     handlers[args.command](args)
 

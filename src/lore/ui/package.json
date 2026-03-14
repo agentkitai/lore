@@ -1,0 +1,17 @@
+{
+  "name": "lore-graph-ui",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch"
+  },
+  "devDependencies": {
+    "d3-force": "^3.0.0",
+    "d3-quadtree": "^3.0.1",
+    "d3-zoom": "^3.0.0",
+    "d3-scale": "^4.0.2",
+    "d3-selection": "^3.0.0",
+    "esbuild": "^0.20.0"
+  }
+}
