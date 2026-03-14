@@ -772,17 +772,18 @@ async def get_entity_detail(entity_id: str) -> EntityDetailResponse:
                 "created_at": _ts(m["created_at"]),
             })
 
-        # Connected entities via co-occurrence relationships
+        # Connected entities via co-occurrence relationships (deduplicated)
         connected_entities: List[Dict[str, Any]] = []
         rel_rows = await conn.fetch(
-            """SELECT e.id, e.name, e.entity_type, r.rel_type, r.weight
+            """SELECT DISTINCT ON (e.id) e.id, e.name, e.entity_type, r.rel_type, r.weight
                FROM relationships r
                JOIN entities e ON e.id = CASE
                    WHEN r.source_entity_id = $1 THEN r.target_entity_id
                    ELSE r.source_entity_id
                END
-               WHERE r.source_entity_id = $1 OR r.target_entity_id = $1
-               ORDER BY r.weight DESC
+               WHERE (r.source_entity_id = $1 OR r.target_entity_id = $1)
+                 AND e.id != $1
+               ORDER BY e.id, r.weight DESC
                LIMIT 20""",
             entity_id,
         )
