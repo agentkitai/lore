@@ -98,4 +98,25 @@ export async function fetchTopicDetail(name, maxMemories = 20) {
   return fetchJSON(`/v1/ui/topics/${encodeURIComponent(name)}?${params}`);
 }
 
+// Review queue (E6)
+export async function fetchReviewQueue(limit = 50) {
+  return fetchJSON(`/v1/review?limit=${limit}`);
+}
+
+export async function reviewRelationship(id, action, reason = null) {
+  return fetchJSON(`/v1/review/${id}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, reason }),
+  });
+}
+
+export async function reviewBulk(action, ids, reason = null) {
+  return fetchJSON('/v1/review/bulk', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action, ids, reason }),
+  });
+}
+
 export { cache };

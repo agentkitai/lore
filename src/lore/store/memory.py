@@ -13,6 +13,7 @@ from lore.types import (
     EntityMention,
     Fact,
     Memory,
+    RejectedPattern,
     Relationship,
 )
 
@@ -28,6 +29,7 @@ class MemoryStore(Store):
         self._relationships: Dict[str, Relationship] = {}
         self._entity_mentions: List[EntityMention] = []
         self._consolidation_log: List[ConsolidationLogEntry] = []
+        self._rejected_patterns: List[RejectedPattern] = []
 
     def close(self) -> None:
         """No-op for in-memory store."""
@@ -272,6 +274,8 @@ class MemoryStore(Store):
             rels = [r for r in rels if r.rel_type == rel_type]
         if not include_expired:
             rels = [r for r in rels if r.valid_until is None]
+        # Only return approved relationships by default (E6)
+        rels = [r for r in rels if r.status != "rejected"]
         rels.sort(key=lambda r: r.weight, reverse=True)
         return rels[:limit]
 
@@ -308,6 +312,10 @@ class MemoryStore(Store):
                     continue
 
             if rel_types and r.rel_type not in rel_types:
+                continue
+
+            # Exclude rejected relationships (E6)
+            if r.status == "rejected":
                 continue
 
             rels.append(r)
@@ -389,3 +397,41 @@ class MemoryStore(Store):
 
     def list_all_consolidation_logs(self, limit: int = 10000) -> List[ConsolidationLogEntry]:
         return list(self._consolidation_log[:limit])
+
+    # ------------------------------------------------------------------
+    # Review / Approval UX (E6)
+    # ------------------------------------------------------------------
+
+    def list_pending_relationships(self, limit: int = 50) -> List[Relationship]:
+        rels = [r for r in self._relationships.values() if r.status == "pending"]
+        rels.sort(key=lambda r: r.created_at, reverse=True)
+        return rels[:limit]
+
+    def update_relationship_status(self, rel_id: str, status: str) -> bool:
+        rel = self._relationships.get(rel_id)
+        if rel is None:
+            return False
+        rel.status = status
+        return True
+
+    def save_rejected_pattern(self, pattern: RejectedPattern) -> None:
+        # Idempotent: check for existing (source_name, target_name, rel_type)
+        for p in self._rejected_patterns:
+            if (p.source_name == pattern.source_name
+                    and p.target_name == pattern.target_name
+                    and p.rel_type == pattern.rel_type):
+                return
+        self._rejected_patterns.append(pattern)
+
+    def is_rejected_pattern(
+        self, source_name: str, target_name: str, rel_type: str
+    ) -> bool:
+        for p in self._rejected_patterns:
+            if (p.source_name == source_name
+                    and p.target_name == target_name
+                    and p.rel_type == rel_type):
+                return True
+        return False
+
+    def list_rejected_patterns(self, limit: int = 100) -> List[RejectedPattern]:
+        return list(self._rejected_patterns[:limit])

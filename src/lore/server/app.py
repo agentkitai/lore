@@ -43,6 +43,7 @@ from lore.server.routes.recent import router as recent_router
 from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
+from lore.server.routes.review import router as review_router
 from lore.server.routes.topics import router as topics_router
 
 setup_logging()
@@ -83,6 +84,7 @@ app.include_router(conversations_router)
 app.include_router(recent_router)
 app.include_router(export_router)
 app.include_router(graph_router)
+app.include_router(review_router)
 app.include_router(topics_router)
 
 # ── UI static files ────────────────────────────────────────────────

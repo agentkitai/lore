@@ -46,7 +46,9 @@ from lore.types import (
     ProjectGroup,
     RecallResult,
     RecentActivityResult,
+    RejectedPattern,
     RelatedEntity,
+    ReviewItem,
     TopicDetail,
     TopicSummary,
 )
@@ -637,6 +639,73 @@ class Lore:
             summary_generated_at=summary_generated_at, memory_count=memory_count,
         )
 
+
+    # ------------------------------------------------------------------
+    # Review / Approval UX (E6)
+    # ------------------------------------------------------------------
+
+    def get_pending_reviews(self, limit: int = 50) -> List[ReviewItem]:
+        """Return pending relationships with entity context."""
+        pending = self._store.list_pending_relationships(limit=limit)
+        items: List[ReviewItem] = []
+        for rel in pending:
+            src = self._store.get_entity(rel.source_entity_id)
+            tgt = self._store.get_entity(rel.target_entity_id)
+            if not src or not tgt:
+                continue
+            mem_content = None
+            if rel.source_memory_id:
+                mem = self._store.get(rel.source_memory_id)
+                if mem:
+                    mem_content = mem.content[:200] if mem.content else None
+            items.append(ReviewItem(
+                relationship=rel,
+                source_entity_name=src.name,
+                source_entity_type=src.entity_type,
+                target_entity_name=tgt.name,
+                target_entity_type=tgt.entity_type,
+                source_memory_content=mem_content,
+            ))
+        return items
+
+    def review_connection(
+        self,
+        rel_id: str,
+        action: str,
+        reason: Optional[str] = None,
+    ) -> bool:
+        """Approve or reject a relationship. Returns True if found."""
+        if action not in ("approve", "reject"):
+            raise ValueError(f"Invalid action: {action!r}. Must be 'approve' or 'reject'.")
+        rel = self._store.get_relationship(rel_id)
+        if rel is None:
+            return False
+        new_status = "approved" if action == "approve" else "rejected"
+        self._store.update_relationship_status(rel_id, new_status)
+        if action == "reject":
+            src = self._store.get_entity(rel.source_entity_id)
+            tgt = self._store.get_entity(rel.target_entity_id)
+            if src and tgt:
+                pattern = RejectedPattern(
+                    id=str(ULID()),
+                    source_name=src.name,
+                    target_name=tgt.name,
+                    rel_type=rel.rel_type,
+                    rejected_at=datetime.now(timezone.utc).isoformat(),
+                    source_memory_id=rel.source_memory_id,
+                    reason=reason,
+                )
+                self._store.save_rejected_pattern(pattern)
+        return True
+
+    def review_all(self, action: str, reason: Optional[str] = None) -> int:
+        """Approve or reject all pending relationships. Returns count."""
+        pending = self._store.list_pending_relationships(limit=10000)
+        count = 0
+        for rel in pending:
+            if self.review_connection(rel.id, action, reason=reason):
+                count += 1
+        return count
 
     def recall(
         self,

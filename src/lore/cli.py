@@ -623,6 +623,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_topics.add_argument("--format", dest="fmt", default="brief", choices=["brief", "detailed"])
     p_topics.add_argument("--limit", type=int, default=50)
 
+    # review (E6)
+    p_review = sub.add_parser("review", help="Review pending knowledge graph connections")
+    p_review.add_argument("--approve", metavar="ID", default=None, help="Approve a relationship by ID")
+    p_review.add_argument("--reject", metavar="ID", default=None, help="Reject a relationship by ID")
+    p_review.add_argument("--approve-all", action="store_true", dest="approve_all", help="Approve all pending")
+    p_review.add_argument("--reject-all", action="store_true", dest="reject_all", help="Reject all pending")
+    p_review.add_argument("--limit", type=int, default=50, help="Max items to show (default: 50)")
+
     # serve
     p_serve = sub.add_parser("serve", help="Start Lore HTTP server")
     p_serve.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
@@ -1565,6 +1573,62 @@ def cmd_topics(args):
             print(f"  {t.name} ({t.entity_type}) — {t.mention_count} memories")
 
 
+def cmd_review(args: argparse.Namespace) -> None:
+    """Review pending knowledge graph connections (E6)."""
+    lore = _get_lore(args.db)
+
+    if args.approve:
+        ok = lore.review_connection(args.approve, "approve")
+        lore.close()
+        if ok:
+            print(f"Approved: {args.approve}")
+        else:
+            print(f"Not found: {args.approve}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.reject:
+        ok = lore.review_connection(args.reject, "reject")
+        lore.close()
+        if ok:
+            print(f"Rejected: {args.reject}")
+        else:
+            print(f"Not found: {args.reject}", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    if args.approve_all:
+        count = lore.review_all("approve")
+        lore.close()
+        print(f"Approved {count} connection(s).")
+        return
+
+    if args.reject_all:
+        count = lore.review_all("reject")
+        lore.close()
+        print(f"Rejected {count} connection(s).")
+        return
+
+    # Default: list pending
+    items = lore.get_pending_reviews(limit=args.limit)
+    lore.close()
+    if not items:
+        print("Nothing to review.")
+        return
+
+    print(f"Pending connections ({len(items)} total):\n")
+    for i, item in enumerate(items, 1):
+        rel = item.relationship
+        print(f"  {i}. {item.source_entity_name} --[{rel.rel_type}]--> {item.target_entity_name}")
+        if item.source_memory_content:
+            snippet = item.source_memory_content[:100].replace("\n", " ")
+            print(f"     Source: \"{snippet}\"")
+        print(f"     ID: {rel.id}  Created: {rel.created_at[:19] if rel.created_at else 'unknown'}")
+        print()
+    print("Use --approve <id> or --reject <id> to act on items.")
+    print("Use --approve-all or --reject-all for bulk actions.")
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1616,6 +1680,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "snapshot": cmd_snapshot,
         "snapshot-save": cmd_snapshot_save,
         "topics": cmd_topics,
+        "review": cmd_review,
         "serve": cmd_serve,
         "mcp": cmd_mcp,
         "ui": cmd_ui,

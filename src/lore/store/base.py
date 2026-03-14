@@ -12,6 +12,7 @@ from lore.types import (
     EntityMention,
     Fact,
     Memory,
+    RejectedPattern,
     Relationship,
 )
 
@@ -234,4 +235,33 @@ class Store(ABC):
         self, limit: int = 10000
     ) -> List[ConsolidationLogEntry]:
         """List all consolidation log entries ordered by created_at."""
+        return []
+
+    # ------------------------------------------------------------------
+    # Review / Approval UX (E6)
+    # ------------------------------------------------------------------
+
+    def list_pending_relationships(self, limit: int = 50) -> List[Relationship]:
+        """List relationships with status='pending'."""
+        return []
+
+    def update_relationship_status(self, rel_id: str, status: str) -> bool:
+        """Update a relationship's status. Returns True if found."""
+        return False
+
+    def save_rejected_pattern(
+        self,
+        pattern: RejectedPattern,
+    ) -> None:
+        """Save a rejected pattern to prevent re-suggestion."""
+        pass
+
+    def is_rejected_pattern(
+        self, source_name: str, target_name: str, rel_type: str
+    ) -> bool:
+        """Check if a (source, target, rel_type) pattern was rejected."""
+        return False
+
+    def list_rejected_patterns(self, limit: int = 100) -> List[RejectedPattern]:
+        """List rejected patterns."""
         return []

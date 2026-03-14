@@ -1238,6 +1238,80 @@ def save_snapshot(content: str, title=None, session_id=None, tags=None) -> str:
         return f"Failed to save snapshot: {e}"
 
 
+@mcp.tool(
+    description=(
+        "Get pending knowledge graph connections for review. "
+        "USE THIS WHEN: you want to present discovered connections to the user "
+        "for approval or rejection. Returns pending relationships grouped by type "
+        "with entity names and source memory context. The user can then decide "
+        "which connections to keep (approve) and which to discard (reject). "
+        "Rejected patterns are remembered so they won't be re-suggested."
+    ),
+)
+def review_digest(limit: int = 20) -> str:
+    """Get pending connections for conversational review."""
+    try:
+        lore = _get_lore()
+        items = lore.get_pending_reviews(limit=limit)
+        if not items:
+            return "No pending connections to review."
+
+        # Group by rel_type
+        groups: Dict[str, list] = {}
+        for item in items:
+            groups.setdefault(item.relationship.rel_type, []).append(item)
+
+        lines = [f"Pending connections ({len(items)} total):\n"]
+        for rel_type, group in sorted(groups.items()):
+            lines.append(f"**{rel_type}** ({len(group)}):")
+            for item in group:
+                line = (
+                    f"  - {item.source_entity_name} ({item.source_entity_type}) "
+                    f"→ {item.target_entity_name} ({item.target_entity_type})"
+                )
+                lines.append(line)
+                if item.source_memory_content:
+                    snippet = item.source_memory_content[:80].replace("\n", " ")
+                    lines.append(f"    Source: \"{snippet}\"")
+                lines.append(f"    ID: {item.relationship.id}")
+            lines.append("")
+
+        lines.append(
+            "To approve: call review_connection(id, 'approve')\n"
+            "To reject: call review_connection(id, 'reject')"
+        )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to get review digest: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Approve or reject a pending knowledge graph connection. "
+        "USE THIS AFTER: getting a review_digest and the user has decided "
+        "which connections to keep or discard. Rejected patterns are tracked "
+        "so the same connection won't be re-suggested."
+    ),
+)
+def review_connection(
+    relationship_id: str,
+    action: str,
+    reason: Optional[str] = None,
+) -> str:
+    """Approve or reject a pending connection."""
+    try:
+        if action not in ("approve", "reject"):
+            return f"Invalid action: {action!r}. Must be 'approve' or 'reject'."
+        lore = _get_lore()
+        ok = lore.review_connection(relationship_id, action, reason=reason)
+        if not ok:
+            return f"Relationship not found: {relationship_id}"
+        verb = "Approved" if action == "approve" else "Rejected"
+        return f"{verb} connection {relationship_id}."
+    except Exception as e:
+        return f"Failed to review connection: {e}"
+
+
 def run_server() -> None:
     """Start the MCP server with stdio transport."""
     mcp.run(transport="stdio")

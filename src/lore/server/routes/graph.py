@@ -331,7 +331,7 @@ async def get_graph(
             if has_relationships:
                 total_relationships = await conn.fetchval("SELECT COUNT(*) FROM relationships")
                 rel_rows = await conn.fetch(
-                    "SELECT source_entity_id, target_entity_id, rel_type, weight FROM relationships"
+                    "SELECT source_entity_id, target_entity_id, rel_type, weight FROM relationships WHERE COALESCE(status, 'approved') = 'approved'"
                 )
                 for rel in rel_rows:
                     if rel["source_entity_id"] in entity_ids and rel["target_entity_id"] in entity_ids:
@@ -783,6 +783,7 @@ async def get_entity_detail(entity_id: str) -> EntityDetailResponse:
                END
                WHERE (r.source_entity_id = $1 OR r.target_entity_id = $1)
                  AND e.id != $1
+                 AND COALESCE(r.status, 'approved') = 'approved'
                ORDER BY e.id, r.weight DESC
                LIMIT 20""",
             entity_id,
@@ -878,6 +879,7 @@ async def get_topic_detail_graph(
                )
                WHERE (r.source_entity_id = $1 OR r.target_entity_id = $1)
                  AND r.valid_until IS NULL
+                 AND COALESCE(r.status, 'approved') = 'approved'
                LIMIT 50""",
             entity_id,
         )

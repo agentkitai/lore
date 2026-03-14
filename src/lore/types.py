@@ -26,6 +26,9 @@ VALID_REL_TYPES: Tuple[str, ...] = (
     "communicates_with", "extends", "configures", "co_occurs_with",
 )
 
+# Valid review statuses for knowledge graph relationships (E6).
+VALID_REVIEW_STATUSES: Tuple[str, ...] = ("pending", "approved", "rejected")
+
 
 @dataclass
 class RecallConfig:
@@ -253,8 +256,34 @@ class Relationship:
     source_memory_id: Optional[str] = None
     valid_from: str = ""
     valid_until: Optional[str] = None
+    status: str = "approved"
     created_at: str = ""
     updated_at: str = ""
+
+
+@dataclass
+class RejectedPattern:
+    """A pattern that should not be re-suggested as a relationship."""
+
+    id: str
+    source_name: str
+    target_name: str
+    rel_type: str
+    rejected_at: str = ""
+    source_memory_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@dataclass
+class ReviewItem:
+    """A pending relationship with entity context for review."""
+
+    relationship: Relationship
+    source_entity_name: str
+    source_entity_type: str
+    target_entity_name: str
+    target_entity_type: str
+    source_memory_content: Optional[str] = None
 
 
 @dataclass

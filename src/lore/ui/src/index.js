@@ -8,6 +8,7 @@ import { LayoutManager } from './graph/layout.js';
 import { DetailPanel } from './panels/detail.js';
 import { FilterPanel } from './panels/filters.js';
 import { StatsPanel } from './panels/stats.js';
+import { ReviewPanel } from './panels/review.js';
 import { SearchBar } from './components/search.js';
 import { TimelineScrubber } from './components/timeline.js';
 import { Minimap } from './components/minimap.js';
@@ -106,6 +107,12 @@ async function init() {
     const stats = new StatsPanel(statsContainer, state, interaction);
     const timeline = new TimelineScrubber(timelineContainer, state);
     const minimap = new Minimap(minimapContainer, state, renderer);
+
+    // Review panel (E6)
+    const reviewContainer = document.getElementById('review-panel');
+    if (reviewContainer) {
+      const reviewPanel = new ReviewPanel(reviewContainer, state);
+    }
 
     // Render minimap periodically
     setInterval(() => minimap.render(), 500);
