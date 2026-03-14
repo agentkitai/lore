@@ -12,6 +12,8 @@ export class AppState extends EventTarget {
     this.hoveredEdge = null;
     this.searchResults = new Set();
     this.searchQuery = '';
+    this.focusedNodeId = null;
+    this.neighborIds = new Set();
     this.viewMode = 'force'; // 'force', 'cluster-project', 'cluster-type'
     this.filters = {
       project: null,
@@ -41,6 +43,19 @@ export class AppState extends EventTarget {
   selectNode(id) {
     this.selectedNodeId = id;
     this.dispatchEvent(new CustomEvent('selectionChange', { detail: { id } }));
+  }
+
+  setFocus(id, neighborIds) {
+    this.focusedNodeId = id;
+    this.neighborIds = new Set(neighborIds || []);
+    if (id) this.neighborIds.add(id);
+    this.dispatchEvent(new CustomEvent('focusChange', { detail: { id, neighborIds: this.neighborIds } }));
+  }
+
+  clearFocus() {
+    this.focusedNodeId = null;
+    this.neighborIds.clear();
+    this.dispatchEvent(new CustomEvent('focusChange', { detail: { id: null } }));
   }
 
   setHoveredNode(id) {

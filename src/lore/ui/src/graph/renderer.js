@@ -91,8 +91,17 @@ export class GraphRenderer {
       const dimmed = !srcFiltered || !tgtFiltered;
       const isHovered = hoveredEdge === edge;
 
+      const srcId = src.id;
+      const tgtId = tgt.id;
+      const focusedNbr = this.state.focusedNodeId;
+      const nbrIds = this.state.neighborIds;
+      const edgeInFocus = focusedNbr && nbrIds.has(srcId) && nbrIds.has(tgtId);
+      const edgeDimmedByFocus = focusedNbr && !edgeInFocus;
+
       const color = getNodeColor(src);
-      const alpha = isHovered ? 1.0 : dimmed ? 0.05 : 0.4;
+      let alpha = isHovered ? 1.0 : dimmed ? 0.05 : 0.4;
+      if (edgeDimmedByFocus) alpha = 0.02;
+      if (edgeInFocus) alpha = 0.8;
 
       ctx.beginPath();
       ctx.moveTo(src.x, src.y);
@@ -135,7 +144,7 @@ export class GraphRenderer {
   }
 
   _drawNodes(ctx, zoom) {
-    const { nodes, filteredNodeIds, selectedNodeId, hoveredNodeId, searchResults } = this.state;
+    const { nodes, filteredNodeIds, selectedNodeId, hoveredNodeId, searchResults, focusedNodeId, neighborIds } = this.state;
 
     for (const node of nodes) {
       if (node.x == null) continue;
@@ -149,9 +158,13 @@ export class GraphRenderer {
       const isHovered = hoveredNodeId === node.id;
       const isSearchMatch = searchResults.size > 0 && searchResults.has(node.id);
       const isDimmedBySearch = searchResults.size > 0 && !searchResults.has(node.id);
+      const isNeighbor = focusedNodeId && neighborIds.has(node.id);
+      const isDimmedByFocus = focusedNodeId && !neighborIds.has(node.id);
 
       let alpha = isFiltered ? (node.confidence || 1.0) : 0.1;
       if (isDimmedBySearch) alpha = 0.2;
+      if (isDimmedByFocus) alpha = 0.06;
+      if (isNeighbor) alpha = 1.0;
       alpha = Math.max(0.05, Math.min(1.0, alpha));
 
       // Search match pulse

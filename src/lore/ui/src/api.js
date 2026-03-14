@@ -119,4 +119,40 @@ export async function reviewBulk(action, ids, reason = null) {
   });
 }
 
+// Fetch neighbors of a node (connected memories + entities)
+export async function fetchNeighbors(id) {
+  const cached = cache.get(`nbr:${id}`);
+  if (cached) return cached;
+
+  // Try memory detail first (has connected_entities + connected_memories)
+  try {
+    const data = await fetchMemoryDetail(id);
+    const neighborIds = [];
+    if (data.connected_entities) {
+      for (const e of data.connected_entities) neighborIds.push(e.id);
+    }
+    if (data.connected_memories) {
+      for (const m of data.connected_memories) neighborIds.push(m.id);
+    }
+    cache.set(`nbr:${id}`, neighborIds);
+    return neighborIds;
+  } catch (_memErr) {
+    // Try entity detail
+    try {
+      const data = await fetchEntityDetail(id);
+      const neighborIds = [];
+      if (data.connected_memories) {
+        for (const m of data.connected_memories) neighborIds.push(m.id);
+      }
+      if (data.connected_entities) {
+        for (const e of data.connected_entities) neighborIds.push(e.id);
+      }
+      cache.set(`nbr:${id}`, neighborIds);
+      return neighborIds;
+    } catch (_entErr) {
+      return [];
+    }
+  }
+}
+
 export { cache };

@@ -1,20 +1,22 @@
-# Lore — Memory That Works Without Code Changes
+# Lore — Universal AI Memory Layer
 
 [![PyPI](https://img.shields.io/pypi/v/lore-sdk)](https://pypi.org/project/lore-sdk/)
+[![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
+[![Docker](https://img.shields.io/docker/v/amitpaz/lore?label=docker)](https://hub.docker.com/r/amitpaz/lore)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/github/license/agentkitai/lore)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/github/actions/workflow/status/agentkitai/lore/ci.yml?label=tests)](https://github.com/agentkitai/lore/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz1/lore/ci.yml?label=tests)](https://github.com/amitpaz1/lore/actions)
 
-**Install a hook. Your agent remembers.**
+**Your AI agents remember everything. Automatically.**
 
-Lore auto-injects relevant memories into your agent's context before every response. No SDK calls. No agent cooperation. No code changes. Just a hook and a server.
+Lore is a cross-agent memory system that stores, connects, and retrieves knowledge across any AI agent — without code changes. Install a hook, and relevant memories appear in every prompt. No agent cooperation needed.
 
 ```
 User: "What API rate limits should I use?"
 
 ── Lore hook fires (20ms) ──────────────────────────────
-🧠 Relevant memories:
+🧠 Relevant memories from Lore:
 - [0.82] Stripe API returns 429 after 100 req/min — use exponential backoff
 - [0.71] Our internal API rate limit is 500 req/min per API key
 ────────────────────────────────────────────────────────
@@ -22,319 +24,360 @@ User: "What API rate limits should I use?"
 Agent sees memories + prompt → responds with full context
 ```
 
-Your agent didn't call anything. Lore queried itself, found relevant memories, and injected them — all before the agent saw the message.
+## Features
 
-## Why Not MCP Tools?
+### Universal Memory
+`remember` · `recall` · `forget` · `list_memories` · `stats`
 
-MCP memory tools (including Lore's own 20 MCP tools) rely on the agent *choosing* to call `recall()`. In practice, agents rarely do. Memory becomes write-only — a fancy notebook nobody reads.
+Store and retrieve memories across any AI agent via MCP tools, REST API, or Python/TypeScript SDK. Semantic search with tier-based TTL, importance scoring, temporal decay, and automatic PII redaction.
 
-**Auto-retrieval fixes this structurally.** Every message triggers a semantic search. Relevant memories appear in context automatically. The agent doesn't need to know Lore exists.
+### Knowledge Graph
+`graph_query` · `entity_map` · `related` · `extract_facts` · `list_facts` · `conflicts`
 
-## Quick Start — Claude Code (2 minutes)
+Entities and relationships auto-extracted from memories. Hop-by-hop graph traversal surfaces connected knowledge that pure vector search misses. Atomic fact extraction with automatic conflict detection.
 
-### 1. Start the Lore server
+### Graph Visualization
+**Web UI at `/ui/`**
+
+Interactive D3 force-directed graph of your knowledge base. Entity detail panels, topic clusters, search, and filtering. Runs in the browser — no install required.
+
+### Session Continuity
+**Auto-snapshot + auto-inject — zero agent cooperation**
+
+The Session Accumulator automatically captures conversation context and injects relevant session history into every prompt. Deterministic (no LLM needed). Works via hooks — the agent never knows Lore exists.
+
+### Recent Activity
+`recent_activity`
+
+Session-aware summary of what happened recently across all projects. Gives agents continuity between conversations without manual context-passing.
+
+### Topic Notes
+`topics` · `topic_detail`
+
+Auto-generated concept hubs that cluster related memories, entities, and facts around recurring themes. See everything Lore knows about a topic in one view.
+
+### Export & Snapshot
+`export` · `snapshot` · `snapshot_list` · `save_snapshot`
+
+Full data export in JSON and Markdown formats. Obsidian-compatible output for browsing your knowledge graph in a PKM tool. Snapshots for backup and migration.
+
+### Approval UX
+`review_digest` · `review_connection`
+
+Review discovered knowledge graph connections before they become permanent. Approve, reject, or skip — keep your graph clean.
+
+### Multi-Agent Setup
+`lore setup claude-code` · `lore setup openclaw` · `lore setup cursor` · `lore setup codex`
+
+One-command hook installation for all major AI coding agents. Auto-retrieval injected into every prompt — no code changes needed.
+
+### Retrieval Analytics
+`GET /v1/analytics/retrieval` · Prometheus metrics
+
+Track hit rate, score distribution, memory utilization, and latency. Know whether memories are actually helping your agents.
+
+## Quick Start
+
+### Docker Compose (recommended)
 
 ```bash
-pip install lore-sdk
-lore serve  # starts on port 8765, SQLite by default
+git clone https://github.com/amitpaz1/lore.git
+cd lore
+docker compose up -d
 ```
 
-### 2. Add the hook
+Starts Postgres with pgvector and the Lore server on `http://localhost:8765`.
 
-Create `~/.claude/hooks/lore-retrieve.sh`:
+### pip
 
 ```bash
-#!/bin/bash
-# Auto-inject Lore memories into every Claude Code prompt
-INPUT=$(cat)
-PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
-
-# Skip short/empty prompts
-[ -z "$PROMPT" ] || [ ${#PROMPT} -lt 10 ] && exit 0
-
-ENCODED=$(printf '%s' "$PROMPT" | jq -sRr @uri)
-RESPONSE=$(curl -s --max-time 2 \
-  "http://localhost:8765/v1/retrieve?query=${ENCODED}&limit=5&min_score=0.3&format=markdown" \
-  -H "Authorization: Bearer ${LORE_API_KEY}" 2>/dev/null)
-
-COUNT=$(echo "$RESPONSE" | jq -r '.count // 0' 2>/dev/null)
-if [ "$COUNT" -gt 0 ]; then
-  FORMATTED=$(echo "$RESPONSE" | jq -r '.formatted // empty' 2>/dev/null)
-  jq -n --arg ctx "🧠 Relevant memories from Lore:
-$FORMATTED" '{
-    hookSpecificOutput: {
-      hookEventName: "UserPromptSubmit",
-      additionalContext: $ctx
-    }
-  }'
-fi
+pip install lore-sdk[server]
+lore serve  # starts on port 8765
 ```
+
+### Verify it works
 
 ```bash
-chmod +x ~/.claude/hooks/lore-retrieve.sh
+curl http://localhost:8765/v1/memories
 ```
+
+## Multi-Agent Setup
+
+### Claude Code
+
+**Option A: Auto-retrieval hook (recommended)**
+
+```bash
+lore setup claude-code
+```
+
+This installs a `UserPromptSubmit` hook that auto-injects relevant memories into every prompt.
+
+**Option B: MCP tools**
 
 Add to `~/.claude/settings.json`:
 
 ```json
 {
-  "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "~/.claude/hooks/lore-retrieve.sh"
-          }
-        ]
+  "mcpServers": {
+    "lore": {
+      "command": "lore",
+      "args": ["mcp"],
+      "env": {
+        "LORE_API_URL": "http://localhost:8765",
+        "LORE_API_KEY": "your-api-key"
       }
-    ]
+    }
   }
 }
 ```
 
-### 3. Done
-
-Every prompt you type in Claude Code now gets relevant memories injected automatically. Store memories via MCP tools, the SDK, or the REST API — they'll surface when relevant.
-
-## How It Works
-
-```
-┌─────────────┐     ┌──────────────┐     ┌──────────────┐
-│ User types   │────▶│ Hook fires   │────▶│ Lore server  │
-│ a prompt     │     │ (pre-agent)  │     │ /v1/retrieve │
-└─────────────┘     └──────┬───────┘     └──────┬───────┘
-                           │                     │
-                    memories injected      semantic search
-                    into agent context     (pgvector/ONNX)
-                           │                     │
-                    ┌──────▼───────┐     ┌──────▼───────┐
-                    │ Agent sees   │     │ Top-K results │
-                    │ prompt +     │◀────│ scored &      │
-                    │ memories     │     │ formatted     │
-                    └──────────────┘     └──────────────┘
-```
-
-**Key properties:**
-- **20ms latency** (warm) — faster than a network round-trip
-- **Fail-open** — if Lore is slow or down, the agent responds normally
-- **Per-message** — every prompt gets fresh context, not just session start
-- **No agent cooperation** — the agent doesn't know Lore exists
-
-## Supported Runtimes
-
-| Runtime | Hook Type | Status |
-|---------|-----------|--------|
-| **Claude Code** | `UserPromptSubmit` | ✅ Ready |
-| **OpenClaw** | `message:preprocessed` | ✅ Ready |
-| **Cursor** | `beforeSubmitPrompt` | ✅ Ready |
-| **Codex CLI** | `beforePlan` | ✅ Ready |
-| **Warp** | Static (`WARP.md`) | ⚠️ No per-prompt hooks |
-| **Any HTTP client** | `GET /v1/retrieve` | ✅ Ready |
-
-The `/v1/retrieve` endpoint works with any system that can make an HTTP call before sending a prompt to an LLM. If your runtime supports pre-prompt hooks, Lore plugs right in.
-
-> [Claude Code Setup](docs/setup-claude-code.md) · [OpenClaw Setup](docs/setup-openclaw.md) · [Cursor Setup](docs/setup-cursor.md) · [Codex CLI Setup](docs/setup-codex.md) · [API Reference](docs/api-reference.md)
-
-## Storing Memories
-
-Memories flow in automatically or manually:
-
-### Auto-ingest (conversations → memories)
-Hook into your agent's message stream. Lore extracts facts, preferences, and decisions from conversations automatically.
-
-### MCP Tools (20 tools)
-```
-"Remember that our API uses REST with rate limits at 100 req/min"
-```
-Your agent calls `remember()` via MCP. Works with Claude Desktop, Cursor, VS Code, Windsurf, ChatGPT, Cline, and Claude Code.
-
-### REST API
-```bash
-curl -X POST http://localhost:8765/v1/memories \
-  -H "Authorization: Bearer $LORE_API_KEY" \
-  -d '{"content": "API rate limit is 100 req/min", "tags": ["api"]}'
-```
-
-### SDK
-```python
-from lore import Lore
-
-lore = Lore()  # zero config — local SQLite, built-in embeddings
-lore.remember("API rate limit is 100 req/min", tags=["api"])
-```
-
-## Comparison
-
-| Feature | Lore | Mem0 | Zep |
-|---|---|---|---|
-| **Auto-retrieval hooks** | **Yes** | No | No |
-| **No code changes needed** | **Yes** | No | No |
-| Local-first (no server) | Yes | No | No |
-| MCP native (20 tools) | Yes | No | No |
-| Knowledge graph | Yes | Yes* | Yes |
-| Fact extraction | Yes | No | No |
-| Auto-consolidation | Yes | No | Yes |
-| Memory tiers + decay | Yes | No | Yes |
-| Self-hosted | Yes | Partial | Partial |
-| No external DB required | Yes | No** | No |
-
-\* Mem0 requires Neo4j for graph features.
-\*\* Mem0 requires Qdrant or Redis.
-
-**The difference:** Mem0 and Zep are SDKs — you write the `search()` → inject → `add()` code yourself. Lore is a runtime plugin — install a hook, memories flow automatically.
-
-## Installation
-
-### Local (SQLite, zero config)
+### OpenClaw
 
 ```bash
-pip install lore-sdk
-lore serve
+lore setup openclaw
 ```
 
-Everything runs locally. ONNX embeddings ship with the package. No API keys needed.
+Installs a `message:preprocessed` hook for auto-retrieval. Memories appear in context before every agent response.
 
-### Docker (Postgres + pgvector)
+### Cursor
 
 ```bash
-docker compose up -d
+lore setup cursor
 ```
 
-Starts Postgres with pgvector and the Lore HTTP server on port 8765.
+Installs a `beforeSubmitPrompt` hook. Also add MCP config to `.cursorrules`:
+
+```json
+{
+  "mcpServers": {
+    "lore": {
+      "command": "lore",
+      "args": ["mcp"],
+      "env": {
+        "LORE_API_URL": "http://localhost:8765",
+        "LORE_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+### Codex CLI
 
 ```bash
-# Production
-cp .env.example .env  # edit POSTGRES_PASSWORD and LORE_ROOT_KEY
-docker compose -f docker-compose.prod.yml up -d
+lore setup codex
 ```
 
-> [Self-Hosted Guide](docs/self-hosted.md)
+Installs a `beforePlan` hook. Add MCP config:
 
-### npm (TypeScript SDK)
+```json
+{
+  "mcpServers": {
+    "lore": {
+      "command": "lore",
+      "args": ["mcp"],
+      "env": {
+        "LORE_API_URL": "http://localhost:8765",
+        "LORE_API_KEY": "your-api-key"
+      }
+    }
+  }
+}
+```
+
+### Any HTTP client
+
+Auto-retrieval works with any system that can make an HTTP call before sending a prompt:
 
 ```bash
-npm install lore-sdk
+curl -s "http://localhost:8765/v1/retrieve?query=your+prompt&limit=5&min_score=0.3&format=markdown" \
+  -H "Authorization: Bearer $LORE_API_KEY"
 ```
 
-## Features
+## MCP Tools Reference
 
-### Auto-Retrieval (v0.9.5)
-**GET /v1/retrieve** · **runtime hooks** · **fail-open design**
+| Tool | Description |
+|------|-------------|
+| `remember` | Store a memory with type, tier, tags, metadata |
+| `recall` | Semantic search with temporal/graph-enhanced retrieval |
+| `forget` | Delete a memory by ID |
+| `list_memories` | List memories with filtering |
+| `stats` | Memory statistics (total, by type/tier, importance) |
+| `upvote_memory` | Boost memory ranking |
+| `downvote_memory` | Lower memory ranking |
+| `graph_query` | Hop-by-hop knowledge graph traversal |
+| `entity_map` | List entities (optional D3 format) |
+| `related` | Find related memories/entities |
+| `extract_facts` | Extract (subject, predicate, object) triples |
+| `list_facts` | List active facts |
+| `conflicts` | List detected fact conflicts |
+| `classify` | Intent, domain, emotion classification |
+| `enrich` | LLM-powered metadata extraction |
+| `consolidate` | Merge duplicate/related memories |
+| `ingest` | Accept content from external sources |
+| `github_sync` | Sync GitHub repo data |
+| `check_freshness` | Verify memory freshness against git |
+| `as_prompt` | Export memories formatted for LLM injection |
+| `add_conversation` | Extract memories from conversation messages |
+| `recent_activity` | Recent memory activity summary |
+| `topics` | List auto-detected recurring topics |
+| `topic_detail` | Deep dive on a topic (memories, entities, timeline) |
+| `export` | Export all data to JSON |
+| `snapshot` | Create data backup |
+| `snapshot_list` | List available snapshots |
+| `save_snapshot` | Save session snapshot |
+| `review_digest` | Get pending connections for review |
+| `review_connection` | Approve/reject a pending connection |
+| `on_this_day` | Memories from same date across years |
 
-The headline feature. Semantic search + formatted output designed for prompt injection. Supports XML, Markdown, and raw JSON formats. Configurable score threshold, result limit, and timeout.
+## CLI Reference
 
-### Multi-Agent Setup (v0.9.2+)
-**`lore setup claude-code`** · **`lore setup openclaw`** · **`lore setup cursor`** · **`lore setup codex`**
+```bash
+# Memory operations
+lore remember "API rate limit is 100 req/min" --tags api,limits
+lore recall "rate limits" --limit 5
+lore forget <memory-id>
+lore memories --tier long_term
+lore stats
 
-One-command hook installation for all major AI agents. Auto-retrieval injected into every prompt — no code changes needed.
+# Knowledge graph
+lore graph "authentication" --depth 2
+lore entities --limit 50
+lore facts "extract facts from this text"
+lore conflicts
 
-### Retrieval Analytics (v0.9.3+)
-**GET /v1/analytics/retrieval** · **Prometheus metrics**
+# Session & context
+lore recent --hours 24
+lore on-this-day
 
-Track hit rate, score distribution, memory utilization, and latency. Know whether memories are actually helping your agents.
+# Export & backup
+lore export --format json > backup.json
+lore import backup.json
+lore snapshot-save --title "before refactor"
 
-### Memory Management
-**remember** · **recall** · **forget** · **list_memories** · **stats** · **upvote** · **downvote**
+# Server & setup
+lore serve                    # start HTTP server
+lore mcp                     # start MCP server
+lore ui                      # start web UI
+lore setup claude-code       # install hooks
+lore setup openclaw
+lore setup cursor
+lore setup codex
 
-Core operations with semantic search, tier-based TTL (working/short/long), importance scoring with temporal decay, and automatic PII redaction.
-
-### Knowledge Graph
-**graph_query** · **entity_map** · **related**
-
-Entities and relationships extracted from memories, with hop-by-hop traversal. Graph-enhanced recall surfaces connected memories that pure vector search misses.
-
-### Fact Extraction & Conflicts
-**extract_facts** · **list_facts** · **conflicts**
-
-Atomic (subject, predicate, object) triples extracted from text. Automatic conflict detection when new facts contradict old ones.
-
-### Intelligence Pipeline
-**classify** · **enrich** · **consolidate**
-
-LLM-powered classification, metadata enrichment, and memory consolidation. All opt-in — requires an LLM API key.
-
-### Temporal Queries (v0.7.0)
-**on_this_day** · **verbatim recall** · **temporal filters**
-
-Surface memories from the same day across years. Return original words. Filter by date ranges.
-
-### Import/Export
-**ingest** · **as_prompt** · **check_freshness** · **github_sync**
-
-Webhook-style ingestion, LLM-formatted export, staleness detection, and GitHub sync.
-
-## Setup Guides
-
-| Client | Auto-Retrieval | Guide |
-|--------|---------------|-------|
-| Claude Code | ✅ Hooks | [docs/setup-claude-code.md](docs/setup-claude-code.md) |
-| OpenClaw | ✅ Hooks | [docs/setup-openclaw.md](docs/setup-openclaw.md) |
-| Cursor | ✅ Hooks | [docs/setup-cursor.md](docs/setup-cursor.md) |
-| Codex CLI | ✅ Hooks | [docs/setup-codex.md](docs/setup-codex.md) |
-| Claude Desktop | MCP only | [docs/setup-claude-desktop.md](docs/setup-claude-desktop.md) |
-| VS Code (Copilot) | MCP only | [docs/setup-vscode.md](docs/setup-vscode.md) |
-| Windsurf | MCP only | [docs/setup-windsurf.md](docs/setup-windsurf.md) |
-| Cline | MCP only | [docs/setup-cline.md](docs/setup-cline.md) |
-| Warp | MCP only | [docs/setup-warp.md](docs/setup-warp.md) |
-| ChatGPT | MCP bridge | [docs/setup-chatgpt.md](docs/setup-chatgpt.md) |
-
-> [All Setup Guides](docs/mcp-setup.md)
+# API keys
+lore keys-create --name "my-agent"
+lore keys-list
+lore keys-revoke <key-id>
+```
 
 ## API Reference
 
-- [Auto-Retrieval API](docs/api-reference.md#auto-retrieval)
-- [MCP Tools (20 tools)](docs/api-reference.md#mcp-tools)
-- [CLI Commands](docs/api-reference.md#cli-commands)
-- [SDK Methods](docs/api-reference.md#sdk-lore-class)
-- [Environment Variables](docs/api-reference.md#environment-variables)
+### Key endpoints
 
-> [Full API Reference](docs/api-reference.md)
+```
+GET    /v1/retrieve                    # Auto-retrieval (for hooks)
+POST   /v1/memories                    # Create memory
+POST   /v1/memories/search             # Semantic search
+GET    /v1/memories                    # List memories
+GET    /v1/memories/{id}               # Get memory
+PATCH  /v1/memories/{id}               # Update memory
+DELETE /v1/memories/{id}               # Delete memory
+
+GET    /v1/graph                       # Knowledge graph
+GET    /v1/graph/topics                # Topic list
+GET    /v1/graph/topics/{name}         # Topic detail
+GET    /v1/graph/entity/{id}           # Entity detail
+
+POST   /v1/conversations              # Extract memories from conversation
+POST   /v1/ingest                     # Ingest external content
+POST   /v1/ingest/batch               # Batch ingest
+
+GET    /v1/review                     # Pending connection reviews
+POST   /v1/review/{id}               # Approve/reject connection
+
+POST   /v1/export                     # Export all data
+POST   /v1/import                     # Import data
+POST   /v1/export/snapshots           # Create snapshot
+GET    /v1/export/snapshots           # List snapshots
+
+GET    /v1/recent                     # Recent activity
+GET    /v1/analytics/retrieval        # Retrieval analytics + Prometheus
+
+POST   /v1/keys                       # Create API key
+GET    /v1/keys                       # List API keys
+DELETE /v1/keys/{id}                  # Revoke API key
+```
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | — | PostgreSQL connection string |
+| `LORE_PORT` | `8765` | Server port |
+| `LORE_API_KEY` | — | API key for authentication |
+| `LORE_API_URL` | `http://localhost:8765` | Remote server URL |
+| `LORE_PROJECT` | — | Default project scope |
+| `LORE_SNAPSHOT_THRESHOLD` | `30000` | Characters before auto-snapshot |
+| `LORE_ENRICHMENT_ENABLED` | `false` | Enable LLM enrichment pipeline |
+| `LORE_ENRICHMENT_MODEL` | `gpt-4o-mini` | Model for enrichment |
+| `LORE_LLM_PROVIDER` | — | LLM provider override |
+| `LORE_LLM_API_KEY` | — | LLM API key |
+| `LORE_LLM_MODEL` | — | LLM model override |
+| `LORE_LLM_BASE_URL` | — | LLM base URL |
+| `LORE_GRAPH_DEPTH` | `2` | Default graph traversal depth |
+| `LORE_GRAPH_CONFIDENCE_THRESHOLD` | `0.5` | Entity confidence threshold |
+| `LORE_HTTP_TIMEOUT` | `30` | HTTP timeout (seconds) |
+| `OPENAI_API_KEY` | — | Auto-enables enrichment when set |
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                      Agent Runtimes                          │
+│  Claude Code · OpenClaw · Cursor · Codex · Any HTTP client   │
+└──────────┬──────────────────────────────────┬────────────────┘
+           │ hooks (auto-retrieval)           │ MCP tools
+           ▼                                  ▼
+┌──────────────────────────────────────────────────────────────┐
+│                     Lore Server (:8765)                       │
+│                                                              │
+│  REST API · MCP Server · Web UI (/ui/)                       │
+│                                                              │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
+│  │  Embedder   │  │  Knowledge   │  │  LLM Pipeline       │ │
+│  │  (ONNX)     │  │  Graph       │  │  (optional)         │ │
+│  │             │  │  Engine      │  │  classify · enrich   │ │
+│  │  pgvector   │  │  entities    │  │  extract · consolidate│
+│  │  search     │  │  relations   │  │                     │ │
+│  └─────────────┘  └──────────────┘  └─────────────────────┘ │
+└──────────────────────────┬───────────────────────────────────┘
+                           │
+              ┌────────────▼────────────┐
+              │   PostgreSQL + pgvector  │
+              │   memories · entities    │
+              │   relationships · facts  │
+              └─────────────────────────┘
+```
 
 ## Performance
 
 | Operation | Latency |
-|---|---|
+|-----------|---------|
 | `/v1/retrieve` (warm) | ~20ms |
-| `remember()` no LLM | < 100ms |
+| `remember()` (no LLM) | < 100ms |
 | `recall()` 100 memories | < 50ms |
 | `recall()` 10K memories | < 200ms |
 | `recall()` graph-enhanced | < 500ms |
 | Embedding (500 words) | < 200ms |
 
-## Architecture
-
-```mermaid
-graph LR
-    A[Agent Runtime] -->|hook| B["Retrieve API"]
-    B --> C["Embedder (ONNX)"]
-    C --> D[pgvector search]
-    D --> E[Score + Format]
-    E -->|context| A
-
-    F[Conversations] -->|auto-ingest| G["Memories API"]
-    G --> H[Lore SDK]
-    H --> I["Store (SQLite / Postgres)"]
-    H --> J["LLM Pipeline (optional)"]
-```
-
-> [Full Architecture Documentation](docs/architecture.md)
-
-## Examples
-
-See [`examples/`](examples/) for runnable scripts:
-
-- [`full_pipeline.py`](examples/full_pipeline.py) — remember, recall, tiers, prompt export
-- [`mcp_tool_tour.py`](examples/mcp_tool_tour.py) — tour of all 20 MCP tools
-- [`webhook_ingestion.py`](examples/webhook_ingestion.py) — ingest with source tracking
-- [`consolidation_demo.py`](examples/consolidation_demo.py) — memory consolidation
-
 ## Contributing
 
 ```bash
-git clone https://github.com/agentkitai/lore.git
+git clone https://github.com/amitpaz1/lore.git
 cd lore
-pip install -e ".[dev,mcp,enrichment]"
+pip install -e ".[dev,server,mcp,enrichment]"
+docker compose up -d db  # Postgres + pgvector
 pytest
 ```
 

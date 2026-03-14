@@ -4,6 +4,7 @@ import { zoom, zoomIdentity } from 'd3-zoom';
 import { select } from 'd3-selection';
 import { quadtree } from 'd3-quadtree';
 import { getNodeRadius } from './simulation.js';
+import { fetchNeighbors } from '../api.js';
 
 export class InteractionManager {
   constructor(canvas, state, renderer, simulation) {
@@ -172,8 +173,13 @@ export class InteractionManager {
       const node = this._findNode(e.offsetX, e.offsetY);
       if (node) {
         this.state.selectNode(node.id);
+        // Focus mode: fetch and highlight neighbors
+        fetchNeighbors(node.id).then(nbrIds => {
+          this.state.setFocus(node.id, nbrIds);
+        });
       } else {
         this.state.selectNode(null);
+        this.state.clearFocus();
       }
       this._hideContextMenu();
     });
@@ -200,6 +206,7 @@ export class InteractionManager {
           if (searchInput) searchInput.value = '';
         } else if (this.state.selectedNodeId) {
           this.state.selectNode(null);
+          this.state.clearFocus();
         }
         return;
       }
