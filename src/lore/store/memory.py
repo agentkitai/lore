@@ -42,6 +42,7 @@ class MemoryStore(Store):
         tier: Optional[str] = None,
         limit: Optional[int] = None,
         include_archived: bool = False,
+        since: Optional[str] = None,
     ) -> List[Memory]:
         memories = list(self._memories.values())
         if not include_archived:
@@ -52,6 +53,8 @@ class MemoryStore(Store):
             memories = [m for m in memories if m.type == type]
         if tier is not None:
             memories = [m for m in memories if m.tier == tier]
+        if since is not None:
+            memories = [m for m in memories if m.created_at >= since]
         memories.sort(key=lambda m: m.created_at, reverse=True)
         if limit is not None:
             memories = memories[:limit]

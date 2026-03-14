@@ -28,6 +28,7 @@ from lore.importance import (
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
 from lore.store.sqlite import SqliteStore
+from lore.recent import group_memories_by_project
 from lore.types import (
     DECAY_HALF_LIVES,
     TIER_DEFAULT_TTL,
@@ -40,6 +41,7 @@ from lore.types import (
     GraphContext,
     Memory,
     MemoryStats,
+    RecentActivityResult,
     RecallResult,
 )
 
@@ -966,6 +968,105 @@ class Lore:
             memories = memories[:limit]
         return memories
 
+    def recent_activity(
+        self,
+        *,
+        hours: int = 24,
+        project: Optional[str] = None,
+        format: str = "brief",
+        max_memories: int = 50,
+    ) -> RecentActivityResult:
+        """Get recent memories grouped by project.
+
+        Args:
+            hours: Lookback window (clamped to 1-168).
+            project: Filter to project. Falls back to LORE_PROJECT env var.
+            format: Output format hint (brief/detailed/structured).
+            max_memories: Max memories returned (clamped to 1-200).
+
+        Returns:
+            RecentActivityResult with grouped memories.
+        """
+        start = time.monotonic()
+
+        # Clamp parameters
+        hours = max(1, min(hours, 168))
+        max_memories = max(1, min(max_memories, 200))
+
+        # Resolve project from env if not provided
+        if project is None:
+            project = os.environ.get("LORE_PROJECT") or None
+
+        # Compute cutoff
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+
+        try:
+            memories = self._store.list(
+                project=project,
+                since=since,
+                limit=max_memories,
+            )
+        except Exception:
+            logger.exception("recent_activity: store query failed")
+            return RecentActivityResult(
+                hours=hours,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+                query_time_ms=round((time.monotonic() - start) * 1000, 2),
+            )
+
+        # Filter expired
+        now = datetime.now(timezone.utc)
+        memories = [
+            m for m in memories
+            if m.expires_at is None
+            or datetime.fromisoformat(m.expires_at) > now
+        ]
+
+        groups = group_memories_by_project(memories)
+        total_count = sum(g.count for g in groups)
+
+        # LLM summarization (optional, when enrichment is enabled)
+        has_llm_summary = False
+        if self._enrichment_pipeline is not None and format != "structured":
+            has_llm_summary = self._summarize_groups(groups)
+
+        elapsed_ms = round((time.monotonic() - start) * 1000, 2)
+
+        return RecentActivityResult(
+            groups=groups,
+            total_count=total_count,
+            hours=hours,
+            has_llm_summary=has_llm_summary,
+            query_time_ms=elapsed_ms,
+            generated_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def _summarize_groups(self, groups: List["ProjectGroup"]) -> bool:
+        """Summarize each project group using the enrichment LLM. Returns True if any group was summarized."""
+        any_summarized = False
+        for group in groups:
+            try:
+                # Concatenate memory contents, capped at 2000 chars
+                combined = ""
+                for m in group.memories:
+                    piece = f"- [{m.type}] {m.content}\n"
+                    if len(combined) + len(piece) > 2000:
+                        break
+                    combined += piece
+
+                prompt = (
+                    "Summarize these recent activities into 2-3 bullet points "
+                    "focusing on key decisions, changes, and open items:\n\n"
+                    + combined
+                )
+                summary = self._enrichment_pipeline._llm.complete(prompt)
+                if summary and summary.strip():
+                    group.summary = summary.strip()
+                    any_summarized = True
+            except Exception:
+                logger.debug("LLM summary failed for group %s", group.project, exc_info=True)
+        return any_summarized
+
     def stats(self, project: Optional[str] = None) -> MemoryStats:
         """Return memory statistics."""
         all_memories = self._store.list(project=project)
@@ -1483,6 +1584,90 @@ class Lore:
                 logger.warning("Backfill failed for memory %s", memory.id, exc_info=True)
 
         return count
+
+    # ------------------------------------------------------------------
+    # Export / Import (E5)
+    # ------------------------------------------------------------------
+
+    def export_data(
+        self,
+        format: str = "json",
+        output: Optional[str] = None,
+        project: Optional[str] = None,
+        type: Optional[str] = None,
+        tier: Optional[str] = None,
+        since: Optional[str] = None,
+        include_embeddings: bool = False,
+        pretty: bool = False,
+    ) -> "ExportResult":
+        from lore.export.exporter import Exporter
+        from lore.types import ExportFilter, ExportResult
+
+        filters = ExportFilter(
+            project=project, type=type, tier=tier, since=since,
+        )
+
+        if format in ("json", "both"):
+            exporter = Exporter(self._store)
+            result = exporter.export(
+                output=output,
+                filters=filters,
+                include_embeddings=include_embeddings,
+                pretty=pretty,
+            )
+            if format == "both":
+                from lore.export.markdown import MarkdownRenderer
+                md_output = output
+                if md_output and md_output.endswith(".json"):
+                    md_output = md_output.rsplit(".", 1)[0]
+                elif md_output is None:
+                    md_output = "./lore-export"
+                renderer = MarkdownRenderer(self._store)
+                renderer.render(
+                    output_dir=md_output,
+                    filters=filters,
+                    include_embeddings=include_embeddings,
+                )
+            return result
+
+        if format == "markdown":
+            from lore.export.markdown import MarkdownRenderer
+            if output is None:
+                output = "./lore-export"
+            renderer = MarkdownRenderer(self._store)
+            return renderer.render(
+                output_dir=output,
+                filters=filters,
+                include_embeddings=include_embeddings,
+            )
+
+        raise ValueError(f"Unsupported export format: {format!r}")
+
+    def import_data(
+        self,
+        file_path: str,
+        overwrite: bool = False,
+        skip_embeddings: bool = False,
+        project_override: Optional[str] = None,
+        dry_run: bool = False,
+        redact: bool = False,
+    ) -> "ImportResult":
+        from lore.export.importer import Importer
+
+        embedder = None if skip_embeddings else self._embedder
+        redaction_pipeline = self._redaction_pipeline if redact else None
+
+        importer = Importer(
+            store=self._store,
+            embedder=embedder,
+            redaction_pipeline=redaction_pipeline,
+        )
+        return importer.import_file(
+            file_path=file_path,
+            overwrite=overwrite,
+            project_override=project_override,
+            dry_run=dry_run,
+        )
 
 
 def _utc_now_iso() -> str:

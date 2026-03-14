@@ -149,6 +149,21 @@ def cmd_stats(args: argparse.Namespace) -> None:
         print(f"Newest: {s.newest}")
 
 
+def cmd_recent(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    result = lore.recent_activity(
+        hours=args.hours,
+        project=args.project,
+        format=args.format,
+    )
+    lore.close()
+    from lore.recent import format_cli, format_detailed
+
+    if args.format == "detailed":
+        print(format_detailed(result))
+    else:
+        print(format_cli(result))
+
 
 # ------------------------------------------------------------------
 # API key management
@@ -332,6 +347,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # stats
     sub.add_parser("stats", help="Show memory statistics")
+
+    # recent
+    recent_parser = sub.add_parser("recent", help="Show recent activity summary")
+    recent_parser.add_argument("--hours", type=int, default=24, help="Lookback window in hours (default: 24)")
+    recent_parser.add_argument("--project", default=None, help="Filter to specific project")
+    recent_parser.add_argument("--format", default="brief", choices=["brief", "detailed"], help="Output format (default: brief)")
 
     # keys
     keys_parser = sub.add_parser("keys", help="Manage API keys (remote server)")
@@ -543,6 +564,45 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--remove", default=None, metavar="RUNTIME",
                          choices=["claude-code", "openclaw", "cursor", "codex"],
                          help="Remove hooks for a runtime")
+
+    # export
+    p = sub.add_parser("export", help="Export memories and knowledge graph")
+    p.add_argument(
+        "--format", choices=["json", "markdown", "both"], default="json",
+        help="Export format (default: json)",
+    )
+    p.add_argument("--output", "-o", default=None, help="Output file/directory path")
+    p.add_argument("--project", default=None, help="Filter by project")
+    p.add_argument("--type", default=None, help="Filter by memory type")
+    p.add_argument("--tier", choices=["working", "short", "long"], default=None, help="Filter by tier")
+    p.add_argument("--since", default=None, help="Only memories created after DATE (ISO 8601)")
+    p.add_argument("--include-embeddings", action="store_true", default=False, dest="include_embeddings",
+                    help="Include raw embedding vectors (base64)")
+    p.add_argument("--pretty", action="store_true", default=False, help="Pretty-print JSON")
+
+    # import (use "import-data" because "import" is a Python keyword)
+    p = sub.add_parser("import", help="Import from a JSON export file")
+    p.add_argument("file", help="Path to JSON export file")
+    p.add_argument("--overwrite", action="store_true", default=False, help="Replace existing memories on ID conflict")
+    p.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",
+                    help="Show what would be imported, don't write")
+    p.add_argument("--project", default=None, help="Override project for all imported memories")
+    p.add_argument("--skip-embeddings", action="store_true", default=False, dest="skip_embeddings",
+                    help="Don't regenerate embeddings after import")
+    p.add_argument("--redact", action="store_true", default=False, help="Re-run PII redaction on imported content")
+
+    # snapshot
+    p = sub.add_parser("snapshot", help="Quick snapshot and restore")
+    p.add_argument("--list", action="store_true", dest="list_snapshots", help="List available snapshots")
+    p.add_argument("--restore", default=None, nargs="?", const="__prompt__",
+                    help="Restore from named snapshot")
+    p.add_argument("--latest", action="store_true", default=False, help="Use most recent snapshot (with --restore)")
+    p.add_argument("--delete", default=None, help="Delete a specific snapshot")
+    p.add_argument("--older-than", default=None, dest="older_than",
+                    help="Delete snapshots older than duration (e.g. 30d, 4w)")
+    p.add_argument("--yes", "-y", action="store_true", default=False, help="Skip confirmation on restore")
+    p.add_argument("--max-snapshots", type=int, default=50, dest="max_snapshots",
+                    help="Maximum snapshots to retain (default: 50)")
 
     # serve
     p_serve = sub.add_parser("serve", help="Start Lore HTTP server")
@@ -1254,6 +1314,146 @@ def cmd_setup(args: argparse.Namespace) -> None:
         setup_codex(server_url=server_url, api_key=api_key)
 
 
+def cmd_export(args: argparse.Namespace) -> None:
+    lore = _get_lore(args.db)
+    try:
+        result = lore.export_data(
+            format=args.format,
+            output=args.output,
+            project=args.project,
+            type=args.type,
+            tier=args.tier,
+            since=args.since,
+            include_embeddings=args.include_embeddings,
+            pretty=args.pretty,
+        )
+    except Exception as exc:
+        lore.close()
+        print(f"Export failed: {exc}", file=sys.stderr)
+        sys.exit(2)
+    lore.close()
+    print(f"Exported to: {result.path}")
+    print(
+        f"  Memories: {result.memories}, Entities: {result.entities}, "
+        f"Relationships: {result.relationships}, Facts: {result.facts}"
+    )
+    print(f"  Hash: {result.content_hash}")
+    print(f"  Duration: {result.duration_ms}ms")
+    if result.memories == 0:
+        sys.exit(1)
+
+
+def cmd_import(args: argparse.Namespace) -> None:
+    import os
+    if not os.path.exists(args.file):
+        print(f"File not found: {args.file}", file=sys.stderr)
+        sys.exit(1)
+
+    lore = _get_lore(args.db)
+    try:
+        result = lore.import_data(
+            file_path=args.file,
+            overwrite=args.overwrite,
+            skip_embeddings=args.skip_embeddings,
+            project_override=args.project,
+            dry_run=args.dry_run,
+            redact=args.redact,
+        )
+    except ValueError as exc:
+        lore.close()
+        if "newer" in str(exc).lower() or "schema" in str(exc).lower():
+            print(f"Schema error: {exc}", file=sys.stderr)
+            sys.exit(2)
+        if "hash" in str(exc).lower() or "mismatch" in str(exc).lower():
+            print(f"Integrity error: {exc}", file=sys.stderr)
+            sys.exit(3)
+        print(f"Import failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        lore.close()
+        print(f"Import failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    lore.close()
+
+    if args.dry_run:
+        print("Dry run — no changes written")
+    print(
+        f"Total: {result.total}, Imported: {result.imported}, "
+        f"Skipped: {result.skipped}, Overwritten: {result.overwritten}, "
+        f"Errors: {result.errors}"
+    )
+    if result.embeddings_regenerated:
+        print(f"Embeddings regenerated: {result.embeddings_regenerated}")
+    for w in result.warnings[:10]:
+        print(f"  Warning: {w}")
+    print(f"Duration: {result.duration_ms}ms")
+
+
+def cmd_snapshot(args: argparse.Namespace) -> None:
+    from lore.export.snapshot import SnapshotManager
+
+    lore = _get_lore(args.db)
+    mgr = SnapshotManager(lore, max_snapshots=args.max_snapshots)
+
+    if args.list_snapshots:
+        snapshots = mgr.list()
+        lore.close()
+        if not snapshots:
+            print("No snapshots available.")
+            return
+        print(f"{'NAME':<22} {'MEMORIES':<10} {'SIZE':<12} {'DATE'}")
+        print("-" * 60)
+        for s in snapshots:
+            print(f"{s['name']:<22} {s.get('memories', '?'):<10} {s.get('size_human', '?'):<12} {s.get('created_at', '?')}")
+        return
+
+    if args.delete is not None:
+        if args.older_than:
+            count = mgr.cleanup(args.older_than)
+            lore.close()
+            print(f"Deleted {count} snapshot(s).")
+        else:
+            ok = mgr.delete(args.delete)
+            lore.close()
+            if ok:
+                print(f"Deleted snapshot: {args.delete}")
+            else:
+                print(f"Snapshot not found: {args.delete}", file=sys.stderr)
+                sys.exit(1)
+        return
+
+    if args.restore is not None or args.latest:
+        name = "__latest__" if args.latest else args.restore
+        if name == "__prompt__":
+            if not args.latest:
+                print("Specify a snapshot name or use --latest", file=sys.stderr)
+                lore.close()
+                sys.exit(1)
+
+        if not args.yes:
+            confirm = input(f"Restore from snapshot '{name}'? [y/N] ")
+            if confirm.lower() not in ("y", "yes"):
+                print("Aborted.")
+                lore.close()
+                return
+
+        result = mgr.restore(name)
+        lore.close()
+        print(
+            f"Restored: {result.imported} imported, "
+            f"{result.skipped} skipped, {result.errors} errors"
+        )
+        return
+
+    # Default: create snapshot
+    info = mgr.create()
+    lore.close()
+    print(f"Snapshot created: {info['name']}")
+    print(f"  Path: {info['path']}")
+    print(f"  Memories: {info['memories']}")
+    print(f"  Size: {info['size_human']}")
+
+
 def cmd_serve(args: argparse.Namespace) -> None:
     try:
         import uvicorn
@@ -1309,6 +1509,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "forget": cmd_forget,
         "memories": cmd_memories,
         "stats": cmd_stats,
+        "recent": cmd_recent,
         "prompt": cmd_prompt,
         "freshness": cmd_freshness,
         "github-sync": cmd_github_sync,
@@ -1328,6 +1529,9 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "add-conversation": cmd_add_conversation,
         "wrap": cmd_wrap,
         "setup": cmd_setup,
+        "export": cmd_export,
+        "import": cmd_import,
+        "snapshot": cmd_snapshot,
         "serve": cmd_serve,
         "mcp": cmd_mcp,
     }

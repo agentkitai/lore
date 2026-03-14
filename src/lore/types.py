@@ -326,6 +326,28 @@ DEFAULT_CONSOLIDATION_CONFIG: Dict[str, Any] = {
 # ------------------------------------------------------------------
 
 @dataclass
+class ProjectGroup:
+    """A group of memories belonging to one project."""
+
+    project: str
+    memories: List[Memory] = field(default_factory=list)
+    count: int = 0
+    summary: Optional[str] = None
+
+
+@dataclass
+class RecentActivityResult:
+    """Result of a recent_activity query."""
+
+    groups: List[ProjectGroup] = field(default_factory=list)
+    total_count: int = 0
+    hours: int = 24
+    has_llm_summary: bool = False
+    query_time_ms: float = 0.0
+    generated_at: str = ""
+
+
+@dataclass
 class ConversationMessage:
     """A single message in a conversation."""
 
@@ -345,4 +367,49 @@ class ConversationJob:
     duplicates_skipped: int = 0
     processing_time_ms: int = 0
     error: Optional[str] = None
+
+
+# ------------------------------------------------------------------
+# Export / Import types (E5)
+# ------------------------------------------------------------------
+
+@dataclass
+class ExportFilter:
+    """Filters applied during export."""
+
+    project: Optional[str] = None
+    type: Optional[str] = None
+    tier: Optional[str] = None
+    since: Optional[str] = None
+
+
+@dataclass
+class ExportResult:
+    """Result returned by an export operation."""
+
+    path: str
+    format: str
+    memories: int = 0
+    entities: int = 0
+    relationships: int = 0
+    entity_mentions: int = 0
+    facts: int = 0
+    conflicts: int = 0
+    consolidation_logs: int = 0
+    content_hash: str = ""
+    duration_ms: int = 0
+
+
+@dataclass
+class ImportResult:
+    """Result returned by an import operation."""
+
+    total: int = 0
+    imported: int = 0
+    skipped: int = 0
+    overwritten: int = 0
+    errors: int = 0
+    warnings: List[str] = field(default_factory=list)
+    embeddings_regenerated: int = 0
+    duration_ms: int = 0
 

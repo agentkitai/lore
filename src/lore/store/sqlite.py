@@ -367,6 +367,7 @@ class SqliteStore(Store):
         tier: Optional[str] = None,
         limit: Optional[int] = None,
         include_archived: bool = False,
+        since: Optional[str] = None,
     ) -> List[Memory]:
         query = "SELECT * FROM memories"
         params: List[Any] = []
@@ -382,6 +383,9 @@ class SqliteStore(Store):
         if tier is not None:
             conditions.append("tier = ?")
             params.append(tier)
+        if since is not None:
+            conditions.append("created_at >= ?")
+            params.append(since)
         if conditions:
             query += " WHERE " + " AND ".join(conditions)
         query += " ORDER BY created_at DESC"
@@ -1050,6 +1054,58 @@ class SqliteStore(Store):
             created_at=row["created_at"],
             metadata=metadata,
         )
+
+    # ------------------------------------------------------------------
+    # Bulk-read methods for export
+    # ------------------------------------------------------------------
+
+    def list_all_facts(self, memory_ids: Optional[List[str]] = None) -> List[Fact]:
+        if memory_ids is not None:
+            if not memory_ids:
+                return []
+            placeholders = ",".join("?" * len(memory_ids))
+            rows = self._conn.execute(
+                f"SELECT * FROM facts WHERE memory_id IN ({placeholders}) ORDER BY extracted_at",
+                memory_ids,
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM facts ORDER BY extracted_at"
+            ).fetchall()
+        return [self._row_to_fact(r) for r in rows]
+
+    def list_all_entity_mentions(
+        self, memory_ids: Optional[List[str]] = None
+    ) -> List[EntityMention]:
+        if not self._table_exists("entity_mentions"):
+            return []
+        if memory_ids is not None:
+            if not memory_ids:
+                return []
+            placeholders = ",".join("?" * len(memory_ids))
+            rows = self._conn.execute(
+                f"SELECT * FROM entity_mentions WHERE memory_id IN ({placeholders}) ORDER BY created_at",
+                memory_ids,
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM entity_mentions ORDER BY created_at"
+            ).fetchall()
+        return [self._row_to_entity_mention(r) for r in rows]
+
+    def list_all_conflicts(self, limit: int = 10000) -> List[ConflictEntry]:
+        rows = self._conn.execute(
+            "SELECT * FROM conflict_log ORDER BY resolved_at LIMIT ?", (limit,)
+        ).fetchall()
+        return [self._row_to_conflict(r) for r in rows]
+
+    def list_all_consolidation_logs(
+        self, limit: int = 10000
+    ) -> List[ConsolidationLogEntry]:
+        rows = self._conn.execute(
+            "SELECT * FROM consolidation_log ORDER BY created_at LIMIT ?", (limit,)
+        ).fetchall()
+        return [self._row_to_consolidation_log(r) for r in rows]
 
     def close(self) -> None:
         """Close the database connection."""

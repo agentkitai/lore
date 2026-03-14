@@ -35,8 +35,14 @@ class Store(ABC):
         tier: Optional[str] = None,
         limit: Optional[int] = None,
         include_archived: bool = False,
+        since: Optional[str] = None,
     ) -> List[Memory]:
-        """List memories, optionally filtered by project/type/tier, ordered by created_at desc."""
+        """List memories, optionally filtered by project/type/tier, ordered by created_at desc.
+
+        Args:
+            since: ISO 8601 datetime string. If provided, only return memories
+                   created at or after this timestamp.
+        """
 
     @abstractmethod
     def update(self, memory: Memory) -> bool:
@@ -204,4 +210,28 @@ class Store(ABC):
         project: Optional[str] = None,
     ) -> List[ConsolidationLogEntry]:
         """Get consolidation log entries. Returns empty list by default."""
+        return []
+
+    # ------------------------------------------------------------------
+    # Bulk-read methods for export (default no-op implementations)
+    # ------------------------------------------------------------------
+
+    def list_all_facts(self, memory_ids: Optional[List[str]] = None) -> List[Fact]:
+        """List all facts, optionally filtered to specific memory IDs."""
+        return []
+
+    def list_all_entity_mentions(
+        self, memory_ids: Optional[List[str]] = None
+    ) -> List[EntityMention]:
+        """List all entity mentions, optionally filtered to specific memory IDs."""
+        return []
+
+    def list_all_conflicts(self, limit: int = 10000) -> List[ConflictEntry]:
+        """List all conflict entries ordered by resolved_at."""
+        return []
+
+    def list_all_consolidation_logs(
+        self, limit: int = 10000
+    ) -> List[ConsolidationLogEntry]:
+        """List all consolidation log entries ordered by created_at."""
         return []

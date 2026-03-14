@@ -34,6 +34,34 @@ if [ -z "$USER_MSG" ] || [ "${{#USER_MSG}}" -lt 10 ]; then
     exit 0
 fi
 
+# Escape for JSON embedding
+escape_for_json() {{
+    local s="$1"
+    s="${{s//\\\\/\\\\\\\\}}"
+    s="${{s//\\"/\\\\\\"}}"
+    s="${{s//\\$'\\n'/\\\\n}}"
+    s="${{s//\\$'\\r'/\\\\r}}"
+    s="${{s//\\$'\\t'/\\\\t}}"
+    printf '%s' "$s"
+}}
+
+CONTEXT=""
+
+# Fetch recent activity (unless disabled via LORE_RECENT_ACTIVITY=false)
+if [ "${{LORE_RECENT_ACTIVITY:-true}}" != "false" ]; then
+    RECENT_HOURS="${{LORE_RECENT_HOURS:-24}}"
+    RECENT_RESULT=$(curl -sf -H "Authorization: Bearer $LORE_KEY" \\
+        "$LORE_SERVER_URL/v1/recent?hours=$RECENT_HOURS&format=brief&max_memories=10" 2>/dev/null || echo "{{}}")
+    RECENT_TEXT=$(echo "$RECENT_RESULT" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+if d.get('total_count',0)>0: print(d.get('formatted',''))
+" 2>/dev/null || echo "")
+    if [ -n "$RECENT_TEXT" ]; then
+        CONTEXT="📋 Recent Activity (last ${{RECENT_HOURS}}h):\\n$RECENT_TEXT\\n\\n"
+    fi
+fi
+
 # Query Lore for relevant memories
 ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$USER_MSG" 2>/dev/null || exit 0)
 RESULT=$(curl -sf -H "Authorization: Bearer $LORE_KEY" \\
@@ -42,18 +70,11 @@ RESULT=$(curl -sf -H "Authorization: Bearer $LORE_KEY" \\
 FORMATTED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('formatted',''))" 2>/dev/null || echo "")
 
 if [ -n "$FORMATTED" ]; then
-    # Escape for JSON embedding
-    escape_for_json() {{
-        local s="$1"
-        s="${{s//\\\\/\\\\\\\\}}"
-        s="${{s//\\"/\\\\\\"}}"
-        s="${{s//\\$'\\n'/\\\\n}}"
-        s="${{s//\\$'\\r'/\\\\r}}"
-        s="${{s//\\$'\\t'/\\\\t}}"
-        printf '%s' "$s"
-    }}
+    CONTEXT="${{CONTEXT}}🧠 Relevant Memories:\\n$FORMATTED"
+fi
 
-    ESCAPED=$(escape_for_json "$FORMATTED")
+if [ -n "$CONTEXT" ]; then
+    ESCAPED=$(escape_for_json "$CONTEXT")
 
     # Return JSON with hookSpecificOutput for Claude Code context injection
     cat <<EOF
@@ -85,6 +106,24 @@ if [ -z "$USER_MSG" ] || [ "${{#USER_MSG}}" -lt 10 ]; then
     exit 0
 fi
 
+OUTPUT=""
+
+# Fetch recent activity (unless disabled via LORE_RECENT_ACTIVITY=false)
+if [ "${{LORE_RECENT_ACTIVITY:-true}}" != "false" ]; then
+    RECENT_HOURS="${{LORE_RECENT_HOURS:-24}}"
+    RECENT_RESULT=$(curl -sf -H "Authorization: Bearer $LORE_KEY" \\
+        "$LORE_SERVER_URL/v1/recent?hours=$RECENT_HOURS&format=brief&max_memories=10" 2>/dev/null || echo "{{}}")
+    RECENT_TEXT=$(echo "$RECENT_RESULT" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+if d.get('total_count',0)>0: print(d.get('formatted',''))
+" 2>/dev/null || echo "")
+    if [ -n "$RECENT_TEXT" ]; then
+        OUTPUT="📋 Recent Activity (last ${{RECENT_HOURS}}h):\\n$RECENT_TEXT\\n\\n"
+    fi
+fi
+
+# Query Lore for relevant memories
 ENCODED=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$USER_MSG" 2>/dev/null || exit 0)
 RESULT=$(curl -sf -H "Authorization: Bearer $LORE_KEY" \\
     "$LORE_SERVER_URL/v1/retrieve?query=$ENCODED&format=markdown&limit=5&min_score=0.3" 2>/dev/null || exit 0)
@@ -92,7 +131,11 @@ RESULT=$(curl -sf -H "Authorization: Bearer $LORE_KEY" \\
 FORMATTED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('formatted',''))" 2>/dev/null || echo "")
 
 if [ -n "$FORMATTED" ]; then
-    echo "$FORMATTED"
+    OUTPUT="${{OUTPUT}}🧠 Relevant Memories:\\n$FORMATTED"
+fi
+
+if [ -n "$OUTPUT" ]; then
+    echo -e "$OUTPUT"
 fi
 """
 
@@ -120,6 +163,23 @@ if [ -z "$USER_MSG" ] || [ "${{#USER_MSG}}" -lt 10 ]; then
     exit 0
 fi
 
+OUTPUT=""
+
+# Fetch recent activity (unless disabled via LORE_RECENT_ACTIVITY=false)
+if [ "${{LORE_RECENT_ACTIVITY:-true}}" != "false" ]; then
+    RECENT_HOURS="${{LORE_RECENT_HOURS:-24}}"
+    RECENT_RESULT=$(curl -sf --max-time 2 -H "Authorization: Bearer $LORE_KEY" \\
+        "$LORE_SERVER_URL/v1/recent?hours=$RECENT_HOURS&format=brief&max_memories=10" 2>/dev/null || echo "{{}}")
+    RECENT_TEXT=$(echo "$RECENT_RESULT" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+if d.get('total_count',0)>0: print(d.get('formatted',''))
+" 2>/dev/null || echo "")
+    if [ -n "$RECENT_TEXT" ]; then
+        OUTPUT="📋 Recent Activity (last ${{RECENT_HOURS}}h):\\n$RECENT_TEXT\\n\\n"
+    fi
+fi
+
 # URL-encode — try jq first, fall back to python3
 if command -v jq &>/dev/null; then
     ENCODED=$(printf '%s' "$USER_MSG" | jq -sRr @uri)
@@ -134,13 +194,17 @@ if command -v jq &>/dev/null; then
     COUNT=$(echo "$RESULT" | jq -r '.count // 0' 2>/dev/null)
     if [ "$COUNT" -gt 0 ]; then
         FORMATTED=$(echo "$RESULT" | jq -r '.formatted // empty' 2>/dev/null)
-        echo "$FORMATTED"
+        OUTPUT="${{OUTPUT}}🧠 Relevant Memories:\\n$FORMATTED"
     fi
 else
     FORMATTED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('formatted',''))" 2>/dev/null || echo "")
     if [ -n "$FORMATTED" ]; then
-        echo "$FORMATTED"
+        OUTPUT="${{OUTPUT}}🧠 Relevant Memories:\\n$FORMATTED"
     fi
+fi
+
+if [ -n "$OUTPUT" ]; then
+    echo -e "$OUTPUT"
 fi
 """
 
@@ -168,6 +232,23 @@ if [ -z "$USER_MSG" ] || [ "${{#USER_MSG}}" -lt 10 ]; then
     exit 0
 fi
 
+OUTPUT=""
+
+# Fetch recent activity (unless disabled via LORE_RECENT_ACTIVITY=false)
+if [ "${{LORE_RECENT_ACTIVITY:-true}}" != "false" ]; then
+    RECENT_HOURS="${{LORE_RECENT_HOURS:-24}}"
+    RECENT_RESULT=$(curl -sf --max-time 2 -H "Authorization: Bearer $LORE_KEY" \\
+        "$LORE_SERVER_URL/v1/recent?hours=$RECENT_HOURS&format=brief&max_memories=10" 2>/dev/null || echo "{{}}")
+    RECENT_TEXT=$(echo "$RECENT_RESULT" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+if d.get('total_count',0)>0: print(d.get('formatted',''))
+" 2>/dev/null || echo "")
+    if [ -n "$RECENT_TEXT" ]; then
+        OUTPUT="📋 Recent Activity (last ${{RECENT_HOURS}}h):\\n$RECENT_TEXT\\n\\n"
+    fi
+fi
+
 # URL-encode — try jq first, fall back to python3
 if command -v jq &>/dev/null; then
     ENCODED=$(printf '%s' "$USER_MSG" | jq -sRr @uri)
@@ -182,13 +263,17 @@ if command -v jq &>/dev/null; then
     COUNT=$(echo "$RESULT" | jq -r '.count // 0' 2>/dev/null)
     if [ "$COUNT" -gt 0 ]; then
         FORMATTED=$(echo "$RESULT" | jq -r '.formatted // empty' 2>/dev/null)
-        echo "$FORMATTED"
+        OUTPUT="${{OUTPUT}}🧠 Relevant Memories:\\n$FORMATTED"
     fi
 else
     FORMATTED=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('formatted',''))" 2>/dev/null || echo "")
     if [ -n "$FORMATTED" ]; then
-        echo "$FORMATTED"
+        OUTPUT="${{OUTPUT}}🧠 Relevant Memories:\\n$FORMATTED"
     fi
+fi
+
+if [ -n "$OUTPUT" ]; then
+    echo -e "$OUTPUT"
 fi
 """
 

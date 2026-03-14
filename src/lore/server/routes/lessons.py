@@ -402,6 +402,7 @@ async def list_lessons(
     query: Optional[str] = Query(None),
     category: Optional[str] = Query(None),
     min_reputation: Optional[int] = Query(None, alias="minReputation"),
+    since: Optional[str] = Query(None, description="ISO 8601 datetime — only return records created at or after"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
@@ -418,6 +419,11 @@ async def list_lessons(
     elif project is not None:
         params.append(project)
         where_parts.append(f"project = ${len(params)}")
+
+    # Time-range filter
+    if since is not None:
+        params.append(since)
+        where_parts.append(f"created_at >= ${len(params)}")
 
     # Text search (ILIKE on problem + resolution)
     if query:

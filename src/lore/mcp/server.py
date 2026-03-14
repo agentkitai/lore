@@ -65,10 +65,10 @@ def _get_lore() -> Lore:
 mcp = FastMCP(
     name="lore",
     instructions=(
-        "Lore is a cross-agent memory system. Use it to remember knowledge, "
-        "recall relevant memories when facing problems, and forget outdated "
-        "information. Memories can be facts, lessons, preferences, context, "
-        "or any knowledge worth preserving across sessions."
+        "Lore is a cross-agent memory system. "
+        "IMPORTANT: Call recent_activity at the start of every session "
+        "for continuity with prior work. Use recall for semantic search. "
+        "Use remember to save knowledge worth preserving."
     ),
 )
 
@@ -1021,6 +1021,144 @@ def _format_consolidation_result(result: Any) -> str:
         lines.append("Run with dry_run=false to execute.")
 
     return "\n".join(lines)
+
+
+@mcp.tool(
+    description=(
+        "Get a summary of recent memory activity across projects. "
+        "CALL THIS AT THE START OF EVERY SESSION to maintain continuity "
+        "with prior work. Returns the last N hours of memories grouped "
+        "by project, regardless of semantic relevance to your current task. "
+        "This catches recent decisions, changes, and context that semantic "
+        "search would miss. Works without LLM (structured listing) — "
+        "enhanced with LLM (concise summary of key points)."
+    ),
+)
+def recent_activity(
+    hours: int = 24,
+    project: Optional[str] = None,
+    format: str = "brief",
+    max_memories: int = 50,
+) -> str:
+    """Get recent memory activity grouped by project."""
+    try:
+        lore = _get_lore()
+        result = lore.recent_activity(
+            hours=hours,
+            project=project,
+            format=format,
+            max_memories=max_memories,
+        )
+        if format == "structured":
+            import json
+
+            from lore.recent import format_structured
+            return json.dumps(format_structured(result), indent=2)
+
+        from lore.recent import format_brief, format_detailed
+        if format == "detailed":
+            return format_detailed(result)
+        return format_brief(result)
+    except Exception as e:
+        return f"Failed to get recent activity: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Export all memories and knowledge graph to a JSON file for backup or migration. "
+        "USE THIS WHEN: you want to create a portable backup before risky operations, "
+        "migrate data to another machine, or audit stored knowledge. "
+        "Supports filtering by project, type, tier, and date."
+    ),
+)
+def export(
+    format: str = "json",
+    project: Optional[str] = None,
+    type: Optional[str] = None,
+    tier: Optional[str] = None,
+    since: Optional[str] = None,
+    include_embeddings: bool = False,
+    output: Optional[str] = None,
+) -> str:
+    """Export memories and knowledge graph."""
+    try:
+        lore = _get_lore()
+        result = lore.export_data(
+            format=format,
+            output=output,
+            project=project,
+            type=type,
+            tier=tier,
+            since=since,
+            include_embeddings=include_embeddings,
+        )
+        lines = [
+            f"Export complete: {result.path}",
+            f"  Memories: {result.memories}",
+            f"  Entities: {result.entities}",
+            f"  Relationships: {result.relationships}",
+            f"  Facts: {result.facts}",
+            f"  Hash: {result.content_hash}",
+            f"  Duration: {result.duration_ms}ms",
+        ]
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Export failed: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Create a quick snapshot backup of all Lore data. "
+        "USE THIS BEFORE: running consolidation, bulk imports, upgrades, "
+        "or any operation that modifies many memories at once. "
+        "Snapshots are stored at ~/.lore/snapshots/ and can be restored."
+    ),
+)
+def snapshot() -> str:
+    """Create a quick snapshot backup."""
+    try:
+        lore = _get_lore()
+        from lore.export.snapshot import SnapshotManager
+        mgr = SnapshotManager(lore)
+        info = mgr.create()
+        return (
+            f"Snapshot created: {info['name']}\n"
+            f"  Path: {info['path']}\n"
+            f"  Memories: {info['memories']}\n"
+            f"  Size: {info['size_human']}"
+        )
+    except Exception as e:
+        return f"Snapshot failed: {e}"
+
+
+@mcp.tool(
+    description=(
+        "List available snapshots for restore. "
+        "USE THIS WHEN: you want to see what backups are available "
+        "before restoring or cleaning up old snapshots."
+    ),
+)
+def snapshot_list() -> str:
+    """List available snapshots."""
+    try:
+        lore = _get_lore()
+        from lore.export.snapshot import SnapshotManager
+        mgr = SnapshotManager(lore)
+        snapshots = mgr.list()
+        if not snapshots:
+            return "No snapshots available."
+
+        lines = [f"Available snapshots ({len(snapshots)}):\n"]
+        lines.append(f"{'NAME':<22} {'MEMORIES':<10} {'SIZE':<12} {'DATE'}")
+        lines.append("-" * 60)
+        for s in snapshots:
+            lines.append(
+                f"{s['name']:<22} {str(s.get('memories', '?')):<10} "
+                f"{s.get('size_human', '?'):<12} {s.get('created_at', '?')}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list snapshots: {e}"
 
 
 def run_server() -> None:

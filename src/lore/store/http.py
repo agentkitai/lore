@@ -248,6 +248,7 @@ class HttpStore(Store):
         tier: Optional[str] = None,
         limit: Optional[int] = None,
         include_archived: bool = False,
+        since: Optional[str] = None,
     ) -> List[Memory]:
         params: Dict[str, Any] = {}
         if project is not None:
@@ -256,6 +257,8 @@ class HttpStore(Store):
             params["limit"] = limit
         if include_archived:
             params["include_archived"] = "true"
+        if since is not None:
+            params["since"] = since
 
         resp = self._request("GET", "/v1/lessons", params=params)
         data = resp.json()
