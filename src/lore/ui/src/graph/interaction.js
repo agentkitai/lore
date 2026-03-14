@@ -43,6 +43,8 @@ export class InteractionManager {
 
     this._quadtree.visit((quad, x0, y0, x1, y1) => {
       if (quad.data) {
+        // Skip hidden nodes (collapsed into clusters)
+        if (quad.data._clusterHidden) return false;
         const r = getNodeRadius(quad.data) + 4;
         const dx = gx - quad.data.x;
         const dy = gy - quad.data.y;

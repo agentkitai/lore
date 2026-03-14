@@ -167,10 +167,10 @@ async function init() {
       };
     }
 
-    // Default to cluster-project view
-    layout.switchMode('cluster-project');
+    // Default to force layout (cluster view available via buttons)
+    layout.switchMode('force');
     for (const b of viewBtns) {
-      b.classList.toggle('active', b.dataset.mode === 'cluster-project');
+      b.classList.toggle('active', b.dataset.mode === 'force');
     }
 
     // Back to clusters button (shown when a cluster is expanded)
