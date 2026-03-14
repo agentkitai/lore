@@ -42,7 +42,7 @@ class TestSetupClaudeCode:
         settings = json.loads(settings_path.read_text())
         hooks = settings["hooks"]["UserPromptSubmit"]
         assert len(hooks) == 1
-        assert str(hooks_dir / "lore-retrieve.sh") in hooks[0]["command"]
+        assert str(hooks_dir / "lore-retrieve.sh") in hooks[0]["hooks"][0]["command"]
 
     def test_idempotent(self, tmp_path):
         from lore.setup import setup_claude_code

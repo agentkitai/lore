@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -138,37 +138,26 @@ class TestEnrichMemoryFunction:
     @pytest.mark.asyncio
     async def test_enrich_memory_updates_meta(self):
         """_enrich_memory should update the memory's meta with enrichment data."""
-        from dataclasses import dataclass
-
         from lore.server.routes.memories import _enrich_memory
 
         fake_conn = FakeConn()
         fake_pool = FakePool(fake_conn)
 
-        @dataclass
-        class FakeSentiment:
-            label: str = "neutral"
-            score: float = 0.0
-
-        @dataclass
-        class FakeEntity:
-            name: str = ""
-            type: str = ""
-
-        mock_result = MagicMock()
-        mock_result.topics = ["docker", "containers"]
-        mock_result.sentiment = FakeSentiment()
-        mock_result.entities = [FakeEntity(name="Docker", type="tool")]
-        mock_result.categories = ["infrastructure"]
+        mock_result = {
+            "topics": ["docker", "containers"],
+            "sentiment": {"label": "neutral", "score": 0.0},
+            "entities": [{"name": "Docker", "type": "tool"}],
+            "categories": ["infrastructure"],
+        }
 
         with patch("lore.server.routes.memories.get_pool", AsyncMock(return_value=fake_pool)), \
              patch("lore.enrichment.pipeline.EnrichmentPipeline.enrich", return_value=mock_result), \
              patch("lore.enrichment.llm.LLMClient.__init__", return_value=None):
             await _enrich_memory("mem-001", "Docker is great", None)
 
-        # Verify the UPDATE was called
-        fake_conn.execute.assert_called_once()
-        call_args = fake_conn.execute.call_args
+        # Verify the enrichment UPDATE was called (embedding UPDATE may also fire)
+        assert fake_conn.execute.call_count >= 1
+        call_args = fake_conn.execute.call_args_list[0]
         assert "mem-001" in call_args[0]
         enrichment_json = call_args[0][2]
         enrichment = json.loads(enrichment_json)
