@@ -2,11 +2,11 @@
 
 [![PyPI](https://img.shields.io/pypi/v/lore-sdk)](https://pypi.org/project/lore-sdk/)
 [![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
-[![Docker](https://img.shields.io/docker/v/amitpaz/lore?label=docker)](https://hub.docker.com/r/amitpaz/lore)
+[![Docker](https://img.shields.io/docker/v/agentkitai/lore?label=docker)](https://hub.docker.com/r/agentkitai/lore)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/github/license/amitpaz1/lore)](LICENSE)
+[![License: MIT](https://img.shields.io/github/license/agentkitai/lore)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
-[![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz1/lore/ci.yml?label=tests)](https://github.com/amitpaz1/lore/actions)
+[![Tests](https://img.shields.io/github/actions/workflow/status/agentkitai/lore/ci.yml?label=tests)](https://github.com/agentkitai/lore/actions)
 
 **Your AI agents remember everything. Automatically.**
 
@@ -81,7 +81,7 @@ Track hit rate, score distribution, memory utilization, and latency. Know whethe
 ### Docker Compose (recommended)
 
 ```bash
-git clone https://github.com/amitpaz1/lore.git
+git clone https://github.com/agentkitai/lore.git
 cd lore
 docker compose up -d
 ```
@@ -374,7 +374,7 @@ DELETE /v1/keys/{id}                  # Revoke API key
 ## Contributing
 
 ```bash
-git clone https://github.com/amitpaz1/lore.git
+git clone https://github.com/agentkitai/lore.git
 cd lore
 pip install -e ".[dev,server,mcp,enrichment]"
 docker compose up -d db  # Postgres + pgvector
