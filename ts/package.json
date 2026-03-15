@@ -1,6 +1,6 @@
 {
   "name": "lore-sdk",
-  "version": "0.9.5",
+  "version": "1.0.0",
   "description": "Cross-agent memory SDK — store, recall, and share knowledge across AI agents (TypeScript)",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,13 +22,13 @@
   "keywords": ["agent", "memory", "lore", "knowledge"],
   "author": "Amit Paz <amit.paz@gmail.com>",
   "license": "MIT",
-  "homepage": "https://github.com/amitpaz1/lore",
+  "homepage": "https://github.com/agentkitai/lore",
   "repository": {
     "type": "git",
-    "url": "https://github.com/amitpaz1/lore.git"
+    "url": "https://github.com/agentkitai/lore.git"
   },
   "bugs": {
-    "url": "https://github.com/amitpaz1/lore/issues"
+    "url": "https://github.com/agentkitai/lore/issues"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",
