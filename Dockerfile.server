@@ -24,6 +24,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
 COPY --from=builder /install /usr/local
 COPY migrations/ migrations/
 
+# Copy UI static files (not included by pip install)
+COPY src/lore/ui/dist/ /usr/local/lib/python3.11/site-packages/lore/ui/dist/
+
 # Create writable dirs for model cache and data
 RUN mkdir -p /app/.lore/models /app/data && chown -R lore:lore /app/.lore /app/data
 
