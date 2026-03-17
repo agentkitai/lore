@@ -1,0 +1,41 @@
+# ── Stage 1: Build ─────────────────────────────────────────────────
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY src/ src/
+
+RUN pip install --no-cache-dir --prefix=/install ".[server,enrichment]"
+
+# ── Stage 2: Runtime ───────────────────────────────────────────────
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Only runtime lib needed (no gcc)
+RUN apt-get update && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r lore && useradd -r -g lore -d /app lore
+
+COPY --from=builder /install /usr/local
+COPY migrations/ migrations/
+
+# Copy UI static files (not included by pip install)
+COPY src/lore/ui/dist/ /usr/local/lib/python3.11/site-packages/lore/ui/dist/
+
+# Create writable dirs for model cache and data
+RUN mkdir -p /app/.lore/models /app/data && chown -R lore:lore /app/.lore /app/data
+
+# Don't run as root
+USER lore
+
+EXPOSE 8765
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8765/health')" || exit 1
+
+CMD ["uvicorn", "lore.server.app:app", "--host", "0.0.0.0", "--port", "8765"]
