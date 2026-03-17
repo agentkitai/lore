@@ -3,6 +3,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 dist/
+!src/lore/ui/dist/
 build/
 node_modules/
 *.pyc
