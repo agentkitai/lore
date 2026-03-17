@@ -92,13 +92,19 @@ import importlib.resources as _pkg_resources  # noqa: E402
 import pathlib as _pathlib  # noqa: E402
 
 _ui_dist = None
-try:
-    _ui_pkg = _pkg_resources.files("lore") / "ui" / "dist"
-    _ui_path = _pathlib.Path(str(_ui_pkg))
-    if _ui_path.is_dir():
-        _ui_dist = _ui_path
-except Exception:
-    pass
+
+# Try mounted Docker path first (production), then package path (development)
+_docker_path = _pathlib.Path("/app/ui/dist")
+if _docker_path.is_dir():
+    _ui_dist = _docker_path
+else:
+    try:
+        _ui_pkg = _pkg_resources.files("lore") / "ui" / "dist"
+        _ui_path = _pathlib.Path(str(_ui_pkg))
+        if _ui_path.is_dir():
+            _ui_dist = _ui_path
+    except Exception:
+        pass
 
 if _ui_dist:
     _index_html = (_ui_dist / "index.html").read_text()
