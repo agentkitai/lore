@@ -246,8 +246,9 @@ async def run_drill(
 ) -> DrillResultResponse:
     """Execute a restore drill against the latest snapshot."""
     import time
-    from ulid import ULID
     from datetime import datetime, timezone
+
+    from ulid import ULID
 
     pool = await get_pool()
     async with pool.acquire() as conn:

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
 
@@ -34,8 +32,9 @@ class TestSignals:
         assert score == 0.0
 
     def test_temporal_pattern_same_hour(self):
-        from lore.recommend.signals import temporal_pattern
         from datetime import datetime, timezone
+
+        from lore.recommend.signals import temporal_pattern
         now = datetime.now(timezone.utc)
         score, _ = temporal_pattern(now.isoformat(), current_hour=now.hour)
         assert score > 0.0

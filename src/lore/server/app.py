@@ -33,6 +33,7 @@ from lore.server.db import close_pool, get_pool, init_pool, run_migrations
 from lore.server.logging_config import setup_logging
 from lore.server.middleware import install_middleware
 from lore.server.routes.analytics import router as analytics_router
+from lore.server.routes.audit import router as audit_router
 from lore.server.routes.conversations import router as conversations_router
 from lore.server.routes.export import router as export_router
 from lore.server.routes.graph import router as graph_router
@@ -40,20 +41,19 @@ from lore.server.routes.ingest import router as ingest_router
 from lore.server.routes.keys import router as keys_router
 from lore.server.routes.lessons import router as lessons_router
 from lore.server.routes.memories import router as memories_router
+from lore.server.routes.plugins import router as plugins_router
+from lore.server.routes.policies import router as policies_router
+from lore.server.routes.profiles import router as profiles_router
 from lore.server.routes.recent import router as recent_router
+from lore.server.routes.recommendations import router as recommendations_router
 from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.review import router as review_router
+from lore.server.routes.setup_validation import router as setup_validation_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
-from lore.server.routes.topics import router as topics_router
-from lore.server.routes.setup_validation import router as setup_validation_router
 from lore.server.routes.slo import router as slo_router
-from lore.server.routes.profiles import router as profiles_router
-from lore.server.routes.policies import router as policies_router
+from lore.server.routes.topics import router as topics_router
 from lore.server.routes.workspaces import router as workspaces_router
-from lore.server.routes.audit import router as audit_router
-from lore.server.routes.plugins import router as plugins_router
-from lore.server.routes.recommendations import router as recommendations_router
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -73,8 +73,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Start background tasks
     import asyncio
-    from lore.server.slo_checker import slo_checker_loop
+
     from lore.server.scheduler import policy_scheduler_loop
+    from lore.server.slo_checker import slo_checker_loop
 
     slo_check_interval = int(os.environ.get("SLO_CHECK_INTERVAL", "60"))
     slo_task = asyncio.create_task(slo_checker_loop(slo_check_interval))

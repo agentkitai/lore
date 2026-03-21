@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestProfileCache:
     def test_get_cached_returns_none_when_empty(self):
@@ -12,7 +10,7 @@ class TestProfileCache:
         assert _get_cached_profile("nonexistent") is None
 
     def test_set_and_get_cached(self):
-        from lore.server.routes.profiles import _get_cached_profile, _set_cached_profile, _profile_cache
+        from lore.server.routes.profiles import _get_cached_profile, _profile_cache, _set_cached_profile
         _profile_cache.clear()
         profile = {"name": "test", "semantic_weight": 1.0}
         _set_cached_profile("org:test", profile)
@@ -22,11 +20,12 @@ class TestProfileCache:
 
     def test_cache_ttl_expires(self):
         import time as _time
+
         from lore.server.routes.profiles import (
-            _get_cached_profile,
-            _set_cached_profile,
-            _profile_cache,
             _PROFILE_CACHE_TTL,
+            _get_cached_profile,
+            _profile_cache,
+            _set_cached_profile,
         )
         _profile_cache.clear()
         _set_cached_profile("org:expire", {"name": "expire"})

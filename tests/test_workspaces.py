@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestWorkspaceModels:
     def test_workspace_create_request(self):
@@ -47,7 +45,7 @@ class TestAuditModels:
         assert entry.metadata == {}
 
     def test_audit_writer_import(self):
-        from lore.server.audit import write_audit_log, fire_audit_log
+        from lore.server.audit import fire_audit_log, write_audit_log
         # Just verify imports work
         assert callable(write_audit_log)
         assert callable(fire_audit_log)

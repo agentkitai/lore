@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-
 
 PYPROJECT_TEMPLATE = '''[build-system]
 requires = ["setuptools>=68.0"]

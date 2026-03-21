@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +17,6 @@ async def slo_checker_loop(interval_seconds: int = 60) -> None:
     ``interval_seconds``. When a threshold is breached, inserts a
     ``slo_alerts`` row and dispatches to configured alert channels.
     """
-    from lore.server.db import get_pool
 
     while True:
         try:
@@ -31,7 +30,7 @@ async def slo_checker_loop(interval_seconds: int = 60) -> None:
 async def _check_all_slos() -> None:
     """Evaluate all enabled SLOs and fire alerts for breaches."""
     from lore.server.db import get_pool
-    from lore.server.routes.slo import _compute_metric, _check_threshold
+    from lore.server.routes.slo import _check_threshold, _compute_metric
 
     pool = await get_pool()
     async with pool.acquire() as conn:

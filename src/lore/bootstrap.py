@@ -251,8 +251,9 @@ class BootstrapRunner:
                 message="Cannot run migrations — no DATABASE_URL",
             )
         try:
-            from lore.server.db import init_pool, run_migrations as _run_migrations, close_pool
             from lore.server.config import settings
+            from lore.server.db import close_pool, init_pool
+            from lore.server.db import run_migrations as _run_migrations
 
             async def _migrate():
                 pool = await init_pool(db_url)
@@ -307,9 +308,9 @@ class BootstrapRunner:
 
     def verify_health(self) -> CheckResult:
         """Verify the /ready endpoint (if server is running)."""
-        import urllib.request
-        import urllib.error
         import os
+        import urllib.error
+        import urllib.request
 
         port = os.environ.get("LORE_PORT", "8765")
         url = f"http://localhost:{port}/ready"

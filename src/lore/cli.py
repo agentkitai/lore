@@ -1443,8 +1443,14 @@ def cmd_wrap(args: argparse.Namespace) -> None:
 def cmd_setup(args: argparse.Namespace) -> None:
     """Handle setup subcommand: install/remove hooks for runtimes."""
     from lore.setup import (
-        remove_runtime, setup_claude_code, setup_codex, setup_cursor, setup_openclaw,
-        show_status, _test_connection, _validate_hook, _validate_config,
+        _test_connection,
+        _validate_hook,
+        remove_runtime,
+        setup_claude_code,
+        setup_codex,
+        setup_cursor,
+        setup_openclaw,
+        show_status,
     )
 
     if args.status:
@@ -1497,7 +1503,7 @@ def cmd_setup(args: argparse.Namespace) -> None:
     # Post-setup validation
     if getattr(args, "validate", False):
         print("\nValidating...")
-        from lore.setup import _claude_hook_path, _cursor_hook_path, _codex_hook_path, _openclaw_hook_path
+        from lore.setup import _claude_hook_path, _codex_hook_path, _cursor_hook_path, _openclaw_hook_path
         hook_paths = {
             "claude-code": _claude_hook_path,
             "cursor": _cursor_hook_path,

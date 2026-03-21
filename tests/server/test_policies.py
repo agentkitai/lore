@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 class TestPolicyModels:
     def test_policy_create_request_defaults(self):

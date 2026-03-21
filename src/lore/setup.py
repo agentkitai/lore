@@ -417,9 +417,9 @@ def _validate_config(config_path: Path, runtime: str) -> list[str]:
 
 def _test_connection(server_url: str, api_key: Optional[str] = None) -> dict:
     """Test connectivity to a Lore server."""
-    import urllib.request
-    import urllib.error
     import time
+    import urllib.error
+    import urllib.request
 
     result: dict = {"status": "unknown", "health": None, "retrieve": None, "latency_ms": 0}
     start = time.monotonic()

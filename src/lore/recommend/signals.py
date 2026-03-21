@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 
 def context_similarity(
@@ -13,6 +13,7 @@ def context_similarity(
 ) -> Tuple[float, str]:
     """Cosine similarity between session context and memory."""
     import struct
+
     import numpy as np
 
     count = len(memory_embedding) // 4

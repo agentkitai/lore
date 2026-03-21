@@ -133,8 +133,9 @@ async def create_slo(
     if body.operator not in VALID_OPERATORS:
         raise HTTPException(400, f"Invalid operator: {body.operator}. Must be one of: {VALID_OPERATORS}")
 
-    from ulid import ULID
     import json
+
+    from ulid import ULID
 
     slo_id = str(ULID())
     pool = await get_pool()

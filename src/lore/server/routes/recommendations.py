@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 try:
     from fastapi import APIRouter, Depends, HTTPException, Query
@@ -78,7 +78,6 @@ async def submit_feedback(
     auth: AuthContext = Depends(get_auth_context),
 ) -> Dict[str, str]:
     """Submit feedback on a recommendation."""
-    import json
     from ulid import ULID
 
     if body.feedback not in ("positive", "negative"):
@@ -125,7 +124,6 @@ async def update_config(
     auth: AuthContext = Depends(get_auth_context),
 ) -> ConfigResponse:
     """Update recommendation config."""
-    import json
     from ulid import ULID
 
     pool = await get_pool()

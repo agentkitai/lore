@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import logging
+import time as _time
 from typing import Any, Dict, List, Optional
 
 try:
-    from fastapi import APIRouter, Depends, HTTPException, Query
+    from fastapi import APIRouter, Depends, HTTPException
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
@@ -83,7 +83,6 @@ def _row_to_response(row) -> ProfileResponse:
 
 
 # In-memory cache for profiles (60s TTL)
-import time as _time
 _profile_cache: Dict[str, tuple] = {}  # key -> (profile_dict, timestamp)
 _PROFILE_CACHE_TTL = 60.0
 

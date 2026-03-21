@@ -18,8 +18,9 @@ class PluginTestHarness:
         self.memories: List[Memory] = []
 
     def add_test_memory(self, content: str, **kwargs) -> Memory:
-        from ulid import ULID
         from datetime import datetime, timezone
+
+        from ulid import ULID
 
         memory = Memory(
             id=str(ULID()),

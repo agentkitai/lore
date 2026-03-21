@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from lore.bootstrap import BootstrapRunner, CheckResult, format_results
 

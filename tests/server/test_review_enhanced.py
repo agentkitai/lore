@@ -2,10 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
-from lore.types import ReviewItem, Relationship
-
 
 class TestReviewDecisionType:
     def test_review_decision_dataclass(self):
