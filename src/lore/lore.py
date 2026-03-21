@@ -1888,6 +1888,41 @@ class Lore:
         )
 
 
+    # ------------------------------------------------------------------
+    # Proactive Recommendations (F9)
+    # ------------------------------------------------------------------
+
+    def suggest(
+        self,
+        context: str = "",
+        session_entities: Optional[List[str]] = None,
+        max_results: int = 3,
+    ) -> list:
+        """Get proactive memory suggestions based on context."""
+        from lore.recommend.engine import RecommendationEngine
+        engine = RecommendationEngine(
+            store=self._store,
+            embedder=self._embedder,
+            max_suggestions=max_results,
+        )
+        return engine.suggest(
+            context=context,
+            session_entities=session_entities,
+            limit=max_results,
+        )
+
+    def recommendation_feedback(
+        self,
+        memory_id: str,
+        feedback: str,
+        actor_id: str = "sdk-user",
+    ) -> None:
+        """Record feedback on a recommendation."""
+        from lore.recommend.feedback import FeedbackRecorder
+        recorder = FeedbackRecorder()
+        recorder.record(memory_id, feedback, actor_id)
+
+
 def _utc_now_iso() -> str:
     """Return current UTC time as ISO 8601 string."""
     return datetime.now(timezone.utc).isoformat()

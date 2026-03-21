@@ -169,4 +169,41 @@ export async function fetchNeighbors(id) {
   return result;
 }
 
+// SLO Dashboard (F3)
+export async function fetchSloDashboard() {
+  return fetchJSON('/v1/slo/status');
+}
+
+export async function fetchSloAlerts(limit = 50) {
+  return fetchJSON(`/v1/slo/alerts?limit=${limit}`);
+}
+
+// Profiles (F4)
+export async function fetchProfiles() {
+  return fetchJSON('/v1/profiles');
+}
+
+// Policies (F6)
+export async function fetchPolicies() {
+  return fetchJSON('/v1/policies');
+}
+
+export async function fetchPolicyCompliance() {
+  return fetchJSON('/v1/policies/compliance');
+}
+
+// Workspaces (F7)
+export async function fetchWorkspaces() {
+  return fetchJSON('/v1/workspaces');
+}
+
+// Recommendations (F9)
+export async function fetchRecommendations(context = '', maxResults = 3) {
+  return fetchJSON('/v1/recommendations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ context, max_results: maxResults }),
+  });
+}
+
 export { cache };

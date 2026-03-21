@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import secrets
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
@@ -32,6 +33,7 @@ from lore.server.db import close_pool, get_pool, init_pool, run_migrations
 from lore.server.logging_config import setup_logging
 from lore.server.middleware import install_middleware
 from lore.server.routes.analytics import router as analytics_router
+from lore.server.routes.audit import router as audit_router
 from lore.server.routes.conversations import router as conversations_router
 from lore.server.routes.export import router as export_router
 from lore.server.routes.graph import router as graph_router
@@ -39,12 +41,19 @@ from lore.server.routes.ingest import router as ingest_router
 from lore.server.routes.keys import router as keys_router
 from lore.server.routes.lessons import router as lessons_router
 from lore.server.routes.memories import router as memories_router
+from lore.server.routes.plugins import router as plugins_router
+from lore.server.routes.policies import router as policies_router
+from lore.server.routes.profiles import router as profiles_router
 from lore.server.routes.recent import router as recent_router
+from lore.server.routes.recommendations import router as recommendations_router
 from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.review import router as review_router
+from lore.server.routes.setup_validation import router as setup_validation_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
+from lore.server.routes.slo import router as slo_router
 from lore.server.routes.topics import router as topics_router
+from lore.server.routes.workspaces import router as workspaces_router
 
 setup_logging()
 logger = logging.getLogger(__name__)
@@ -61,7 +70,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     pool = await init_pool(db_url)
     await run_migrations(pool, settings.migrations_dir)
+
+    # Start background tasks
+    import asyncio
+
+    from lore.server.scheduler import policy_scheduler_loop
+    from lore.server.slo_checker import slo_checker_loop
+
+    slo_check_interval = int(os.environ.get("SLO_CHECK_INTERVAL", "60"))
+    slo_task = asyncio.create_task(slo_checker_loop(slo_check_interval))
+    scheduler_task = asyncio.create_task(policy_scheduler_loop(60))
+
     yield
+
+    slo_task.cancel()
+    scheduler_task.cancel()
     await close_pool()
 
 
@@ -86,6 +109,14 @@ app.include_router(export_router)
 app.include_router(graph_router)
 app.include_router(review_router)
 app.include_router(topics_router)
+app.include_router(setup_validation_router)
+app.include_router(slo_router)
+app.include_router(profiles_router)
+app.include_router(policies_router)
+app.include_router(workspaces_router)
+app.include_router(audit_router)
+app.include_router(plugins_router)
+app.include_router(recommendations_router)
 
 # ── UI static files ────────────────────────────────────────────────
 import importlib.resources as _pkg_resources  # noqa: E402

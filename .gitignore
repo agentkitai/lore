@@ -13,3 +13,9 @@ ts/node_modules/
 .env
 infra/node_modules/
 infra/cdk.out/
+
+# Aperant data directory
+.auto-claude/
+
+# Git worktrees
+.worktrees/

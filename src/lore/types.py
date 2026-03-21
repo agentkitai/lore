@@ -486,3 +486,54 @@ class RelatedEntity:
     entity_type: str
     relationship: str
     direction: str
+
+
+# ------------------------------------------------------------------
+# Review decisions audit trail (F5)
+# ------------------------------------------------------------------
+
+@dataclass
+class ReviewDecision:
+    """A record of an approval/rejection decision on a relationship."""
+
+    id: str
+    relationship_id: str
+    action: str  # "approve" or "reject"
+    reviewer_id: Optional[str] = None
+    notes: Optional[str] = None
+    decided_at: str = ""
+
+
+# ------------------------------------------------------------------
+# Retention policies (F6)
+# ------------------------------------------------------------------
+
+@dataclass
+class RetentionPolicy:
+    """A declarative lifecycle policy for retention and snapshots."""
+
+    id: str
+    org_id: str
+    name: str
+    retention_window: Optional[Dict[str, Any]] = None
+    snapshot_schedule: Optional[str] = None
+    encryption_required: bool = False
+    max_snapshots: int = 50
+    is_active: bool = True
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
+class RestoreDrillResult:
+    """Result of a restore drill execution."""
+
+    id: str
+    org_id: str
+    snapshot_name: str
+    status: str = "running"  # running, success, failed
+    started_at: str = ""
+    completed_at: Optional[str] = None
+    recovery_time_ms: Optional[int] = None
+    memories_restored: Optional[int] = None
+    error: Optional[str] = None

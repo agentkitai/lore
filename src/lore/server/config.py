@@ -34,6 +34,16 @@ class Settings:
     log_format: str = "pretty"  # "json" or "pretty"
     log_level: str = "INFO"
 
+    # SLO Dashboard (F3)
+    slo_check_interval_seconds: int = 60
+    alert_webhook_url: Optional[str] = None
+
+    # SMTP for email alerts
+    smtp_host: Optional[str] = None
+    smtp_port: int = 587
+    smtp_user: Optional[str] = None
+    smtp_from: Optional[str] = None
+
     @classmethod
     def from_env(cls) -> Settings:
         # Resolve Docker secrets / AWS Secrets Manager before reading env
@@ -55,6 +65,12 @@ class Settings:
             metrics_enabled=os.environ.get("METRICS_ENABLED", "true").lower() in ("true", "1", "yes"),
             log_format=os.environ.get("LOG_FORMAT", "pretty"),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
+            slo_check_interval_seconds=int(os.environ.get("SLO_CHECK_INTERVAL", "60")),
+            alert_webhook_url=os.environ.get("ALERT_WEBHOOK_URL"),
+            smtp_host=os.environ.get("SMTP_HOST"),
+            smtp_port=int(os.environ.get("SMTP_PORT", "587")),
+            smtp_user=os.environ.get("SMTP_USER"),
+            smtp_from=os.environ.get("SMTP_FROM"),
         )
 
 
