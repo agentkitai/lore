@@ -91,6 +91,22 @@ def _ts(val) -> Optional[str]:
     return str(val)
 
 
+def _parse_jsonb(val) -> List[Dict[str, Any]]:
+    """Safely parse a JSONB column that may come back as str or list."""
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        import json as _json
+        try:
+            parsed = _json.loads(val)
+            return parsed if isinstance(parsed, list) else []
+        except (ValueError, TypeError):
+            return []
+    return []
+
+
 # ── CRUD Endpoints ───────────────────────────────────────────────
 
 
@@ -115,7 +131,7 @@ async def list_slos(
             metric=r["metric"], operator=r["operator"],
             threshold=float(r["threshold"]),
             window_minutes=r["window_minutes"], enabled=r["enabled"],
-            alert_channels=r["alert_channels"] or [],
+            alert_channels=_parse_jsonb(r.get("alert_channels")),
             created_at=_ts(r["created_at"]), updated_at=_ts(r["updated_at"]),
         )
         for r in rows
@@ -321,7 +337,7 @@ async def list_alerts(
             metric_value=float(r["metric_value"]),
             threshold=float(r["threshold"]),
             status=r["status"],
-            dispatched_to=r["dispatched_to"] or [],
+            dispatched_to=_parse_jsonb(r.get("dispatched_to")),
             created_at=_ts(r["created_at"]),
         )
         for r in rows
