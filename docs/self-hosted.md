@@ -10,7 +10,7 @@ Run Lore Cloud on your own infrastructure with Docker Compose.
 ## Quick Start
 
 ```bash
-git clone https://github.com/amitpaz1/lore.git
+git clone https://github.com/agentkitai/lore.git
 cd lore
 
 # Set a real password for production
@@ -20,6 +20,15 @@ docker compose -f docker-compose.prod.yml up -d
 ```
 
 Server is now running at `http://localhost:8765`. Migrations run automatically on startup.
+
+### Guided Bootstrap
+
+For non-Docker installs, use the bootstrap command to validate prerequisites:
+
+```bash
+lore bootstrap --verbose
+lore bootstrap --fix  # auto-remediate missing deps
+```
 
 ## Initialize Your Organization
 
@@ -61,6 +70,13 @@ lessons = lore.query("my problem")
 |----------|---------|-------------|
 | `DATABASE_URL` | (set in compose) | PostgreSQL connection string |
 | `POSTGRES_PASSWORD` | `lore` | DB password (set in `.env` or export) |
+| `AUTH_MODE` | `api-key-only` | Auth mode: `api-key-only`, `dual`, `oidc-required` |
+| `SLO_CHECK_INTERVAL` | `60` | SLO evaluation interval (seconds) |
+| `ALERT_WEBHOOK_URL` | — | Webhook URL for SLO alerts |
+| `SMTP_HOST` | — | SMTP server for email alerts |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USER` | — | SMTP username |
+| `SMTP_FROM` | — | Sender address for alert emails |
 
 ## Persistence
 

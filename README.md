@@ -61,15 +61,50 @@ Auto-generated concept hubs that cluster related memories, entities, and facts a
 
 Full data export in JSON and Markdown formats. Obsidian-compatible output for browsing your knowledge graph in a PKM tool. Snapshots for backup and migration.
 
-### Approval UX
-`review_digest` · `review_connection`
+### Approval UX with Risk Scoring
+`review_digest` · `review_connection` · `lore review list --sort risk`
 
-Review discovered knowledge graph connections before they become permanent. Approve, reject, or skip — keep your graph clean.
+Review discovered knowledge graph connections with computed risk scores. Batch approve/reject with notes, full audit trail of decisions. Sort by risk, confidence, or age.
+
+### Guided Bootstrap
+`lore bootstrap`
+
+Single command that validates Python version, Postgres, pgvector, Docker, runs migrations, and verifies server health. Use `--fix` to auto-remediate missing dependencies.
 
 ### Multi-Agent Setup
 `lore setup claude-code` · `lore setup openclaw` · `lore setup cursor` · `lore setup codex`
 
-One-command hook installation for all major AI coding agents. Auto-retrieval injected into every prompt — no code changes needed.
+One-command hook installation for all major AI coding agents. Auto-retrieval injected into every prompt — no code changes needed. Includes `--validate`, `--test-connection`, and `--dry-run` flags.
+
+### SLO Dashboard + Alerting
+`lore slo create` · `lore slo status` · `GET /v1/slo/status`
+
+Define SLO targets for retrieval latency (p50/p95/p99) and hit rate. Background checker evaluates every 60s and fires webhook or email alerts on breach. Time-series API for charting.
+
+### Adaptive Retrieval Profiles
+`lore profiles list` · `GET /v1/profiles` · `?profile=coding`
+
+Named retrieval profiles stored in Postgres. Presets for coding (recency-biased), incident response (graph-heavy), and research (long-term). Select per-request or set as API key default.
+
+### Policy-Based Retention
+`lore policy create` · `lore restore-drill` · `GET /v1/policies/compliance`
+
+Declarative lifecycle policies with per-tier retention windows, cron-based snapshot schedules, and restore drills with timing metrics. Compliance dashboard across all policies.
+
+### Multi-Tenant Workspaces
+`lore workspace create` · `lore workspace switch` · `lore audit`
+
+Workspace isolation within orgs. Scoped API keys, member management with RBAC roles, and a full audit log of every action (memory.create, key.revoke, etc.).
+
+### Plugin SDK
+`lore plugin create` · `lore plugin list` · `lore plugin reload`
+
+Extend Lore with plugins discovered via Python entry_points. Five lifecycle hooks (`on_remember`, `on_recall`, `on_enrich`, `on_extract`, `on_score`), hot-reload, scaffold CLI, and test harness.
+
+### Proactive Recommendations
+`suggest` · `lore suggest --context "..."` · `GET /v1/recommendations`
+
+Surface relevant memories before explicit queries. Multi-signal scoring (context similarity, entity overlap, temporal patterns, access patterns) with human-readable explanations and a feedback loop.
 
 ### Retrieval Analytics
 `GET /v1/analytics/retrieval` · Prometheus metrics
@@ -230,6 +265,7 @@ curl -s "http://localhost:8765/v1/retrieve?query=your+prompt&limit=5&min_score=0
 | `review_digest` | Get pending connections for review |
 | `review_connection` | Approve/reject a pending connection |
 | `on_this_day` | Memories from same date across years |
+| `suggest` | Proactive memory recommendations based on session context |
 
 ## CLI Reference
 
@@ -257,18 +293,49 @@ lore import backup.json
 lore snapshot-save --title "before refactor"
 
 # Server & setup
+lore bootstrap               # validate prerequisites
 lore serve                    # start HTTP server
 lore mcp                     # start MCP server
 lore ui                      # start web UI
 lore setup claude-code       # install hooks
-lore setup openclaw
-lore setup cursor
-lore setup codex
+lore setup claude-code --validate --test-connection
+
+# SLO management
+lore slo create --name "P99 < 50ms" --metric p99_latency --threshold 50 --operator lt
+lore slo status
+lore slo alerts
+
+# Retrieval profiles
+lore profiles list
+lore profiles create --name fast-coding --semantic-weight 1.0 --recency-bias 7
+
+# Retention policies
+lore policy create --name prod --snapshot-schedule "0 2 * * *" --max-snapshots 30
+lore policy compliance
+lore restore-drill --latest
+
+# Workspaces
+lore workspace create dev-team
+lore workspace switch dev-team
+lore audit --since 24h
+
+# Plugins
+lore plugin create my-tagger
+lore plugin list
+lore plugin reload my-tagger
+
+# Recommendations
+lore suggest --context "setting up docker"
+
+# Review (with risk scoring)
+lore review list --sort risk
+lore review approve <id> --note "Verified"
+lore review batch approve --ids id1,id2
 
 # API keys
-lore keys-create --name "my-agent"
-lore keys-list
-lore keys-revoke <key-id>
+lore keys create --name "my-agent"
+lore keys list
+lore keys revoke <key-id>
 ```
 
 ## API Reference
@@ -276,6 +343,7 @@ lore keys-revoke <key-id>
 ### Key endpoints
 
 ```
+# Memory CRUD
 GET    /v1/retrieve                    # Auto-retrieval (for hooks)
 POST   /v1/memories                    # Create memory
 POST   /v1/memories/search             # Semantic search
@@ -284,26 +352,71 @@ GET    /v1/memories/{id}               # Get memory
 PATCH  /v1/memories/{id}               # Update memory
 DELETE /v1/memories/{id}               # Delete memory
 
+# Knowledge graph
 GET    /v1/graph                       # Knowledge graph
 GET    /v1/graph/topics                # Topic list
 GET    /v1/graph/topics/{name}         # Topic detail
 GET    /v1/graph/entity/{id}           # Entity detail
 
+# Ingestion
 POST   /v1/conversations              # Extract memories from conversation
 POST   /v1/ingest                     # Ingest external content
-POST   /v1/ingest/batch               # Batch ingest
 
-GET    /v1/review                     # Pending connection reviews
-POST   /v1/review/{id}               # Approve/reject connection
+# Review + risk scoring
+GET    /v1/review                     # Pending reviews (sortable by risk)
+POST   /v1/review/{id}               # Approve/reject with notes
+POST   /v1/review/bulk               # Batch approve/reject
+GET    /v1/review/history             # Decision audit trail
 
+# Export & snapshots
 POST   /v1/export                     # Export all data
 POST   /v1/import                     # Import data
 POST   /v1/export/snapshots           # Create snapshot
 GET    /v1/export/snapshots           # List snapshots
 
-GET    /v1/recent                     # Recent activity
-GET    /v1/analytics/retrieval        # Retrieval analytics + Prometheus
+# SLO dashboard
+GET    /v1/slo                        # List SLO definitions
+POST   /v1/slo                        # Create SLO
+GET    /v1/slo/status                 # Current pass/fail per SLO
+GET    /v1/slo/alerts                 # Alert history
+GET    /v1/slo/timeseries             # Time-series for charts
 
+# Retrieval profiles
+GET    /v1/profiles                   # List profiles
+POST   /v1/profiles                   # Create profile
+GET    /v1/retrieve?profile=coding    # Retrieve with profile
+
+# Retention policies
+GET    /v1/policies                   # List policies
+POST   /v1/policies                   # Create policy
+GET    /v1/policies/compliance        # Compliance summary
+POST   /v1/policies/{id}/drill       # Execute restore drill
+
+# Workspaces + RBAC
+POST   /v1/workspaces                 # Create workspace
+GET    /v1/workspaces                 # List workspaces
+POST   /v1/workspaces/{id}/members   # Add member
+GET    /v1/audit                      # Query audit log
+
+# Plugins
+GET    /v1/plugins                    # List plugins
+POST   /v1/plugins/{name}/enable     # Enable plugin
+POST   /v1/plugins/{name}/reload     # Hot-reload plugin
+
+# Recommendations
+POST   /v1/recommendations           # Get proactive suggestions
+POST   /v1/recommendations/{id}/feedback  # Thumbs up/down
+PATCH  /v1/recommendations/config    # Adjust aggressiveness
+
+# Setup validation
+POST   /v1/setup/validate            # Test connectivity
+
+# Analytics & monitoring
+GET    /v1/recent                     # Recent activity
+GET    /v1/analytics/retrieval        # Retrieval analytics
+GET    /metrics                       # Prometheus metrics
+
+# API keys
 POST   /v1/keys                       # Create API key
 GET    /v1/keys                       # List API keys
 DELETE /v1/keys/{id}                  # Revoke API key
@@ -329,6 +442,14 @@ DELETE /v1/keys/{id}                  # Revoke API key
 | `LORE_GRAPH_CONFIDENCE_THRESHOLD` | `0.5` | Entity confidence threshold |
 | `LORE_HTTP_TIMEOUT` | `30` | HTTP timeout (seconds) |
 | `OPENAI_API_KEY` | — | Auto-enables enrichment when set |
+| `SLO_CHECK_INTERVAL` | `60` | SLO evaluation interval (seconds) |
+| `ALERT_WEBHOOK_URL` | — | Default webhook URL for SLO alerts |
+| `SMTP_HOST` | — | SMTP server for email alerts |
+| `SMTP_PORT` | `587` | SMTP port |
+| `SMTP_USER` | — | SMTP username |
+| `SMTP_FROM` | — | Email sender address |
+| `AUTH_MODE` | `api-key-only` | Auth mode: `api-key-only`, `dual`, `oidc-required` |
+| `LORE_WORKSPACE` | — | Default workspace slug |
 
 ## Architecture
 
@@ -342,14 +463,19 @@ DELETE /v1/keys/{id}                  # Revoke API key
 ┌──────────────────────────────────────────────────────────────┐
 │                     Lore Server (:8765)                       │
 │                                                              │
-│  REST API · MCP Server · Web UI (/ui/)                       │
+│  REST API · MCP Server · Web UI (/ui/) · Plugin SDK          │
 │                                                              │
 │  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
 │  │  Embedder   │  │  Knowledge   │  │  LLM Pipeline       │ │
 │  │  (ONNX)     │  │  Graph       │  │  (optional)         │ │
-│  │             │  │  Engine      │  │  classify · enrich   │ │
-│  │  pgvector   │  │  entities    │  │  extract · consolidate│
-│  │  search     │  │  relations   │  │                     │ │
+│  │  pgvector   │  │  + Review    │  │  classify · enrich   │ │
+│  │  + Profiles │  │  + Risk      │  │  extract · recommend │ │
+│  └─────────────┘  └──────────────┘  └─────────────────────┘ │
+│                                                              │
+│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────────┐ │
+│  │  SLO        │  │  Retention   │  │  Workspaces         │ │
+│  │  Checker    │  │  Scheduler   │  │  + RBAC             │ │
+│  │  + Alerting │  │  + Drills    │  │  + Audit Log        │ │
 │  └─────────────┘  └──────────────┘  └─────────────────────┘ │
 └──────────────────────────┬───────────────────────────────────┘
                            │
@@ -357,6 +483,8 @@ DELETE /v1/keys/{id}                  # Revoke API key
               │   PostgreSQL + pgvector  │
               │   memories · entities    │
               │   relationships · facts  │
+              │   slo · profiles · audit │
+              │   workspaces · policies  │
               └─────────────────────────┘
 ```
 
