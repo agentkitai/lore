@@ -31,9 +31,11 @@ save_snapshot(content="Current state: ...", title="mid-refactor checkpoint")
 | `remember(content, type)` | Save a memory (types: note, lesson, fact, preference, pattern, convention) |
 | `recent_activity(hours)` | Load recent session context |
 | `save_snapshot(content)` | Manually checkpoint current state |
+| `suggest(context)` | Get proactive memory recommendations based on session context |
 | `topics()` | Browse auto-generated topic summaries |
 | `graph_query(query)` | Explore knowledge graph connections |
 | `entity_map(name)` | Find everything related to an entity |
+| `review_digest()` | Review pending graph connections (with risk scores) |
 | `on_this_day()` | Memories from this date in prior years |
 | `export(format)` | Export all data (json/markdown) |
 

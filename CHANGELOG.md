@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] — 2026-03-21 — "Enterprise Platform"
+
+### Added
+
+- **F1: Guided Bootstrap** (`lore bootstrap`): Single command validates Python version, Postgres, pgvector, Docker, runs migrations, and verifies server health. `--fix` flag auto-remediates missing dependencies.
+- **F2: Enhanced Setup Wizard**: Config validation (`--validate`), server connectivity test (`--test-connection`), dry-run mode (`--dry-run`), timestamped config backups with rollback instructions. New `POST /v1/setup/validate` endpoint.
+- **F3: SLO Dashboard + Alerting**: Define SLO targets for p50/p95/p99 latency and hit rate. Background checker evaluates every 60s. Webhook and email alert channels. Time-series API for charts. Full CRUD via `lore slo` CLI and REST API.
+- **F4: Adaptive Retrieval Profiles**: Named profiles stored in Postgres with per-request `?profile=` param. Three built-in presets (coding, incident-response, research). Profiles control semantic weight, graph weight, recency bias, tier filters, and min score. 60s in-memory cache.
+- **F5: Graph Approval Inbox with Risk Scoring**: Risk score computed via SQL CTE (weight + conflict history + age). Sortable review queue, batch approve/reject, reviewer notes, `review_decisions` audit table. `GET /v1/review/history` for audit trail.
+- **F6: Policy-Based Retention**: Declarative lifecycle policies with per-tier retention windows, cron-based snapshot schedules, max snapshot limits. Restore drills with timing metrics. Cross-policy compliance dashboard.
+- **F7: Multi-Tenant Workspaces**: Workspace isolation within orgs. Scoped API keys, member management (writer/admin roles), full audit log of every action. `lore workspace create/switch/members`, `lore audit` CLI commands.
+- **F8: Plugin SDK**: `LorePlugin` ABC with 5 lifecycle hooks (`on_remember`, `on_recall`, `on_enrich`, `on_extract`, `on_score`). Discovery via Python entry_points. Hot-reload, enable/disable, scaffold CLI (`lore plugin create`), test harness.
+- **F9: Proactive Recommendations**: Multi-signal scoring engine (context similarity, entity overlap, temporal patterns, access patterns). Human-readable explanations. Feedback loop with per-user weight adjustment. New MCP tool: `suggest`. Configurable aggressiveness and cooldown.
+- 6 new database migrations (012–017)
+- 118 new tests (2081 total)
+- Background tasks: SLO checker + retention policy scheduler in FastAPI lifespan
+
 ## [1.0.0] — 2026-03-14 — "Total Recall"
 
 ### Added
