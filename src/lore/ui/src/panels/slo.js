@@ -1,17 +1,21 @@
 // SLO Dashboard Panel — status cards, latency chart, hit-rate chart, alert timeline
 
-import { fetchJSON } from '../api.js';
+async function _fetch(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('API error: ' + res.status);
+  return res.json();
+}
 
 export async function fetchSloDashboard() {
-  return fetchJSON('/v1/slo/status');
+  return _fetch('/v1/slo/status');
 }
 
 export async function fetchSloAlerts(limit = 50) {
-  return fetchJSON(`/v1/slo/alerts?limit=${limit}`);
+  return _fetch('/v1/slo/alerts?limit=' + limit);
 }
 
 export async function fetchSloTimeseries(metric = 'p99_latency', hours = 24) {
-  return fetchJSON(`/v1/slo/timeseries?metric=${metric}&window_hours=${hours}`);
+  return _fetch('/v1/slo/timeseries?metric=' + metric + '&window_hours=' + hours);
 }
 
 export class SloPanel {

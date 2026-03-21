@@ -9,6 +9,7 @@ import { DetailPanel } from './panels/detail.js';
 import { FilterPanel } from './panels/filters.js';
 import { StatsPanel } from './panels/stats.js';
 import { ReviewPanel } from './panels/review.js';
+import { SloPanel } from './panels/slo.js';
 import { SearchBar } from './components/search.js';
 import { TimelineScrubber } from './components/timeline.js';
 import { Minimap } from './components/minimap.js';
@@ -112,6 +113,12 @@ async function init() {
     const reviewContainer = document.getElementById('review-panel');
     if (reviewContainer) {
       const reviewPanel = new ReviewPanel(reviewContainer, state);
+    }
+
+    // SLO panel (F3)
+    const sloContainer = document.getElementById('slo-panel');
+    if (sloContainer) {
+      const sloPanel = new SloPanel(sloContainer, state);
     }
 
     // Render minimap periodically
