@@ -571,6 +571,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_setup.add_argument("--remove", default=None, metavar="RUNTIME",
                          choices=["claude-code", "openclaw", "cursor", "codex"],
                          help="Remove hooks for a runtime")
+    p_setup.add_argument("--validate", action="store_true",
+                         help="Validate hook scripts and config files after setup")
+    p_setup.add_argument("--test-connection", action="store_true", dest="test_connection",
+                         help="Test connectivity to the Lore server")
+    p_setup.add_argument("--dry-run", action="store_true", dest="setup_dry_run",
+                         help="Show what would be done without making changes")
 
     # export
     p = sub.add_parser("export", help="Export memories and knowledge graph")
@@ -630,6 +636,129 @@ def build_parser() -> argparse.ArgumentParser:
     p_review.add_argument("--approve-all", action="store_true", dest="approve_all", help="Approve all pending")
     p_review.add_argument("--reject-all", action="store_true", dest="reject_all", help="Reject all pending")
     p_review.add_argument("--limit", type=int, default=50, help="Max items to show (default: 50)")
+
+    # slo
+    slo_parser = sub.add_parser("slo", help="Manage SLO definitions and alerts")
+    slo_parser.add_argument("--api-url", default=None, help="Lore API URL (or LORE_API_URL)")
+    slo_parser.add_argument("--api-key", default=None, help="Lore API key (or LORE_API_KEY)")
+    slo_sub = slo_parser.add_subparsers(dest="slo_command")
+
+    slo_sub.add_parser("list", help="List SLO definitions")
+    slo_sub.add_parser("status", help="Show current SLO pass/fail status")
+    slo_sub.add_parser("alerts", help="Show alert history")
+
+    slo_c = slo_sub.add_parser("create", help="Create an SLO")
+    slo_c.add_argument("--name", required=True, dest="slo_name")
+    slo_c.add_argument("--metric", required=True, choices=["p50_latency", "p95_latency", "p99_latency", "hit_rate"])
+    slo_c.add_argument("--threshold", required=True, type=float)
+    slo_c.add_argument("--operator", default="lt", choices=["lt", "gt"])
+    slo_c.add_argument("--window", type=int, default=60, dest="window_minutes")
+
+    slo_d = slo_sub.add_parser("delete", help="Delete an SLO")
+    slo_d.add_argument("slo_id", help="SLO ID to delete")
+
+    slo_t = slo_sub.add_parser("test", help="Fire a test alert")
+    slo_t.add_argument("slo_id", help="SLO ID to test")
+
+    # profiles
+    prof_parser = sub.add_parser("profiles", help="Manage retrieval profiles")
+    prof_parser.add_argument("--api-url", default=None, help="Lore API URL")
+    prof_parser.add_argument("--api-key", default=None, help="Lore API key")
+    prof_sub = prof_parser.add_subparsers(dest="prof_command")
+
+    prof_sub.add_parser("list", help="List profiles")
+    prof_cr = prof_sub.add_parser("create", help="Create a profile")
+    prof_cr.add_argument("--name", required=True)
+    prof_cr.add_argument("--semantic-weight", type=float, default=1.0, dest="semantic_weight")
+    prof_cr.add_argument("--graph-weight", type=float, default=1.0, dest="graph_weight")
+    prof_cr.add_argument("--recency-bias", type=float, default=30.0, dest="recency_bias")
+    prof_cr.add_argument("--min-score", type=float, default=0.3, dest="min_score")
+    prof_cr.add_argument("--max-results", type=int, default=10, dest="max_results")
+
+    prof_del = prof_sub.add_parser("delete", help="Delete a profile")
+    prof_del.add_argument("profile_id")
+
+    # policy
+    pol_parser = sub.add_parser("policy", help="Manage retention policies")
+    pol_parser.add_argument("--api-url", default=None, help="Lore API URL")
+    pol_parser.add_argument("--api-key", default=None, help="Lore API key")
+    pol_sub = pol_parser.add_subparsers(dest="pol_command")
+
+    pol_sub.add_parser("list", help="List policies")
+    pol_sub.add_parser("compliance", help="Check policy compliance")
+    pol_cr = pol_sub.add_parser("create", help="Create a policy")
+    pol_cr.add_argument("--name", required=True)
+    pol_cr.add_argument("--snapshot-schedule", default=None, dest="snapshot_schedule")
+    pol_cr.add_argument("--max-snapshots", type=int, default=50, dest="max_snapshots")
+
+    pol_del = pol_sub.add_parser("delete", help="Delete a policy")
+    pol_del.add_argument("policy_id")
+
+    # restore-drill
+    p_drill = sub.add_parser("restore-drill", help="Run a restore drill")
+    p_drill.add_argument("snapshot_name", nargs="?", default=None, help="Snapshot name to drill")
+    p_drill.add_argument("--latest", action="store_true", help="Use latest snapshot")
+    p_drill.add_argument("--api-url", default=None, help="Lore API URL")
+    p_drill.add_argument("--api-key", default=None, help="Lore API key")
+
+    # workspace
+    ws_parser = sub.add_parser("workspace", help="Manage workspaces")
+    ws_parser.add_argument("--api-url", default=None, help="Lore API URL")
+    ws_parser.add_argument("--api-key", default=None, help="Lore API key")
+    ws_sub = ws_parser.add_subparsers(dest="ws_command")
+
+    ws_sub.add_parser("list", help="List workspaces")
+    ws_cr = ws_sub.add_parser("create", help="Create a workspace")
+    ws_cr.add_argument("name", help="Workspace name")
+    ws_cr.add_argument("--slug", default=None, help="URL slug (auto-generated if omitted)")
+
+    ws_sw = ws_sub.add_parser("switch", help="Switch to a workspace")
+    ws_sw.add_argument("slug", help="Workspace slug")
+
+    ws_mem = ws_sub.add_parser("members", help="List workspace members")
+    ws_mem.add_argument("--workspace", default=None, help="Workspace slug")
+
+    # audit
+    p_audit = sub.add_parser("audit", help="Query audit log")
+    p_audit.add_argument("--workspace", default=None, help="Filter by workspace slug")
+    p_audit.add_argument("--since", default=None, help="ISO 8601 start time")
+    p_audit.add_argument("--limit", type=int, default=50)
+    p_audit.add_argument("--api-url", default=None, help="Lore API URL")
+    p_audit.add_argument("--api-key", default=None, help="Lore API key")
+
+    # plugin
+    plug_parser = sub.add_parser("plugin", help="Manage plugins")
+    plug_sub = plug_parser.add_subparsers(dest="plug_command")
+
+    plug_sub.add_parser("list", help="List installed plugins")
+    plug_cr = plug_sub.add_parser("create", help="Scaffold a new plugin project")
+    plug_cr.add_argument("name", help="Plugin name")
+    plug_cr.add_argument("--output", default=".", help="Output directory")
+
+    plug_en = plug_sub.add_parser("enable", help="Enable a plugin")
+    plug_en.add_argument("name")
+    plug_dis = plug_sub.add_parser("disable", help="Disable a plugin")
+    plug_dis.add_argument("name")
+    plug_rel = plug_sub.add_parser("reload", help="Reload a plugin")
+    plug_rel.add_argument("name")
+
+    # suggest
+    p_suggest = sub.add_parser("suggest", help="Get proactive memory suggestions")
+    p_suggest.add_argument("--context", default="", help="Session context text")
+    p_suggest.add_argument("--feedback", nargs=2, metavar=("MEMORY_ID", "FEEDBACK"), default=None,
+                           help="Submit feedback: <memory_id> positive|negative")
+    p_suggest.add_argument("--config", action="store_true", dest="show_config",
+                           help="Show recommendation config")
+    p_suggest.add_argument("--aggressiveness", type=float, default=None,
+                           help="Set aggressiveness (0.0-1.0)")
+
+    # bootstrap
+    p_boot = sub.add_parser("bootstrap", help="Validate prerequisites and set up Lore")
+    p_boot.add_argument("--fix", action="store_true", help="Attempt to auto-fix missing dependencies")
+    p_boot.add_argument("--skip-docker", action="store_true", dest="skip_docker", help="Skip Docker check")
+    p_boot.add_argument("--skip-server", action="store_true", dest="skip_server", help="Skip server start/health check")
+    p_boot.add_argument("--db-url", default=None, dest="db_url", help="Database URL (or DATABASE_URL env)")
+    p_boot.add_argument("--verbose", action="store_true", help="Show all fix hints")
 
     # serve
     p_serve = sub.add_parser("serve", help="Start Lore HTTP server")
@@ -1313,7 +1442,10 @@ def cmd_wrap(args: argparse.Namespace) -> None:
 
 def cmd_setup(args: argparse.Namespace) -> None:
     """Handle setup subcommand: install/remove hooks for runtimes."""
-    from lore.setup import remove_runtime, setup_claude_code, setup_codex, setup_cursor, setup_openclaw, show_status
+    from lore.setup import (
+        remove_runtime, setup_claude_code, setup_codex, setup_cursor, setup_openclaw,
+        show_status, _test_connection, _validate_hook, _validate_config,
+    )
 
     if args.status:
         show_status()
@@ -1323,11 +1455,32 @@ def cmd_setup(args: argparse.Namespace) -> None:
         remove_runtime(args.remove)
         return
 
+    # Test connection mode (standalone)
+    if getattr(args, "test_connection", False) and not args.runtime:
+        server_url = args.server_url or "http://localhost:8765"
+        api_key = args.api_key
+        print(f"Testing connection to {server_url}...")
+        result = _test_connection(server_url, api_key)
+        print(f"  Status:     {result['status']}")
+        print(f"  Health:     {'ok' if result.get('health') else 'fail'}")
+        print(f"  Retrieve:   {'ok' if result.get('retrieve') else 'skip/fail'}")
+        print(f"  Latency:    {result.get('latency_ms', 0):.1f}ms")
+        if result.get("error"):
+            print(f"  Error:      {result['error']}")
+        return
+
     if not args.runtime:
         print("Usage: lore setup <runtime> [--server-url URL]", file=sys.stderr)
         print("       lore setup --status", file=sys.stderr)
         print("       lore setup --remove <runtime>", file=sys.stderr)
+        print("       lore setup --test-connection [--server-url URL]", file=sys.stderr)
         sys.exit(1)
+
+    if getattr(args, "setup_dry_run", False):
+        print(f"[dry-run] Would set up {args.runtime}")
+        print(f"[dry-run] Server URL: {args.server_url or 'http://localhost:8765'}")
+        print(f"[dry-run] API Key: {'set' if args.api_key else 'not set'}")
+        return
 
     server_url = args.server_url or "http://localhost:8765"
     api_key = args.api_key
@@ -1340,6 +1493,34 @@ def cmd_setup(args: argparse.Namespace) -> None:
         setup_cursor(server_url=server_url, api_key=api_key)
     elif args.runtime == "codex":
         setup_codex(server_url=server_url, api_key=api_key)
+
+    # Post-setup validation
+    if getattr(args, "validate", False):
+        print("\nValidating...")
+        from lore.setup import _claude_hook_path, _cursor_hook_path, _codex_hook_path, _openclaw_hook_path
+        hook_paths = {
+            "claude-code": _claude_hook_path,
+            "cursor": _cursor_hook_path,
+            "codex": _codex_hook_path,
+            "openclaw": _openclaw_hook_path,
+        }
+        hook_fn = hook_paths.get(args.runtime)
+        if hook_fn:
+            errors = _validate_hook(hook_fn())
+            if errors:
+                for err in errors:
+                    print(f"  Warning: {err}")
+            else:
+                print("  Hook validation: ok")
+
+    # Post-setup connection test
+    if getattr(args, "test_connection", False):
+        print("\nTesting connection...")
+        result = _test_connection(server_url, api_key)
+        print(f"  Status:  {result['status']}")
+        print(f"  Latency: {result.get('latency_ms', 0):.1f}ms")
+        if not result.get("health"):
+            print("  Warning: Server not reachable. Start it with: lore serve")
 
 
 def cmd_export(args: argparse.Namespace) -> None:
@@ -1629,6 +1810,251 @@ def cmd_review(args: argparse.Namespace) -> None:
     print("Use --approve-all or --reject-all for bulk actions.")
 
 
+def cmd_bootstrap(args: argparse.Namespace) -> None:
+    """Run guided bootstrap checks."""
+    from lore.bootstrap import BootstrapRunner, format_results
+
+    runner = BootstrapRunner(
+        db_url=args.db_url,
+        fix=args.fix,
+        skip_docker=args.skip_docker,
+        skip_server=args.skip_server,
+        verbose=args.verbose,
+    )
+    print("Lore Bootstrap")
+    print("=" * 40)
+    results = runner.run_all()
+    print(format_results(results, verbose=args.verbose))
+
+    has_failures = any(r.status == "fail" for r in results)
+    if has_failures:
+        sys.exit(1)
+
+
+def cmd_slo(args: argparse.Namespace) -> None:
+    """Handle SLO subcommands."""
+    api_url, api_key = _get_api_config(args)
+    cmd = getattr(args, "slo_command", None)
+    if not cmd:
+        print("Usage: lore slo <list|create|delete|status|alerts|test>", file=sys.stderr)
+        sys.exit(1)
+    if cmd == "list":
+        result = _api_request("GET", f"{api_url}/v1/slo", api_key)
+        for s in result:
+            print(f"  {s['id']}  {s['name']}  {s['metric']} {s['operator']} {s['threshold']}  {'enabled' if s.get('enabled') else 'disabled'}")
+    elif cmd == "status":
+        result = _api_request("GET", f"{api_url}/v1/slo/status", api_key)
+        for s in result:
+            icon = "PASS" if s.get("passing") else "FAIL"
+            val = s.get("current_value")
+            val_str = f"{val:.2f}" if val is not None else "N/A"
+            print(f"  [{icon}] {s['name']}: {val_str} ({s['operator']} {s['threshold']})")
+    elif cmd == "alerts":
+        result = _api_request("GET", f"{api_url}/v1/slo/alerts?limit=20", api_key)
+        for a in result:
+            print(f"  [{a['status']}] {a['metric_value']:.2f} / {a['threshold']:.2f}  ({a.get('created_at', '')})")
+    elif cmd == "create":
+        payload = {
+            "name": args.slo_name, "metric": args.metric,
+            "threshold": args.threshold, "operator": args.operator,
+            "window_minutes": args.window_minutes,
+        }
+        result = _api_request("POST", f"{api_url}/v1/slo", api_key, payload)
+        print(f"Created SLO: {result['id']} ({result['name']})")
+    elif cmd == "delete":
+        _api_request("DELETE", f"{api_url}/v1/slo/{args.slo_id}", api_key)
+        print(f"Deleted SLO: {args.slo_id}")
+    elif cmd == "test":
+        result = _api_request("POST", f"{api_url}/v1/slo/{args.slo_id}/test", api_key)
+        print(f"Test alert fired: {result.get('status', 'unknown')}")
+
+
+def cmd_profiles(args: argparse.Namespace) -> None:
+    """Handle profiles subcommands."""
+    api_url, api_key = _get_api_config(args)
+    cmd = getattr(args, "prof_command", None)
+    if not cmd:
+        print("Usage: lore profiles <list|create|delete>", file=sys.stderr)
+        sys.exit(1)
+    if cmd == "list":
+        result = _api_request("GET", f"{api_url}/v1/profiles", api_key)
+        for p in result:
+            preset = " [preset]" if p.get("is_preset") else ""
+            print(f"  {p['id']}  {p['name']}{preset}  sw={p['semantic_weight']} gw={p['graph_weight']} rb={p['recency_bias']}")
+    elif cmd == "create":
+        payload = {
+            "name": args.name, "semantic_weight": args.semantic_weight,
+            "graph_weight": args.graph_weight, "recency_bias": args.recency_bias,
+            "min_score": args.min_score, "max_results": args.max_results,
+        }
+        result = _api_request("POST", f"{api_url}/v1/profiles", api_key, payload)
+        print(f"Created profile: {result['id']} ({result['name']})")
+    elif cmd == "delete":
+        _api_request("DELETE", f"{api_url}/v1/profiles/{args.profile_id}", api_key)
+        print(f"Deleted profile: {args.profile_id}")
+
+
+def cmd_policy(args: argparse.Namespace) -> None:
+    """Handle policy subcommands."""
+    api_url, api_key = _get_api_config(args)
+    cmd = getattr(args, "pol_command", None)
+    if not cmd:
+        print("Usage: lore policy <list|create|delete|compliance>", file=sys.stderr)
+        sys.exit(1)
+    if cmd == "list":
+        result = _api_request("GET", f"{api_url}/v1/policies", api_key)
+        for p in result:
+            active = "active" if p.get("is_active") else "inactive"
+            print(f"  {p['id']}  {p['name']}  [{active}]  max_snapshots={p.get('max_snapshots', 50)}")
+    elif cmd == "compliance":
+        result = _api_request("GET", f"{api_url}/v1/policies/compliance", api_key)
+        for c in result:
+            status = "COMPLIANT" if c.get("compliant") else "NON-COMPLIANT"
+            print(f"  [{status}] {c['policy_name']}")
+            for issue in c.get("issues", []):
+                print(f"    - {issue}")
+    elif cmd == "create":
+        payload = {
+            "name": args.name,
+            "snapshot_schedule": args.snapshot_schedule,
+            "max_snapshots": args.max_snapshots,
+        }
+        result = _api_request("POST", f"{api_url}/v1/policies", api_key, payload)
+        print(f"Created policy: {result['id']} ({result['name']})")
+    elif cmd == "delete":
+        _api_request("DELETE", f"{api_url}/v1/policies/{args.policy_id}", api_key)
+        print(f"Deleted policy: {args.policy_id}")
+
+
+def cmd_workspace(args: argparse.Namespace) -> None:
+    """Handle workspace subcommands."""
+    api_url, api_key = _get_api_config(args)
+    cmd = getattr(args, "ws_command", None)
+    if not cmd:
+        print("Usage: lore workspace <list|create|switch|members>", file=sys.stderr)
+        sys.exit(1)
+    if cmd == "list":
+        result = _api_request("GET", f"{api_url}/v1/workspaces", api_key)
+        for w in result:
+            print(f"  {w['slug']:<20} {w['name']}")
+    elif cmd == "create":
+        slug = args.slug or args.name.lower().replace(" ", "-")
+        payload = {"name": args.name, "slug": slug}
+        result = _api_request("POST", f"{api_url}/v1/workspaces", api_key, payload)
+        print(f"Created workspace: {result['slug']}")
+    elif cmd == "switch":
+        print(f"Switched to workspace: {args.slug}")
+        print(f"Set LORE_WORKSPACE={args.slug} in your environment to persist.")
+    elif cmd == "members":
+        ws = args.workspace or "default"
+        result = _api_request("GET", f"{api_url}/v1/workspaces/{ws}/members", api_key)
+        for m in result:
+            print(f"  {m.get('user_id', 'unknown'):<20} {m['role']}")
+
+
+def cmd_audit(args: argparse.Namespace) -> None:
+    """Query audit log."""
+    api_url, api_key = _get_api_config(args)
+    params = f"?limit={args.limit}"
+    if args.workspace:
+        params += f"&workspace_id={args.workspace}"
+    if args.since:
+        params += f"&since={args.since}"
+    result = _api_request("GET", f"{api_url}/v1/audit{params}", api_key)
+    for entry in result:
+        ts = entry.get("created_at", "")[:19]
+        print(f"  [{ts}] {entry['action']}  by {entry['actor_id']} ({entry['actor_type']})")
+
+
+def cmd_plugin(args: argparse.Namespace) -> None:
+    """Handle plugin subcommands."""
+    cmd = getattr(args, "plug_command", None)
+    if not cmd:
+        print("Usage: lore plugin <list|create|enable|disable|reload>", file=sys.stderr)
+        sys.exit(1)
+    if cmd == "list":
+        from lore.plugin.registry import PluginRegistry
+        registry = PluginRegistry()
+        registry.load_all()
+        plugins = registry.list_plugins()
+        if not plugins:
+            print("No plugins installed.")
+            return
+        for p in plugins:
+            status = "enabled" if p["enabled"] else "disabled"
+            print(f"  {p['name']:<20} v{p['version']}  [{status}]  {p.get('description', '')}")
+    elif cmd == "create":
+        from lore.plugin.scaffold import scaffold_plugin
+        project_dir = scaffold_plugin(args.name, output_dir=args.output)
+        print(f"Plugin scaffolded: {project_dir}")
+        print(f"  Install with: cd {project_dir} && pip install -e .")
+    elif cmd == "enable":
+        from lore.plugin.registry import PluginRegistry
+        registry = PluginRegistry()
+        registry.load_all()
+        if registry.enable(args.name):
+            print(f"Enabled: {args.name}")
+        else:
+            print(f"Plugin not found: {args.name}", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "disable":
+        from lore.plugin.registry import PluginRegistry
+        registry = PluginRegistry()
+        registry.load_all()
+        if registry.disable(args.name):
+            print(f"Disabled: {args.name}")
+        else:
+            print(f"Plugin not found: {args.name}", file=sys.stderr)
+            sys.exit(1)
+    elif cmd == "reload":
+        from lore.plugin.registry import PluginRegistry
+        registry = PluginRegistry()
+        registry.load_all()
+        if registry.reload(args.name):
+            print(f"Reloaded: {args.name}")
+        else:
+            print(f"Plugin not found: {args.name}", file=sys.stderr)
+            sys.exit(1)
+
+
+def cmd_suggest(args: argparse.Namespace) -> None:
+    """Get proactive memory suggestions."""
+    if args.feedback:
+        memory_id, feedback = args.feedback
+        lore = _get_lore(args.db)
+        from lore.recommend.feedback import FeedbackRecorder
+        recorder = FeedbackRecorder()
+        recorder.record(memory_id, feedback, "cli-user")
+        lore.close()
+        print(f"Feedback recorded: {feedback} for {memory_id}")
+        return
+
+    if args.show_config:
+        print("Recommendation config:")
+        print(f"  Aggressiveness: {args.aggressiveness or 0.5}")
+        return
+
+    lore = _get_lore(args.db)
+    from lore.recommend.engine import RecommendationEngine
+    engine = RecommendationEngine(
+        store=lore._store,
+        embedder=lore._embedder,
+        aggressiveness=args.aggressiveness or 0.5,
+    )
+    recs = engine.suggest(context=args.context)
+    lore.close()
+
+    if not recs:
+        print("No suggestions at this time.")
+        return
+    for i, rec in enumerate(recs, 1):
+        print(f"  {i}. [{rec.score:.2f}] {rec.content_preview}")
+        if rec.explanation:
+            print(f"     {rec.explanation}")
+        print(f"     ID: {rec.memory_id}")
+        print()
+
+
 def main(argv: Optional[Sequence[str]] = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1647,6 +2073,18 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
             "revoke": cmd_keys_revoke,
         }
         keys_handlers[args.keys_command](args)
+        return
+
+    # Subcommand groups that need special routing
+    if args.command in ("slo", "profiles", "policy", "workspace", "plugin"):
+        group_handlers = {
+            "slo": cmd_slo,
+            "profiles": cmd_profiles,
+            "policy": cmd_policy,
+            "workspace": cmd_workspace,
+            "plugin": cmd_plugin,
+        }
+        group_handlers[args.command](args)
         return
 
     handlers = {
@@ -1681,6 +2119,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "snapshot-save": cmd_snapshot_save,
         "topics": cmd_topics,
         "review": cmd_review,
+        "bootstrap": cmd_bootstrap,
+        "audit": cmd_audit,
+        "suggest": cmd_suggest,
+        "restore-drill": lambda a: print("Use: lore policy drill (via API)"),
         "serve": cmd_serve,
         "mcp": cmd_mcp,
         "ui": cmd_ui,

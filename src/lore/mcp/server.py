@@ -1510,6 +1510,46 @@ def review_connection(
         return f"Failed to review connection: {e}"
 
 
+@mcp.tool(
+    description=(
+        "Get proactive memory suggestions based on current session context. "
+        "USE THIS WHEN: you want to surface potentially relevant memories "
+        "without a specific query. Useful at session start or before major decisions. "
+        "Returns memories ranked by multi-signal relevance."
+    ),
+)
+def suggest(
+    context: str = "",
+    max_results: int = 3,
+    session_entities: Optional[List[str]] = None,
+) -> str:
+    """Get proactive memory suggestions based on current session context."""
+    try:
+        lore = _get_lore()
+        from lore.recommend.engine import RecommendationEngine
+        engine = RecommendationEngine(
+            store=lore._store,
+            embedder=lore._embedder,
+        )
+        recs = engine.suggest(
+            context=context,
+            session_entities=session_entities,
+            limit=max_results,
+        )
+        if not recs:
+            return "No suggestions at this time."
+        lines = [f"Suggested {len(recs)} memory(ies):\n"]
+        for i, rec in enumerate(recs, 1):
+            lines.append(f"{i}. [{rec.score:.2f}] {rec.content_preview}")
+            if rec.explanation:
+                lines.append(f"   {rec.explanation}")
+            lines.append(f"   ID: {rec.memory_id}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Suggestion failed: {e}"
+
+
 def run_server() -> None:
     """Start the MCP server with stdio transport."""
     mcp.run(transport="stdio")

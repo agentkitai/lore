@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
 
 # ── Hook script templates ──────────────────────────────────────────
 
@@ -325,6 +327,145 @@ def _codex_hook_path() -> Path:
 
 def _codex_config_path() -> Path:
     return Path.cwd() / "codex.yaml"
+
+
+# ── Validation / connection helpers ────────────────────────────────
+
+
+def _backup_config(path: Path) -> Optional[Path]:
+    """Create a timestamped backup of a config file. Keeps max 3 backups."""
+    if not path.exists():
+        return None
+
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = path.parent / f"{path.name}.lore-backup.{timestamp}"
+
+    import shutil
+    shutil.copy2(path, backup_path)
+
+    # Prune old backups (keep max 3)
+    pattern = f"{path.name}.lore-backup.*"
+    backups = sorted(path.parent.glob(pattern), key=lambda p: p.stat().st_mtime, reverse=True)
+    for old_backup in backups[3:]:
+        old_backup.unlink(missing_ok=True)
+
+    return backup_path
+
+
+def _validate_hook(hook_path: Path) -> list[str]:
+    """Validate a hook script: bash syntax check + execute permission."""
+    errors: list[str] = []
+    if not hook_path.exists():
+        errors.append(f"Hook file does not exist: {hook_path}")
+        return errors
+
+    # Check execute permission
+    if not os.access(hook_path, os.X_OK):
+        errors.append(f"Hook is not executable: {hook_path}")
+
+    # Bash syntax check
+    try:
+        result = subprocess.run(
+            ["bash", "-n", str(hook_path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            errors.append(f"Bash syntax error: {result.stderr.strip()}")
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass  # bash not available, skip syntax check
+
+    return errors
+
+
+def _validate_config(config_path: Path, runtime: str) -> list[str]:
+    """Validate a config file: JSON/YAML syntax + required keys."""
+    errors: list[str] = []
+    if not config_path.exists():
+        errors.append(f"Config file does not exist: {config_path}")
+        return errors
+
+    content = config_path.read_text()
+
+    if config_path.suffix == ".json":
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError as e:
+            errors.append(f"Invalid JSON: {e}")
+            return errors
+
+        # Check for hooks key
+        if "hooks" not in data:
+            errors.append("Config missing 'hooks' key")
+    elif config_path.suffix in (".yaml", ".yml"):
+        try:
+            import yaml
+            data = yaml.safe_load(content)
+            if data is None:
+                errors.append("Config file is empty")
+            elif "hooks" not in (data or {}):
+                errors.append("Config missing 'hooks' key")
+        except ImportError:
+            pass  # Can't validate YAML without PyYAML
+        except Exception as e:
+            errors.append(f"Invalid YAML: {e}")
+
+    return errors
+
+
+def _test_connection(server_url: str, api_key: Optional[str] = None) -> dict:
+    """Test connectivity to a Lore server."""
+    import urllib.request
+    import urllib.error
+    import time
+
+    result: dict = {"status": "unknown", "health": None, "retrieve": None, "latency_ms": 0}
+    start = time.monotonic()
+
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    # Test /health
+    try:
+        req = urllib.request.Request(f"{server_url}/health", headers=headers)
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            result["health"] = resp.status == 200
+    except Exception as e:
+        result["health"] = False
+        result["error"] = str(e)
+
+    # Test /v1/retrieve (requires auth)
+    if api_key and result["health"]:
+        try:
+            import urllib.parse
+            query = urllib.parse.quote("test")
+            req = urllib.request.Request(
+                f"{server_url}/v1/retrieve?query={query}&limit=1",
+                headers=headers,
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                result["retrieve"] = resp.status == 200
+        except Exception:
+            result["retrieve"] = False
+
+    result["latency_ms"] = round((time.monotonic() - start) * 1000, 2)
+    result["status"] = "ok" if result["health"] else "unreachable"
+
+    return result
+
+
+def _show_rollback_instructions(runtime: str, backup_paths: list[Path]) -> None:
+    """Print instructions for rolling back to backup configs."""
+    if not backup_paths:
+        print("  No backups to restore from.")
+        return
+    print("  To rollback, restore from backups:")
+    for bp in backup_paths:
+        original = bp.parent / bp.name.split(".lore-backup.")[0]
+        print(f"    cp {bp} {original}")
 
 
 # ── Setup functions ────────────────────────────────────────────────

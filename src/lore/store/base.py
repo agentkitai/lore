@@ -14,6 +14,7 @@ from lore.types import (
     Memory,
     RejectedPattern,
     Relationship,
+    ReviewDecision,
 )
 
 
@@ -265,3 +266,27 @@ class Store(ABC):
     def list_rejected_patterns(self, limit: int = 100) -> List[RejectedPattern]:
         """List rejected patterns."""
         return []
+
+    # ------------------------------------------------------------------
+    # Review decisions (F5)
+    # ------------------------------------------------------------------
+
+    def save_review_decision(self, decision: ReviewDecision) -> None:
+        """Save a review decision. No-op by default."""
+        pass
+
+    def list_review_decisions(
+        self, relationship_id: Optional[str] = None, limit: int = 50,
+    ) -> List[ReviewDecision]:
+        """List review decisions. Returns empty list by default."""
+        return []
+
+    # ------------------------------------------------------------------
+    # Retention policy cleanup (F6)
+    # ------------------------------------------------------------------
+
+    def cleanup_by_retention_policy(
+        self, tier: str, max_age_seconds: int,
+    ) -> int:
+        """Delete memories older than max_age_seconds in the given tier. Returns count. No-op by default."""
+        return 0
