@@ -111,19 +111,15 @@ def _parse_jsonb(val) -> List[Dict[str, Any]]:
 
 
 @router.get("", response_model=List[SloResponse])
-async def list_slos(
-    auth: AuthContext = Depends(get_auth_context),
-) -> List[SloResponse]:
-    """List all SLO definitions for the org."""
+async def list_slos() -> List[SloResponse]:
+    """List all SLO definitions."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             """SELECT id, org_id, name, metric, operator, threshold,
                       window_minutes, enabled, alert_channels, created_at, updated_at
                FROM slo_definitions
-               WHERE org_id = $1
                ORDER BY created_at DESC""",
-            auth.org_id,
         )
     return [
         SloResponse(
@@ -267,24 +263,23 @@ async def delete_slo(
 
 
 @router.get("/status", response_model=List[SloStatusResponse])
-async def slo_status(
-    auth: AuthContext = Depends(get_auth_context),
-) -> List[SloStatusResponse]:
+async def slo_status() -> List[SloStatusResponse]:
     """Get current pass/fail status for all SLOs."""
     pool = await get_pool()
     async with pool.acquire() as conn:
+        # Get first org_id for metric computation
+        org_id = await conn.fetchval("SELECT id FROM orgs LIMIT 1")
         slos = await conn.fetch(
-            """SELECT id, name, metric, operator, threshold, window_minutes, enabled
+            """SELECT id, org_id, name, metric, operator, threshold, window_minutes, enabled
                FROM slo_definitions
-               WHERE org_id = $1 AND enabled = TRUE
+               WHERE enabled = TRUE
                ORDER BY name""",
-            auth.org_id,
         )
 
         results: List[SloStatusResponse] = []
         for slo in slos:
             current_value = await _compute_metric(
-                conn, auth.org_id, slo["metric"], slo["window_minutes"],
+                conn, slo["org_id"], slo["metric"], slo["window_minutes"],
             )
             passing = _check_threshold(
                 current_value, slo["operator"], float(slo["threshold"]),
@@ -306,28 +301,28 @@ async def slo_status(
 async def list_alerts(
     limit: int = Query(50, ge=1, le=500),
     slo_id: Optional[str] = Query(None),
-    auth: AuthContext = Depends(get_auth_context),
 ) -> List[SloAlertResponse]:
     """Get alert history."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        params: list = [auth.org_id]
-        where_parts = ["a.org_id = $1"]
+        params: list = []
+        where_parts: list = []
 
         if slo_id:
             params.append(slo_id)
             where_parts.append(f"a.slo_id = ${len(params)}")
 
         params.append(limit)
-        where_sql = " AND ".join(where_parts)
+        limit_idx = len(params)
+        where_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
         rows = await conn.fetch(
             f"""SELECT a.id, a.slo_id, a.metric_value, a.threshold,
                        a.status, a.dispatched_to, a.created_at
                 FROM slo_alerts a
-                WHERE {where_sql}
+                {where_sql}
                 ORDER BY a.created_at DESC
-                LIMIT ${len(params)}""",
+                LIMIT ${limit_idx}""",
             *params,
         )
 

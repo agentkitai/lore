@@ -28,8 +28,12 @@ export class SloPanel {
 
   toggle() {
     this.visible = !this.visible;
-    this.container.style.display = this.visible ? 'block' : 'none';
-    if (this.visible) this.refresh();
+    if (this.visible) {
+      this.container.classList.add('open');
+      this.refresh();
+    } else {
+      this.container.classList.remove('open');
+    }
   }
 
   async refresh() {
@@ -47,8 +51,7 @@ export class SloPanel {
   }
 
   _render() {
-    // Build DOM safely without innerHTML
-    this.container.style.display = 'none';
+    // Build DOM safely
     const panel = document.createElement('div');
     panel.className = 'slo-panel';
 
