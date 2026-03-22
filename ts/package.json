@@ -1,6 +1,6 @@
 {
   "name": "lore-sdk",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Cross-agent memory SDK — store, recall, and share knowledge across AI agents (TypeScript)",
   "type": "module",
   "main": "./dist/index.js",
