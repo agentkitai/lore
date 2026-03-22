@@ -516,6 +516,27 @@ body {
 .review-btn-approve:hover { background: #166534; border-color: #22c55e; color: #fff; }
 .review-btn-reject:hover { background: #991b1b; border-color: #ef4444; color: #fff; }
 
+/* SLO Dashboard */
+.slo-cards { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+.slo-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: var(--bg-input); border-radius: 6px; border-left: 3px solid var(--border); }
+.slo-card.slo-pass { border-left-color: #22c55e; }
+.slo-card.slo-fail { border-left-color: #ef4444; }
+.slo-icon { font-size: 18px; font-weight: 700; }
+.slo-pass .slo-icon { color: #22c55e; }
+.slo-fail .slo-icon { color: #ef4444; }
+.slo-name { font-weight: 600; font-size: 13px; }
+.slo-metric { font-size: 11px; color: var(--text-dim); }
+.slo-alerts { display: flex; flex-direction: column; gap: 4px; }
+.slo-alert { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--bg-input); border-radius: 4px; font-size: 12px; }
+.slo-alert.alert-firing { border-left: 2px solid #ef4444; }
+.slo-alert.alert-resolved { border-left: 2px solid #22c55e; }
+.alert-status { font-weight: 600; min-width: 60px; }
+.alert-firing .alert-status { color: #ef4444; }
+.alert-resolved .alert-status { color: #22c55e; }
+.alert-value { flex: 1; color: var(--text-dim); }
+.alert-time { color: var(--text-dim); font-size: 11px; }
+.slo-empty { color: var(--text-dim); font-size: 12px; padding: 12px 0; }
+
 /* Screen reader only */
 .sr-only {
   position: absolute;
@@ -608,6 +629,7 @@ body.high-contrast {
       <button class="view-btn" data-mode="cluster-type">By Type</button>
       <button class="header-btn" id="show-all-toggle" title="Toggle between recent (30d) and all memories">Show All</button>
       <button class="header-btn" id="stats-btn">Stats</button>
+      <button class="header-btn" id="slo-btn" title="SLO Dashboard">SLO</button>
       <button class="header-btn" id="contrast-toggle" title="High contrast">HC</button>
     </div>
   </header>

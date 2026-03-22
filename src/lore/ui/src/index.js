@@ -117,8 +117,9 @@ async function init() {
 
     // SLO panel (F3)
     const sloContainer = document.getElementById('slo-panel');
+    let sloPanel = null;
     if (sloContainer) {
-      const sloPanel = new SloPanel(sloContainer, state);
+      sloPanel = new SloPanel(sloContainer, state);
     }
 
     // Render minimap periodically
@@ -127,6 +128,12 @@ async function init() {
     // Stats button
     if (statsBtn) {
       statsBtn.onclick = () => stats.toggle();
+    }
+
+    // SLO button
+    const sloBtn = document.getElementById('slo-btn');
+    if (sloBtn && sloPanel) {
+      sloBtn.onclick = () => sloPanel.toggle();
     }
 
     // View mode buttons
