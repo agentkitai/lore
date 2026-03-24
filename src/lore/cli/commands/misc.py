@@ -1,6 +1,6 @@
 """Miscellaneous commands — classify, facts, conflicts, backfill, enrich, reindex,
 freshness, github-sync, ingest, on-this-day, add-conversation, wrap, setup,
-bootstrap, slo, profiles, policy, workspace, audit, plugin, suggest."""
+bootstrap, integrate, slo, profiles, policy, workspace, audit, plugin, suggest."""
 
 from __future__ import annotations
 
@@ -617,11 +617,18 @@ def cmd_slo(args: argparse.Namespace) -> None:
             print(f"  {s['id']}  {s['name']}  {s['metric']} {s['operator']} {s['threshold']}  {'enabled' if s.get('enabled') else 'disabled'}")
     elif cmd == "status":
         result = _helpers._api_request("GET", f"{api_url}/v1/slo/status", api_key)
-        for s in result:
-            icon = "PASS" if s.get("passing") else "FAIL"
-            val = s.get("current_value")
-            val_str = f"{val:.2f}" if val is not None else "N/A"
-            print(f"  [{icon}] {s['name']}: {val_str} ({s['operator']} {s['threshold']})")
+        if not result:
+            print("No SLOs configured. Create one with: lore slo create --name <name> --metric <metric> --threshold <value>")
+        else:
+            passing = sum(1 for s in result if s.get("passing"))
+            failing = len(result) - passing
+            print(f"SLO Status: {passing} passing, {failing} failing\n")
+            for s in result:
+                icon = "PASS" if s.get("passing") else "FAIL"
+                val = s.get("current_value")
+                val_str = f"{val:.2f}" if val is not None else "N/A"
+                window = s.get("window_minutes", 60)
+                print(f"  [{icon}] {s['name']}: {val_str} ({s['operator']} {s['threshold']}, {s['metric']}, {window}m window)")
     elif cmd == "alerts":
         result = _helpers._api_request("GET", f"{api_url}/v1/slo/alerts?limit=20", api_key)
         for a in result:
@@ -647,21 +654,46 @@ def cmd_profiles(args: argparse.Namespace) -> None:
     api_url, api_key = _helpers._get_api_config(args)
     cmd = getattr(args, "prof_command", None)
     if not cmd:
-        print("Usage: lore profiles <list|create|delete>", file=sys.stderr)
+        print("Usage: lore profiles <list|create|delete|defaults|apply>", file=sys.stderr)
         sys.exit(1)
     if cmd == "list":
         result = _helpers._api_request("GET", f"{api_url}/v1/profiles", api_key)
         for p in result:
             preset = " [preset]" if p.get("is_preset") else ""
-            print(f"  {p['id']}  {p['name']}{preset}  sw={p['semantic_weight']} gw={p['graph_weight']} rb={p['recency_bias']}")
+            k_str = f" k={p['k']}" if p.get("k") is not None else ""
+            thr_str = f" thr={p['threshold']}" if p.get("threshold") is not None else ""
+            rerank_str = " rerank" if p.get("rerank") else ""
+            graph_str = " +graph" if p.get("include_graph") else " -graph"
+            print(f"  {p['id']}  {p['name']}{preset}  sw={p['semantic_weight']} gw={p['graph_weight']} rb={p['recency_bias']}{k_str}{thr_str}{rerank_str}{graph_str}")
+    elif cmd == "defaults":
+        result = _helpers._api_request("GET", f"{api_url}/v1/profiles/defaults", api_key)
+        print("Built-in default profiles:\n")
+        for name, cfg in result.items():
+            print(f"  {name}:")
+            print(f"    k={cfg['k']}  threshold={cfg['threshold']}  rerank={cfg['rerank']}  include_graph={cfg['include_graph']}")
+            print(f"    semantic_weight={cfg['semantic_weight']}  graph_weight={cfg['graph_weight']}  recency_bias={cfg['recency_bias']}")
+            print()
     elif cmd == "create":
         payload = {
             "name": args.name, "semantic_weight": args.semantic_weight,
             "graph_weight": args.graph_weight, "recency_bias": args.recency_bias,
             "min_score": args.min_score, "max_results": args.max_results,
+            "rerank": args.rerank, "include_graph": args.include_graph,
         }
+        if args.k is not None:
+            payload["k"] = args.k
+        if args.threshold is not None:
+            payload["threshold"] = args.threshold
         result = _helpers._api_request("POST", f"{api_url}/v1/profiles", api_key, payload)
         print(f"Created profile: {result['id']} ({result['name']})")
+    elif cmd == "apply":
+        params = f"?query={args.query}&profile={args.name}"
+        result = _helpers._api_request("GET", f"{api_url}/v1/retrieve{params}", api_key)
+        print(f"Profile '{args.name}' applied -- {result['count']} results in {result['query_time_ms']:.1f}ms\n")
+        for m in result.get("memories", []):
+            print(f"  [{m['score']:.3f}] {m['id']} ({m['type']}, {m['tier']})")
+            print(f"    {m['content'][:150]}")
+            print()
     elif cmd == "delete":
         _helpers._api_request("DELETE", f"{api_url}/v1/profiles/{args.profile_id}", api_key)
         print(f"Deleted profile: {args.profile_id}")
@@ -751,11 +783,22 @@ def cmd_plugin(args: argparse.Namespace) -> None:
         registry.load_all()
         plugins = registry.list_plugins()
         if not plugins:
-            print("No plugins installed.")
-            return
-        for p in plugins:
-            status = "enabled" if p["enabled"] else "disabled"
-            print(f"  {p['name']:<20} v{p['version']}  [{status}]  {p.get('description', '')}")
+            print("No SDK plugins installed.")
+        else:
+            for p in plugins:
+                status = "enabled" if p["enabled"] else "disabled"
+                print(f"  {p['name']:<20} v{p['version']}  [{status}]  {p.get('description', '')}")
+        # Also show enrichment plugins from the lightweight registry
+        try:
+            from lore.plugins import get_plugin_registry
+            enrichment_reg = get_plugin_registry()
+            enrichment_names = enrichment_reg.list()
+            if enrichment_names:
+                print("\nEnrichment plugins:")
+                for name in enrichment_names:
+                    print(f"  {name:<20} [enrichment]")
+        except ImportError:
+            pass
     elif cmd == "create":
         from lore.plugin.scaffold import scaffold_plugin
         project_dir = scaffold_plugin(args.name, output_dir=args.output)
@@ -790,6 +833,17 @@ def cmd_plugin(args: argparse.Namespace) -> None:
             sys.exit(1)
 
 
+def cmd_integrate(args: argparse.Namespace) -> None:
+    """Generate integration config files for AI agent platforms."""
+    from lore.integrate import generate_integration
+
+    generate_integration(
+        platform=args.platform,
+        server_url=args.url,
+        api_key=args.api_key,
+    )
+
+
 def cmd_suggest(args: argparse.Namespace) -> None:
     """Get proactive memory suggestions."""
     if args.feedback:
@@ -821,8 +875,11 @@ def cmd_suggest(args: argparse.Namespace) -> None:
         print("No suggestions at this time.")
         return
     for i, rec in enumerate(recs, 1):
-        print(f"  {i}. [{rec.score:.2f}] {rec.content_preview}")
-        if rec.explanation:
+        confidence_pct = round(rec.confidence * 100) if rec.confidence else 0
+        print(f"  {i}. [{rec.score:.2f}] (confidence: {confidence_pct}%) {rec.content_preview}")
+        if rec.reason:
+            print(f"     Reason: {rec.reason}")
+        elif rec.explanation:
             print(f"     {rec.explanation}")
         print(f"     ID: {rec.memory_id}")
         print()

@@ -19,11 +19,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/workspaces", tags=["workspaces"])
 
+# Workspace-level role hierarchy: viewer < member < admin < owner
+WORKSPACE_ROLES = ("viewer", "member", "admin", "owner")
+_ROLE_RANK = {r: i for i, r in enumerate(WORKSPACE_ROLES)}
+
+
+def _has_ws_permission(role: str, minimum: str) -> bool:
+    """Check if *role* meets the *minimum* required workspace role."""
+    return _ROLE_RANK.get(role, -1) >= _ROLE_RANK.get(minimum, 999)
+
 
 class WorkspaceCreateRequest(BaseModel):
     name: str
     slug: str
     settings: Dict[str, Any] = {}
+
+
+class WorkspaceUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    settings: Optional[Dict[str, Any]] = None
 
 
 class WorkspaceResponse(BaseModel):
@@ -38,7 +52,7 @@ class WorkspaceResponse(BaseModel):
 
 class MemberAddRequest(BaseModel):
     user_id: str
-    role: str = "writer"
+    role: str = "member"
 
 
 class MemberResponse(BaseModel):
@@ -160,6 +174,32 @@ async def update_workspace(
     )
 
 
+@router.put("/{workspace_id}", response_model=WorkspaceResponse)
+async def replace_workspace(
+    workspace_id: str,
+    body: WorkspaceUpdateRequest,
+    auth: AuthContext = Depends(require_role("admin")),
+) -> WorkspaceResponse:
+    """Full update of workspace fields (name and settings)."""
+    import json
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """UPDATE workspaces SET name = COALESCE($3, name),
+                      settings = COALESCE($4::jsonb, settings)
+               WHERE id = $1 AND org_id = $2 RETURNING *""",
+            workspace_id, auth.org_id,
+            body.name, json.dumps(body.settings) if body.settings is not None else None,
+        )
+    if not row:
+        raise HTTPException(404, "Workspace not found")
+    return WorkspaceResponse(
+        id=row["id"], org_id=row["org_id"], name=row["name"],
+        slug=row["slug"], settings=row["settings"] or {},
+        created_at=_ts(row["created_at"]),
+    )
+
+
 @router.delete("/{workspace_id}", status_code=204)
 async def archive_workspace(
     workspace_id: str,
@@ -181,6 +221,11 @@ async def add_member(
     body: MemberAddRequest,
     auth: AuthContext = Depends(require_role("admin")),
 ) -> MemberResponse:
+    if body.role not in WORKSPACE_ROLES:
+        raise HTTPException(
+            400,
+            f"Invalid role '{body.role}'. Must be one of: {', '.join(WORKSPACE_ROLES)}",
+        )
     from ulid import ULID
     member_id = str(ULID())
     pool = await get_pool()
@@ -226,15 +271,21 @@ async def update_member_role(
     body: Dict[str, str],
     auth: AuthContext = Depends(require_role("admin")),
 ) -> Dict[str, str]:
+    new_role = body.get("role", "member")
+    if new_role not in WORKSPACE_ROLES:
+        raise HTTPException(
+            400,
+            f"Invalid role '{new_role}'. Must be one of: {', '.join(WORKSPACE_ROLES)}",
+        )
     pool = await get_pool()
     async with pool.acquire() as conn:
         result = await conn.execute(
             "UPDATE workspace_members SET role = $1 WHERE workspace_id = $2 AND user_id = $3",
-            body.get("role", "writer"), workspace_id, user_id,
+            new_role, workspace_id, user_id,
         )
         if result == "UPDATE 0":
             raise HTTPException(404, "Member not found")
-    return {"status": "updated"}
+    return {"status": "updated", "role": new_role}
 
 
 @router.delete("/{workspace_id}/members/{user_id}", status_code=204)

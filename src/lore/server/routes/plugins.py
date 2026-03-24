@@ -43,7 +43,24 @@ class PluginInfo(BaseModel):
 @router.get("", response_model=List[PluginInfo])
 async def list_plugins() -> List[PluginInfo]:
     registry = _get_registry()
-    return [PluginInfo(**p) for p in registry.list_plugins()]
+    plugins = [PluginInfo(**p) for p in registry.list_plugins()]
+
+    # Also surface enrichment plugins from the lightweight SDK registry
+    try:
+        from lore.plugins import get_plugin_registry
+        enrichment_reg = get_plugin_registry()
+        sdk_names = {p.name for p in plugins}
+        for name in enrichment_reg.list():
+            if name not in sdk_names:
+                plugins.append(PluginInfo(
+                    name=name, version="1.0.0",
+                    description="Enrichment plugin",
+                    enabled=True,
+                ))
+    except ImportError:
+        pass
+
+    return plugins
 
 
 @router.post("/{name}/enable")

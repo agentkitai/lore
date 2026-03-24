@@ -80,8 +80,11 @@ class SloAlertResponse(BaseModel):
     created_at: Optional[str] = None
 
 
-VALID_METRICS = {"p50_latency", "p95_latency", "p99_latency", "hit_rate"}
-VALID_OPERATORS = {"lt", "gt"}
+VALID_METRICS = {
+    "p50_latency", "p95_latency", "p99_latency", "hit_rate",
+    "retrieval_latency_p95", "retrieval_recall", "uptime_pct",
+}
+VALID_OPERATORS = {"lt", "gt", "gte", "lte"}
 
 
 def _parse_jsonb(val) -> List[Dict[str, Any]]:
@@ -439,6 +442,14 @@ def _metric_sql(metric: str) -> str:
         "p95_latency": "percentile_cont(0.95) WITHIN GROUP (ORDER BY query_time_ms) AS value",
         "p99_latency": "percentile_cont(0.99) WITHIN GROUP (ORDER BY query_time_ms) AS value",
         "hit_rate": "(COUNT(*) FILTER (WHERE results_count > 0))::float / GREATEST(COUNT(*), 1) AS value",
+        "retrieval_latency_p95": "percentile_cont(0.95) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+        "retrieval_recall": (
+            "(COUNT(*) FILTER (WHERE results_count > 0))::float / GREATEST(COUNT(*), 1) AS value"
+        ),
+        "uptime_pct": (
+            "(COUNT(*) FILTER (WHERE query_time_ms IS NOT NULL))::float"
+            " / GREATEST(COUNT(*), 1) * 100.0 AS value"
+        ),
     }[metric]
 
 
@@ -450,6 +461,10 @@ def _check_threshold(
         return True  # No data = passing (no violation)
     if operator == "lt":
         return value < threshold
+    if operator == "lte":
+        return value <= threshold
     if operator == "gt":
         return value > threshold
+    if operator == "gte":
+        return value >= threshold
     return True

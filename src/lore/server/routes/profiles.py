@@ -29,6 +29,10 @@ class ProfileCreateRequest(BaseModel):
     tier_filters: Optional[List[str]] = None
     min_score: float = 0.3
     max_results: int = 10
+    k: Optional[int] = None  # number of results (alias for max_results)
+    threshold: Optional[float] = None  # similarity threshold (alias for min_score)
+    rerank: bool = False  # whether to apply reranking
+    include_graph: bool = True  # whether to include graph context
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -39,6 +43,10 @@ class ProfileUpdateRequest(BaseModel):
     tier_filters: Optional[List[str]] = None
     min_score: Optional[float] = None
     max_results: Optional[int] = None
+    k: Optional[int] = None
+    threshold: Optional[float] = None
+    rerank: Optional[bool] = None
+    include_graph: Optional[bool] = None
 
 
 class ProfileResponse(BaseModel):
@@ -51,9 +59,27 @@ class ProfileResponse(BaseModel):
     tier_filters: Optional[List[str]] = None
     min_score: float
     max_results: int
+    k: Optional[int] = None
+    threshold: Optional[float] = None
+    rerank: bool = False
+    include_graph: bool = True
     is_preset: bool
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
+
+
+# Default adaptive retrieval profiles
+DEFAULT_PROFILES = {
+    "precise": {"k": 3, "threshold": 0.8, "rerank": True, "include_graph": False,
+                "semantic_weight": 1.5, "graph_weight": 0.5, "recency_bias": 15.0,
+                "min_score": 0.8, "max_results": 3},
+    "broad": {"k": 10, "threshold": 0.5, "rerank": False, "include_graph": True,
+              "semantic_weight": 0.8, "graph_weight": 1.2, "recency_bias": 60.0,
+              "min_score": 0.5, "max_results": 10},
+    "balanced": {"k": 5, "threshold": 0.65, "rerank": True, "include_graph": True,
+                 "semantic_weight": 1.0, "graph_weight": 1.0, "recency_bias": 30.0,
+                 "min_score": 0.65, "max_results": 5},
+}
 
 
 def _ts(val) -> Optional[str]:
@@ -76,6 +102,10 @@ def _row_to_response(row) -> ProfileResponse:
         tier_filters=list(row["tier_filters"]) if row["tier_filters"] else None,
         min_score=float(row["min_score"]),
         max_results=row["max_results"],
+        k=row.get("k") if hasattr(row, "get") else getattr(row, "k", None),
+        threshold=float(row["threshold"]) if row.get("threshold") is not None else None,
+        rerank=row.get("rerank", False) if hasattr(row, "get") else getattr(row, "rerank", False),
+        include_graph=row.get("include_graph", True) if hasattr(row, "get") else getattr(row, "include_graph", True),
         is_preset=row["is_preset"],
         created_at=_ts(row["created_at"]),
         updated_at=_ts(row["updated_at"]),
@@ -139,6 +169,12 @@ async def create_profile(
 ) -> ProfileResponse:
     """Create a custom profile."""
     from ulid import ULID
+
+    # If k is provided, use it as max_results alias
+    max_results = body.k if body.k is not None else body.max_results
+    # If threshold is provided, use it as min_score alias
+    min_score = body.threshold if body.threshold is not None else body.min_score
+
     profile_id = str(ULID())
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -146,17 +182,33 @@ async def create_profile(
             row = await conn.fetchrow(
                 """INSERT INTO retrieval_profiles
                    (id, org_id, name, semantic_weight, graph_weight, recency_bias,
-                    tier_filters, min_score, max_results, is_preset)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+                    tier_filters, min_score, max_results, is_preset,
+                    k, threshold, rerank, include_graph)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE,
+                           $10, $11, $12, $13)
                    RETURNING *""",
                 profile_id, auth.org_id, body.name,
                 body.semantic_weight, body.graph_weight, body.recency_bias,
-                body.tier_filters, body.min_score, body.max_results,
+                body.tier_filters, min_score, max_results,
+                body.k, body.threshold, body.rerank, body.include_graph,
             )
         except Exception as e:
             if "unique" in str(e).lower():
                 raise HTTPException(409, f"Profile '{body.name}' already exists")
-            raise
+            # If the new columns don't exist yet, fall back to the original insert
+            if "column" in str(e).lower() and ("k" in str(e) or "rerank" in str(e) or "threshold" in str(e) or "include_graph" in str(e)):
+                row = await conn.fetchrow(
+                    """INSERT INTO retrieval_profiles
+                       (id, org_id, name, semantic_weight, graph_weight, recency_bias,
+                        tier_filters, min_score, max_results, is_preset)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+                       RETURNING *""",
+                    profile_id, auth.org_id, body.name,
+                    body.semantic_weight, body.graph_weight, body.recency_bias,
+                    body.tier_filters, min_score, max_results,
+                )
+            else:
+                raise
     return _row_to_response(row)
 
 
@@ -201,6 +253,26 @@ async def update_profile(
         if body.max_results is not None:
             params.append(body.max_results)
             updates.append(f"max_results = ${len(params)}")
+        if body.k is not None:
+            params.append(body.k)
+            updates.append(f"k = ${len(params)}")
+            # Also update max_results to keep them in sync
+            if body.max_results is None:
+                params.append(body.k)
+                updates.append(f"max_results = ${len(params)}")
+        if body.threshold is not None:
+            params.append(body.threshold)
+            updates.append(f"threshold = ${len(params)}")
+            # Also update min_score to keep them in sync
+            if body.min_score is None:
+                params.append(body.threshold)
+                updates.append(f"min_score = ${len(params)}")
+        if body.rerank is not None:
+            params.append(body.rerank)
+            updates.append(f"rerank = ${len(params)}")
+        if body.include_graph is not None:
+            params.append(body.include_graph)
+            updates.append(f"include_graph = ${len(params)}")
 
         if not updates:
             raise HTTPException(400, "No fields to update")
@@ -243,10 +315,61 @@ async def delete_profile(
         )
 
 
+@router.get("/defaults", response_model=Dict[str, Any])
+async def get_default_profiles() -> Dict[str, Any]:
+    """Return the built-in default adaptive retrieval profiles."""
+    return DEFAULT_PROFILES
+
+
+@router.put("/name/{profile_name}", response_model=ProfileResponse)
+async def update_profile_by_name(
+    profile_name: str,
+    body: ProfileUpdateRequest,
+    auth: AuthContext = Depends(require_role("admin")),
+) -> ProfileResponse:
+    """Update a profile by name (for convenience)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            "SELECT id, is_preset FROM retrieval_profiles WHERE name = $1 AND org_id = $2",
+            profile_name, auth.org_id,
+        )
+        if not existing:
+            raise HTTPException(404, f"Profile '{profile_name}' not found")
+        if existing["is_preset"]:
+            raise HTTPException(403, "Cannot modify preset profiles")
+
+    # Delegate to the ID-based update
+    return await update_profile(existing["id"], body, auth)
+
+
+@router.delete("/name/{profile_name}", status_code=204)
+async def delete_profile_by_name(
+    profile_name: str,
+    auth: AuthContext = Depends(require_role("admin")),
+) -> None:
+    """Delete a profile by name (for convenience)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        existing = await conn.fetchrow(
+            "SELECT id, is_preset FROM retrieval_profiles WHERE name = $1 AND org_id = $2",
+            profile_name, auth.org_id,
+        )
+        if not existing:
+            raise HTTPException(404, f"Profile '{profile_name}' not found")
+        if existing["is_preset"]:
+            raise HTTPException(403, "Cannot delete preset profiles")
+
+    await delete_profile(existing["id"], auth)
+
+
 async def resolve_profile(
     conn, org_id: str, profile_name: Optional[str], key_default: Optional[str],
 ) -> Optional[Dict[str, Any]]:
-    """Resolve a profile by name: explicit param > key default > None."""
+    """Resolve a profile by name: explicit param > key default > built-in default > None.
+
+    Checks the database first, then falls back to DEFAULT_PROFILES.
+    """
     name = profile_name or key_default
     if not name:
         return None
@@ -268,4 +391,15 @@ async def resolve_profile(
         profile = dict(row)
         _set_cached_profile(cache_key, profile)
         return profile
+
+    # Fall back to built-in default profiles
+    if name in DEFAULT_PROFILES:
+        profile = {
+            "name": name,
+            "is_preset": True,
+            **DEFAULT_PROFILES[name],
+        }
+        _set_cached_profile(cache_key, profile)
+        return profile
+
     return None

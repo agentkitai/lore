@@ -395,12 +395,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_topics.add_argument("--format", dest="fmt", default="brief", choices=["brief", "detailed"])
     p_topics.add_argument("--limit", type=int, default=50)
 
-    # review (E6)
-    p_review = sub.add_parser("review", help="Review pending knowledge graph connections")
+    # review (E6) — with risk scoring
+    p_review = sub.add_parser("review", help="Review pending knowledge graph connections (with risk scores)")
     p_review.add_argument("--approve", metavar="ID", default=None, help="Approve a relationship by ID")
     p_review.add_argument("--reject", metavar="ID", default=None, help="Reject a relationship by ID")
     p_review.add_argument("--approve-all", action="store_true", dest="approve_all", help="Approve all pending")
     p_review.add_argument("--reject-all", action="store_true", dest="reject_all", help="Reject all pending")
+    p_review.add_argument("--inbox", action="store_true", default=False,
+                          help="Show inbox sorted by risk score (highest risk first)")
+    p_review.add_argument("--min-risk", type=float, default=None, dest="min_risk",
+                          help="Only show items with risk score >= this value")
     p_review.add_argument("--limit", type=int, default=50, help="Max items to show (default: 50)")
 
     # slo
@@ -415,9 +419,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     slo_c = slo_sub.add_parser("create", help="Create an SLO")
     slo_c.add_argument("--name", required=True, dest="slo_name")
-    slo_c.add_argument("--metric", required=True, choices=["p50_latency", "p95_latency", "p99_latency", "hit_rate"])
+    slo_c.add_argument("--metric", required=True, choices=[
+        "p50_latency", "p95_latency", "p99_latency", "hit_rate",
+        "retrieval_latency_p95", "retrieval_recall", "uptime_pct",
+    ])
     slo_c.add_argument("--threshold", required=True, type=float)
-    slo_c.add_argument("--operator", default="lt", choices=["lt", "gt"])
+    slo_c.add_argument("--operator", default="lt", choices=["lt", "gt", "gte", "lte"])
     slo_c.add_argument("--window", type=int, default=60, dest="window_minutes")
 
     slo_d = slo_sub.add_parser("delete", help="Delete an SLO")
@@ -433,6 +440,7 @@ def build_parser() -> argparse.ArgumentParser:
     prof_sub = prof_parser.add_subparsers(dest="prof_command")
 
     prof_sub.add_parser("list", help="List profiles")
+    prof_sub.add_parser("defaults", help="Show built-in default profiles")
     prof_cr = prof_sub.add_parser("create", help="Create a profile")
     prof_cr.add_argument("--name", required=True)
     prof_cr.add_argument("--semantic-weight", type=float, default=1.0, dest="semantic_weight")
@@ -440,6 +448,17 @@ def build_parser() -> argparse.ArgumentParser:
     prof_cr.add_argument("--recency-bias", type=float, default=30.0, dest="recency_bias")
     prof_cr.add_argument("--min-score", type=float, default=0.3, dest="min_score")
     prof_cr.add_argument("--max-results", type=int, default=10, dest="max_results")
+    prof_cr.add_argument("--k", type=int, default=None, help="Number of results (alias for max-results)")
+    prof_cr.add_argument("--threshold", type=float, default=None, help="Similarity threshold (alias for min-score)")
+    prof_cr.add_argument("--rerank", action="store_true", default=False, help="Enable reranking")
+    prof_cr.add_argument("--include-graph", action="store_true", default=True, dest="include_graph",
+                         help="Include graph context (default: true)")
+    prof_cr.add_argument("--no-graph", action="store_false", dest="include_graph",
+                         help="Exclude graph context")
+
+    prof_apply = prof_sub.add_parser("apply", help="Test a profile with a retrieval query")
+    prof_apply.add_argument("--name", required=True, help="Profile name to apply")
+    prof_apply.add_argument("--query", required=True, help="Test query")
 
     prof_del = prof_sub.add_parser("delete", help="Delete a profile")
     prof_del.add_argument("profile_id")
@@ -518,6 +537,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_suggest.add_argument("--aggressiveness", type=float, default=None,
                            help="Set aggressiveness (0.0-1.0)")
 
+    # integrate
+    p_integrate = sub.add_parser("integrate", help="Generate integration config for AI agent platforms")
+    p_integrate.add_argument(
+        "--platform", required=True,
+        choices=["claude-code", "cursor", "codex", "openclaw"],
+        help="AI agent platform to integrate with",
+    )
+    p_integrate.add_argument(
+        "--url", default="http://localhost:8765",
+        help="Lore server URL (default: http://localhost:8765)",
+    )
+    p_integrate.add_argument(
+        "--api-key", default=None, dest="api_key",
+        help="Lore API key (or LORE_API_KEY env var)",
+    )
+
     # bootstrap
     p_boot = sub.add_parser("bootstrap", help="Validate prerequisites and set up Lore")
     p_boot.add_argument("--fix", action="store_true", help="Attempt to auto-fix missing dependencies")
@@ -525,6 +560,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_boot.add_argument("--skip-server", action="store_true", dest="skip_server", help="Skip server start/health check")
     p_boot.add_argument("--db-url", default=None, dest="db_url", help="Database URL (or DATABASE_URL env)")
     p_boot.add_argument("--verbose", action="store_true", help="Show all fix hints")
+
+    # backup
+    p_backup = sub.add_parser("backup", help="Full backup of all memories, facts, entities, relationships")
+    p_backup.add_argument("--output", "-o", default="backup.json", help="Output file path (default: backup.json)")
+
+    # restore
+    p_restore = sub.add_parser("restore", help="Restore from a backup file")
+    p_restore.add_argument("--input", "-i", required=True, dest="input_file", help="Path to backup JSON file")
+
+    # retention
+    p_ret = sub.add_parser("retention", help="Apply retention policy to remove old low-importance memories")
+    p_ret.add_argument("--max-age-days", type=int, default=90, dest="max_age_days",
+                        help="Delete memories older than N days (default: 90)")
+    p_ret.add_argument("--min-importance", type=float, default=0.3, dest="min_importance",
+                        help="Only delete memories below this importance score (default: 0.3)")
+    p_ret.add_argument("--archive", action="store_true", default=False,
+                        help="Export affected memories to JSON before deleting")
+    p_ret.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",
+                        help="Preview what would be deleted without making changes")
 
     # serve
     p_serve = sub.add_parser("serve", help="Start Lore HTTP server")
@@ -562,11 +616,14 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     )
     from lore.cli.commands.keys import cmd_keys_create, cmd_keys_list, cmd_keys_revoke
     from lore.cli.commands.manage import (
+        cmd_backup,
         cmd_export,
         cmd_forget,
         cmd_import,
         cmd_memories,
         cmd_recent,
+        cmd_restore,
+        cmd_retention,
         cmd_stats,
     )
     from lore.cli.commands.misc import (
@@ -581,6 +638,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         cmd_freshness,
         cmd_github_sync,
         cmd_ingest,
+        cmd_integrate,
         cmd_on_this_day,
         cmd_plugin,
         cmd_policy,
@@ -653,9 +711,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "snapshot-save": cmd_snapshot_save,
         "topics": cmd_topics,
         "review": cmd_review,
+        "integrate": cmd_integrate,
         "bootstrap": cmd_bootstrap,
         "audit": cmd_audit,
         "suggest": cmd_suggest,
+        "backup": cmd_backup,
+        "restore": cmd_restore,
+        "retention": cmd_retention,
         "restore-drill": lambda a: print("Use: lore policy drill (via API)"),
         "serve": cmd_serve,
         "mcp": cmd_mcp,

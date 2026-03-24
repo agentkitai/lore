@@ -45,6 +45,7 @@ from lore.server.routes.plugins import router as plugins_router
 from lore.server.routes.policies import router as policies_router
 from lore.server.routes.profiles import router as profiles_router
 from lore.server.routes.recent import router as recent_router
+from lore.server.routes.retention import router as retention_router
 from lore.server.routes.recommendations import router as recommendations_router
 from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.review import router as review_router
@@ -132,6 +133,7 @@ app.include_router(setup_validation_router)
 app.include_router(slo_router)
 app.include_router(profiles_router)
 app.include_router(policies_router)
+app.include_router(retention_router)
 app.include_router(workspaces_router)
 app.include_router(audit_router)
 app.include_router(plugins_router)

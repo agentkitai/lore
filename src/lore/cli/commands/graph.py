@@ -151,7 +151,7 @@ def cmd_topics(args) -> None:
 
 
 def cmd_review(args: argparse.Namespace) -> None:
-    """Review pending knowledge graph connections (E6)."""
+    """Review pending knowledge graph connections with risk scoring."""
     lore = _helpers._get_lore(args.db)
 
     if args.approve:
@@ -186,21 +186,57 @@ def cmd_review(args: argparse.Namespace) -> None:
         print(f"Rejected {count} connection(s).")
         return
 
-    # Default: list pending
+    # Default: list pending with risk scores
     items = lore.get_pending_reviews(limit=args.limit)
     lore.close()
     if not items:
         print("Nothing to review.")
         return
 
-    print(f"Pending connections ({len(items)} total):\n")
-    for i, item in enumerate(items, 1):
+    # Compute risk scores for each item
+    scored_items = []
+    for item in items:
         rel = item.relationship
-        print(f"  {i}. {item.source_entity_name} --[{rel.rel_type}]--> {item.target_entity_name}")
+        weight = rel.weight if rel.weight is not None else 1.0
+
+        # Compute a simple risk score for CLI (mirrors server-side logic)
+        confidence_risk = max(0.0, (1.0 - min(weight, 1.0)) * 40.0)
+        # Use mention counts if available from the entity cache
+        source_entity = None
+        target_entity = None
+        try:
+            source_entity = lore._store.get_entity(rel.source_entity_id) if hasattr(lore, '_store') else None
+            target_entity = lore._store.get_entity(rel.target_entity_id) if hasattr(lore, '_store') else None
+        except Exception:
+            pass
+        source_mentions = source_entity.mention_count if source_entity else 0
+        target_mentions = target_entity.mention_count if target_entity else 0
+        entity_importance = min(25.0, max(source_mentions, target_mentions) * 2.5)
+        total_risk = round(confidence_risk + entity_importance, 1)
+        scored_items.append((item, total_risk))
+
+    # Sort by risk if --inbox flag is set
+    use_inbox = getattr(args, "inbox", False)
+    if use_inbox:
+        scored_items.sort(key=lambda x: x[1], reverse=True)
+
+    # Filter by min-risk if specified
+    min_risk = getattr(args, "min_risk", None)
+    if min_risk is not None:
+        scored_items = [(item, risk) for item, risk in scored_items if risk >= min_risk]
+
+    header = "Inbox (sorted by risk)" if use_inbox else "Pending connections"
+    print(f"{header} ({len(scored_items)} total):\n")
+    for i, (item, risk) in enumerate(scored_items, 1):
+        rel = item.relationship
+        risk_label = "HIGH" if risk >= 40 else "MED" if risk >= 20 else "LOW"
+        print(f"  {i}. [{risk_label} {risk:.0f}] {item.source_entity_name} --[{rel.rel_type}]--> {item.target_entity_name}")
         if item.source_memory_content:
             snippet = item.source_memory_content[:100].replace("\n", " ")
             print(f"     Source: \"{snippet}\"")
-        print(f"     ID: {rel.id}  Created: {rel.created_at[:19] if rel.created_at else 'unknown'}")
+        print(f"     ID: {rel.id}  Weight: {rel.weight:.2f}  Created: {rel.created_at[:19] if rel.created_at else 'unknown'}")
         print()
     print("Use --approve <id> or --reject <id> to act on items.")
     print("Use --approve-all or --reject-all for bulk actions.")
+    if not use_inbox:
+        print("Use --inbox to sort by risk score (highest first).")

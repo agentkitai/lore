@@ -22,7 +22,7 @@ class TestWorkspaceModels:
     def test_member_add_request(self):
         from lore.server.routes.workspaces import MemberAddRequest
         req = MemberAddRequest(user_id="user-1")
-        assert req.role == "writer"  # default
+        assert req.role == "member"  # default
 
     def test_member_response(self):
         from lore.server.routes.workspaces import MemberResponse

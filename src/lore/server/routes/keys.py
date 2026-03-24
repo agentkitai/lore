@@ -33,6 +33,7 @@ class KeyCreateRequest(BaseModel):
     name: str
     project: Optional[str] = None
     is_root: bool = False
+    workspace_id: Optional[str] = None
 
 
 class KeyCreateResponse(BaseModel):
@@ -40,6 +41,7 @@ class KeyCreateResponse(BaseModel):
     key: str
     name: str
     project: Optional[str]
+    workspace_id: Optional[str] = None
 
 
 class KeyInfo(BaseModel):
@@ -51,6 +53,7 @@ class KeyInfo(BaseModel):
     created_at: datetime
     last_used_at: Optional[datetime]
     revoked: bool
+    workspace_id: Optional[str] = None
 
 
 class KeyListResponse(BaseModel):
@@ -84,23 +87,32 @@ async def create_key(
 
     pool = await get_pool()
     async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, project, is_root)
-               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-            key_id,
-            auth.org_id,
-            body.name,
-            key_hash,
-            key_prefix,
-            body.project,
-            body.is_root,
+        # Check if workspace_id column exists to stay backward-compatible
+        has_ws_col = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='api_keys' AND column_name='workspace_id')"
         )
+        if has_ws_col and body.workspace_id:
+            await conn.execute(
+                """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                key_id, auth.org_id, body.name, key_hash, key_prefix,
+                body.project, body.is_root, body.workspace_id,
+            )
+        else:
+            await conn.execute(
+                """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, project, is_root)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                key_id, auth.org_id, body.name, key_hash, key_prefix,
+                body.project, body.is_root,
+            )
 
     return KeyCreateResponse(
         id=key_id,
         key=raw_key,
         name=body.name,
         project=body.project,
+        workspace_id=body.workspace_id,
     )
 
 
@@ -116,11 +128,15 @@ async def list_keys(
 
     pool = await get_pool()
     async with pool.acquire() as conn:
+        has_ws_col = await conn.fetchval(
+            "SELECT EXISTS(SELECT 1 FROM information_schema.columns "
+            "WHERE table_name='api_keys' AND column_name='workspace_id')"
+        )
+        cols = "id, name, key_prefix, project, is_root, created_at, last_used_at, revoked_at"
+        if has_ws_col:
+            cols += ", workspace_id"
         rows = await conn.fetch(
-            """SELECT id, name, key_prefix, project, is_root, created_at,
-                      last_used_at, revoked_at
-               FROM api_keys WHERE org_id = $1
-               ORDER BY created_at""",
+            f"SELECT {cols} FROM api_keys WHERE org_id = $1 ORDER BY created_at",
             auth.org_id,
         )
 
@@ -134,6 +150,7 @@ async def list_keys(
             created_at=r["created_at"],
             last_used_at=r["last_used_at"],
             revoked=r["revoked_at"] is not None,
+            workspace_id=r.get("workspace_id"),
         )
         for r in rows
     ]

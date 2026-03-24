@@ -148,3 +148,84 @@ def cmd_import(args: argparse.Namespace) -> None:
     for w in result.warnings[:10]:
         print(f"  Warning: {w}")
     print(f"Duration: {result.duration_ms}ms")
+
+
+def cmd_backup(args: argparse.Namespace) -> None:
+    """Full backup — export all data to a JSON file."""
+    lore = _helpers._get_lore(args.db)
+    try:
+        result = lore.export_data(
+            format="json",
+            output=args.output,
+            include_embeddings=False,
+            pretty=True,
+        )
+    except Exception as exc:
+        lore.close()
+        print(f"Backup failed: {exc}", file=sys.stderr)
+        sys.exit(2)
+    lore.close()
+    print(f"Backup written to: {result.path}")
+    print(
+        f"  Memories: {result.memories}, Entities: {result.entities}, "
+        f"Relationships: {result.relationships}, Facts: {result.facts}"
+    )
+    print(f"  Hash: {result.content_hash}")
+
+
+def cmd_restore(args: argparse.Namespace) -> None:
+    """Restore from a backup JSON file, skipping duplicates."""
+    import os
+
+    if not os.path.exists(args.input_file):
+        print(f"File not found: {args.input_file}", file=sys.stderr)
+        sys.exit(1)
+
+    lore = _helpers._get_lore(args.db)
+    try:
+        result = lore.import_data(
+            file_path=args.input_file,
+            overwrite=False,
+            skip_embeddings=False,
+            dry_run=False,
+        )
+    except ValueError as exc:
+        lore.close()
+        print(f"Restore failed: {exc}", file=sys.stderr)
+        sys.exit(2)
+    except Exception as exc:
+        lore.close()
+        print(f"Restore failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+    lore.close()
+    print(
+        f"Restored — Total: {result.total}, Imported: {result.imported}, "
+        f"Skipped (duplicates): {result.skipped}, Errors: {result.errors}"
+    )
+    if result.embeddings_regenerated:
+        print(f"Embeddings regenerated: {result.embeddings_regenerated}")
+
+
+def cmd_retention(args: argparse.Namespace) -> None:
+    """Apply a retention policy to prune old low-importance memories."""
+    from lore.retention import RetentionPolicy, apply_retention
+
+    lore = _helpers._get_lore(args.db)
+    policy = RetentionPolicy(
+        max_age_days=args.max_age_days,
+        min_importance_score=args.min_importance,
+        archive_on_expire=args.archive,
+        dry_run=args.dry_run,
+    )
+    result = apply_retention(lore, policy)
+    lore.close()
+
+    prefix = "[dry-run] " if result.dry_run else ""
+    print(f"{prefix}Retention complete:")
+    print(f"  Deleted: {result.deleted_count}")
+    if policy.archive_on_expire:
+        print(f"  Archived: {result.archived_count}")
+    if result.affected_ids:
+        print(f"  Affected IDs: {', '.join(result.affected_ids[:20])}")
+        if len(result.affected_ids) > 20:
+            print(f"  ... and {len(result.affected_ids) - 20} more")

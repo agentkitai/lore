@@ -26,6 +26,8 @@ class RecommendationResponse(BaseModel):
     content_preview: str
     score: float
     explanation: str
+    reason: str = ""
+    confidence: float = 0.0
 
 
 class RecommendationRequest(BaseModel):
@@ -158,9 +160,36 @@ async def post_recommendations(
             content_preview=rec.content_preview,
             score=round(rec.score, 4),
             explanation=rec.explanation,
+            reason=rec.reason,
+            confidence=rec.confidence,
         )
         for rec in results
     ]
+
+
+@router.get("/proactive", response_model=List[RecommendationResponse])
+async def proactive_recommendations(
+    context: str = Query("", description="Current session context"),
+    entities: str = Query("", description="Comma-separated entity names"),
+    max_results: int = Query(5, ge=1, le=20),
+    auth: AuthContext = Depends(get_auth_context),
+) -> List[RecommendationResponse]:
+    """Return relevant memories the user might not have asked for.
+
+    This endpoint takes current context and proactively surfaces
+    memories that could be useful based on multi-signal scoring.
+    """
+    if not context:
+        return []
+
+    session_entities = [e.strip() for e in entities.split(",") if e.strip()] if entities else []
+
+    body = RecommendationRequest(
+        context=context,
+        session_entities=session_entities,
+        max_results=max_results,
+    )
+    return await post_recommendations(body, auth)
 
 
 @router.post("/{memory_id}/feedback")

@@ -23,6 +23,8 @@ class Recommendation:
     score: float
     signals: List[RecommendationSignal] = field(default_factory=list)
     explanation: str = ""
+    reason: str = ""
+    confidence: float = 0.0
 
 
 @dataclass

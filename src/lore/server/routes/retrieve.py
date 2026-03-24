@@ -115,6 +115,9 @@ async def retrieve(
     min_score: float = Query(0.3, ge=0.0, le=1.0, description="Minimum relevance score"),
     format: str = Query("xml", description="Output format: xml, markdown, raw"),
     project: Optional[str] = Query(None, description="Filter by project"),
+    profile: Optional[str] = Query(
+        None, description="Retrieval profile name (e.g. precise, broad, balanced)",
+    ),
     include_session_context: bool = Query(
         True, description="Append recent session_snapshot memories (last 24h)",
     ),
@@ -124,8 +127,35 @@ async def retrieve(
 
     Returns semantically similar memories with formatted output
     suitable for injection into LLM prompts.
+
+    When a --profile is specified, its settings (k, threshold, etc.)
+    override the default limit/min_score values.
     """
     start = time.monotonic()
+
+    # Resolve profile if specified — override limit/min_score from profile settings
+    if profile:
+        from lore.server.routes.profiles import resolve_profile as _resolve_profile
+
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            resolved = await _resolve_profile(conn, auth.org_id, profile, None)
+        if resolved:
+            # Profile k/max_results overrides limit
+            if resolved.get("k") is not None:
+                limit = resolved["k"]
+            elif resolved.get("max_results") is not None:
+                limit = resolved["max_results"]
+            # Profile threshold/min_score overrides min_score
+            if resolved.get("threshold") is not None:
+                min_score = resolved["threshold"]
+            elif resolved.get("min_score") is not None:
+                min_score = resolved["min_score"]
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Profile '{profile}' not found. Use GET /v1/profiles to list available profiles.",
+            )
 
     # Validate format
     if format not in VALID_FORMATS:

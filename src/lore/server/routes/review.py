@@ -22,6 +22,15 @@ router = APIRouter(prefix="/v1/review", tags=["review"])
 # ── Response models ───────────────────────────────────────────────
 
 
+class RiskScore(BaseModel):
+    """Risk scoring breakdown for a pending connection."""
+    total: float = 0.0
+    confidence_risk: float = 0.0  # based on relationship weight / confidence
+    source_reliability: float = 0.0  # based on source memory's importance score
+    entity_importance: float = 0.0  # based on entity mention counts
+    staleness_risk: float = 0.0  # based on age of the relationship
+
+
 class ReviewItemResponse(BaseModel):
     id: str
     source_entity: Dict[str, Any]
@@ -30,6 +39,7 @@ class ReviewItemResponse(BaseModel):
     weight: float = 1.0
     source_memory_id: Optional[str] = None
     source_memory_content: Optional[str] = None
+    risk_score: Optional[RiskScore] = None
     created_at: Optional[str] = None
 
 
@@ -70,6 +80,46 @@ async def _table_exists(conn, table_name: str) -> bool:
     )
 
 
+def _compute_risk_score(
+    weight: float,
+    source_importance: Optional[float],
+    source_mention_count: int,
+    target_mention_count: int,
+    age_hours: float,
+) -> RiskScore:
+    """Compute a composite risk score for a pending relationship.
+
+    Higher score = higher risk = needs more careful review.
+    Components:
+    - confidence_risk: low weight means the connection is uncertain (0-40 points)
+    - source_reliability: low importance_score on source memory (0-25 points)
+    - entity_importance: high-mention entities are more impactful if wrong (0-25 points)
+    - staleness_risk: older pending items may be stale context (0-10 points)
+    """
+    # Confidence risk: inverse of weight, scaled 0-40
+    confidence_risk = round(max(0.0, (1.0 - min(weight, 1.0)) * 40.0), 2)
+
+    # Source reliability: inverse of importance, scaled 0-25
+    imp = source_importance if source_importance is not None else 0.5
+    source_reliability = round(max(0.0, (1.0 - min(imp, 1.0)) * 25.0), 2)
+
+    # Entity importance: high-mention entities carry more risk, scaled 0-25
+    max_mentions = max(source_mention_count, target_mention_count, 1)
+    entity_importance = round(min(25.0, max_mentions * 2.5), 2)
+
+    # Staleness risk: older items get small penalty, scaled 0-10
+    staleness_risk = round(min(10.0, age_hours / 168.0 * 10.0), 2)  # 168h = 1 week
+
+    total = round(confidence_risk + source_reliability + entity_importance + staleness_risk, 2)
+    return RiskScore(
+        total=total,
+        confidence_risk=confidence_risk,
+        source_reliability=source_reliability,
+        entity_importance=entity_importance,
+        staleness_risk=staleness_risk,
+    )
+
+
 # ── GET /v1/review ────────────────────────────────────────────────
 
 
@@ -99,9 +149,9 @@ async def get_pending_reviews(
             f"""SELECT r.id, r.source_entity_id, r.target_entity_id,
                        r.rel_type, r.weight, r.source_memory_id, r.created_at,
                        se.name as source_name, se.entity_type as source_type,
-                       se.id as se_id,
+                       se.id as se_id, se.mention_count as source_mentions,
                        te.name as target_name, te.entity_type as target_type,
-                       te.id as te_id
+                       te.id as te_id, te.mention_count as target_mentions
                 FROM relationships r
                 JOIN entities se ON se.id = r.source_entity_id
                 JOIN entities te ON te.id = r.target_entity_id
@@ -118,14 +168,33 @@ async def get_pending_reviews(
         items: List[ReviewItemResponse] = []
         for row in rows:
             mem_content = None
+            source_importance = None
             if row["source_memory_id"]:
                 mem_row = await conn.fetchrow(
-                    "SELECT content FROM memories WHERE id = $1",
+                    "SELECT content, importance_score FROM memories WHERE id = $1",
                     row["source_memory_id"],
                 )
                 if mem_row:
                     content = mem_row["content"] or ""
                     mem_content = content[:200]
+                    source_importance = float(mem_row["importance_score"]) if mem_row["importance_score"] is not None else None
+
+            # Compute age in hours
+            age_hours = 0.0
+            if row["created_at"]:
+                from datetime import datetime, timezone
+                now = datetime.now(timezone.utc)
+                created = row["created_at"]
+                if hasattr(created, "timestamp"):
+                    age_hours = (now.timestamp() - created.timestamp()) / 3600.0
+
+            risk = _compute_risk_score(
+                weight=float(row["weight"] or 1.0),
+                source_importance=source_importance,
+                source_mention_count=int(row.get("source_mentions") or 0),
+                target_mention_count=int(row.get("target_mentions") or 0),
+                age_hours=age_hours,
+            )
 
             items.append(ReviewItemResponse(
                 id=row["id"],
@@ -143,10 +212,48 @@ async def get_pending_reviews(
                 weight=float(row["weight"] or 1.0),
                 source_memory_id=row["source_memory_id"],
                 source_memory_content=mem_content,
+                risk_score=risk,
                 created_at=_ts(row["created_at"]),
             ))
 
     return ReviewListResponse(pending=items, total_pending=total or 0)
+
+
+# ── GET /v1/review/inbox ──────────────────────────────────────────
+
+
+@router.get("/inbox", response_model=ReviewListResponse)
+async def review_inbox(
+    limit: int = Query(50, ge=1, le=500),
+    rel_type: Optional[str] = Query(None),
+    min_risk: Optional[float] = Query(None, ge=0.0, description="Minimum risk score to include"),
+) -> ReviewListResponse:
+    """Return pending review items sorted by risk score (highest risk first).
+
+    This is the primary endpoint for the approval inbox, surfacing
+    the most important items that need attention first.
+    """
+    # Fetch a larger set and sort by risk score
+    result = await get_pending_reviews(limit=min(limit * 2, 500), rel_type=rel_type)
+
+    # Sort by risk score descending (highest risk first)
+    sorted_items = sorted(
+        result.pending,
+        key=lambda item: item.risk_score.total if item.risk_score else 0.0,
+        reverse=True,
+    )
+
+    # Filter by min_risk if specified
+    if min_risk is not None:
+        sorted_items = [
+            item for item in sorted_items
+            if item.risk_score and item.risk_score.total >= min_risk
+        ]
+
+    # Trim to requested limit
+    sorted_items = sorted_items[:limit]
+
+    return ReviewListResponse(pending=sorted_items, total_pending=result.total_pending)
 
 
 # ── POST /v1/review/{relationship_id} ────────────────────────────

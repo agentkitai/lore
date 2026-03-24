@@ -114,12 +114,17 @@ class RecommendationEngine:
             threshold = 1.0 - self.aggressiveness
             if total_score >= threshold * 0.5:
                 preview = memory.content[:150] + "..." if len(memory.content) > 150 else memory.content
+                explanation = self._build_explanation(signal_scores)
+                reason = self._build_reason(signal_scores)
+                confidence = self._compute_confidence(signal_scores, total_score)
                 recommendations.append(Recommendation(
                     memory_id=memory.id,
                     content_preview=preview,
                     score=total_score,
                     signals=signal_scores,
-                    explanation=self._build_explanation(signal_scores),
+                    explanation=explanation,
+                    reason=reason,
+                    confidence=confidence,
                 ))
 
         # Sort by score and return top N
@@ -131,3 +136,43 @@ class RecommendationEngine:
         top = sorted(signals, key=lambda s: s.score * s.weight, reverse=True)[:3]
         parts = [s.explanation for s in top if s.score > 0]
         return "; ".join(parts) if parts else "Low relevance"
+
+    def _build_reason(self, signals: List[RecommendationSignal]) -> str:
+        """Build a concise reason string explaining *why* this memory is relevant."""
+        top = sorted(signals, key=lambda s: s.score * s.weight, reverse=True)
+        top = [s for s in top if s.score > 0][:2]
+        if not top:
+            return "Marginal relevance across all signals."
+        primary = top[0]
+        reason_map = {
+            "context_similarity": "This memory closely matches your current context.",
+            "entity_overlap": "Shares key entities with your session.",
+            "temporal_pattern": "Created at a similar time of day.",
+            "access_pattern": "Frequently accessed memory.",
+            "graph_proximity": "Connected via knowledge graph relationships.",
+        }
+        reason = reason_map.get(primary.name, primary.explanation)
+        if len(top) > 1:
+            secondary = reason_map.get(top[1].name, top[1].explanation)
+            reason += f" Also: {secondary.lower()}"
+        return reason
+
+    def _compute_confidence(
+        self, signals: List[RecommendationSignal], total_score: float,
+    ) -> float:
+        """Compute a 0-1 confidence score for the recommendation.
+
+        Confidence is higher when multiple signals agree (not just one
+        dominant signal) and the total score is strong.
+        """
+        if not signals:
+            return 0.0
+        active = [s for s in signals if s.score > 0]
+        if not active:
+            return 0.0
+        # Signal agreement: more active signals -> higher confidence
+        agreement = min(1.0, len(active) / max(len(signals), 1))
+        # Score magnitude (capped at 1.0)
+        magnitude = min(1.0, total_score / 0.5)
+        confidence = 0.6 * magnitude + 0.4 * agreement
+        return round(min(1.0, confidence), 3)
