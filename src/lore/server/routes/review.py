@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from lore.server.db import get_pool
+from lore.server.routes._parsers import _ts
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +61,6 @@ class BulkReviewResponse(BaseModel):
 
 
 # ── Helpers ───────────────────────────────────────────────────────
-
-
-def _ts(val) -> Optional[str]:
-    if val is None:
-        return None
-    from datetime import datetime
-    if isinstance(val, datetime):
-        return val.isoformat()
-    return str(val)
 
 
 async def _table_exists(conn, table_name: str) -> bool:

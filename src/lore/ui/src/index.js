@@ -83,23 +83,37 @@ async function init() {
     renderer.layoutManager = layout;
     interaction.layoutManager = layout;
 
-    // Simulation tick
+    // Simulation tick — schedule redraws while sim is active
     sim.on('tick', () => {
       interaction.rebuildQuadtree();
-      renderer.render();
+      scheduleRedraw();
     });
 
-    // Start rendering loop (for search pulse animation etc.)
-    let animating = true;
-    const animate = () => {
-      if (!animating) return;
-      if (sim.alpha() < 0.001) {
-        // Only re-render on state changes when sim is cooled
-        renderer.render();
+    // Event-driven rendering — only run RAF when needed
+    let needsRedraw = true;
+    let rafId = null;
+
+    const scheduleRedraw = () => {
+      needsRedraw = true;
+      if (rafId === null) {
+        rafId = requestAnimationFrame(animate);
       }
-      requestAnimationFrame(animate);
     };
-    requestAnimationFrame(animate);
+
+    const animate = () => {
+      rafId = null;
+      if (needsRedraw || sim.alpha() >= 0.001) {
+        renderer.render();
+        needsRedraw = false;
+      }
+      // Keep looping only while simulation is still active
+      if (sim.alpha() >= 0.001) {
+        rafId = requestAnimationFrame(animate);
+      }
+    };
+
+    // Kick off initial loop
+    scheduleRedraw();
 
     // Panels
     const detail = new DetailPanel(detailContainer, state, interaction);
@@ -219,15 +233,16 @@ async function init() {
       renderer.resize(w, h);
       sim.force('center').x(w / 2).y(h / 2);
       sim.alpha(0.1).restart();
+      scheduleRedraw();
     }, 200);
     window.addEventListener('resize', handleResize);
 
-    // Filter change re-renders
+    // Filter/search changes trigger redraw
     state.addEventListener('filterChange', () => {
-      renderer.render();
+      scheduleRedraw();
     });
     state.addEventListener('searchChange', () => {
-      renderer.render();
+      scheduleRedraw();
     });
 
     // Update status bar

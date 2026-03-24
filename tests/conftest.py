@@ -18,5 +18,6 @@ def _patch_cli_get_lore():
         from lore import Lore
         return Lore(store=shared_store)
 
-    with patch("lore.cli._get_lore", side_effect=_make_test_lore):
+    with patch("lore.cli._helpers._get_lore", side_effect=_make_test_lore), \
+         patch("lore.cli._get_lore", side_effect=_make_test_lore):
         yield

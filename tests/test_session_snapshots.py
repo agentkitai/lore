@@ -261,7 +261,7 @@ class TestSaveSnapshotMCP:
 class TestSnapshotSaveCLI:
     def test_cli_snapshot_save(self, capsys):
         from lore.cli import main
-        with patch("lore.cli._get_lore", return_value=_make_lore()):
+        with patch("lore.cli._helpers._get_lore", return_value=_make_lore()):
             main(["snapshot-save", "key decisions"])
         captured = capsys.readouterr()
         assert "Snapshot saved:" in captured.out

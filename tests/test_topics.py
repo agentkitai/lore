@@ -592,7 +592,7 @@ class TestTopicsCLI:
     def test_cli_topics_list(self, capsys):
         lore = _make_lore()
         _populate_entities(lore._store, count=5)
-        with patch("lore.cli._get_lore", return_value=lore):
+        with patch("lore.cli._helpers._get_lore", return_value=lore):
             from lore.cli import main
             main(["topics", "--min-mentions", "1"])
         captured = capsys.readouterr()
@@ -601,7 +601,7 @@ class TestTopicsCLI:
     def test_cli_topics_detail(self, capsys):
         lore = _make_lore()
         _populate_entities(lore._store, count=5)
-        with patch("lore.cli._get_lore", return_value=lore):
+        with patch("lore.cli._helpers._get_lore", return_value=lore):
             from lore.cli import main
             main(["topics", "entity_4"])
         captured = capsys.readouterr()
@@ -610,7 +610,7 @@ class TestTopicsCLI:
 
     def test_cli_topics_no_graph(self, capsys):
         lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed, knowledge_graph=False)
-        with patch("lore.cli._get_lore", return_value=lore):
+        with patch("lore.cli._helpers._get_lore", return_value=lore):
             from lore.cli import main
             main(["topics"])
         captured = capsys.readouterr()

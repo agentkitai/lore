@@ -35,14 +35,16 @@ body {
 /* Grid layout */
 .app {
   display: grid;
-  grid-template-rows: var(--header-h) 1fr var(--timeline-h);
+  grid-template-rows: var(--header-h) auto 1fr var(--timeline-h);
   grid-template-columns: var(--filter-w) 1fr var(--detail-w);
   grid-template-areas:
     "header header header"
+    "chips chips chips"
     "filters canvas detail"
     "timeline timeline timeline";
   height: 100vh;
 }
+.filter-chip-bar { grid-area: chips; }
 
 /* Header */
 .header {
@@ -537,6 +539,121 @@ body {
 .alert-time { color: var(--text-dim); font-size: 11px; }
 .slo-empty { color: var(--text-dim); font-size: 12px; padding: 12px 0; }
 
+/* Focus-visible accessibility (uiux-001) */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+a:focus-visible,
+[tabindex="0"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Semantic button variants (uiux-003) */
+.btn-primary { background: #2563eb; color: white; border: 1px solid #2563eb; }
+.btn-primary:hover { background: #1d4ed8; }
+.btn-secondary { background: #374151; color: white; border: 1px solid #374151; }
+.btn-secondary:hover { background: #4b5563; }
+.btn-danger { background: #dc2626; color: white; border: 1px solid #dc2626; }
+.btn-danger:hover { background: #b91c1c; }
+.btn-ghost { background: transparent; color: #9ca3af; border: 1px solid transparent; }
+.btn-ghost:hover { background: #1f2937; }
+
+/* Skeleton loading states (uiux-004) */
+.skeleton {
+  background: linear-gradient(90deg, #1f2937 25%, #374151 50%, #1f2937 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: 4px;
+}
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.skeleton-line { height: 14px; margin-bottom: 8px; }
+.skeleton-line:last-child { width: 60%; }
+.skeleton-block { height: 80px; margin-bottom: 12px; }
+.skeleton-card { height: 48px; margin-bottom: 8px; }
+
+/* Filter chip bar (uiux-005) */
+.filter-chip-bar {
+  display: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 16px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  grid-column: 1 / -1;
+}
+.filter-chip-bar.active { display: flex; }
+.filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  font-size: 11px;
+  color: var(--accent);
+}
+.filter-chip button {
+  background: none;
+  border: none;
+  color: var(--accent);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+.filter-chip button:hover { color: #fff; }
+
+/* Mobile overflow menu (uiux-002) */
+.overflow-menu-wrapper { position: relative; display: none; }
+.overflow-toggle {
+  padding: 4px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+}
+.overflow-toggle:hover { color: var(--text); border-color: var(--accent); }
+.overflow-dropdown {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 0;
+  z-index: 100;
+  min-width: 160px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+}
+.overflow-dropdown.open { display: block; }
+.overflow-dropdown button {
+  display: block;
+  width: 100%;
+  padding: 8px 16px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+}
+.overflow-dropdown button:hover { background: var(--bg-input); }
+
+@media (max-width: 768px) {
+  .overflow-menu-wrapper { display: block; }
+  .header-controls .overflow-hide-mobile { display: none; }
+}
+
 /* Screen reader only */
 .sr-only {
   position: absolute;
@@ -563,6 +680,12 @@ body.high-contrast {
 @media (max-width: 1024px) {
   .app {
     grid-template-columns: 48px 1fr 0;
+    grid-template-rows: var(--header-h) auto 1fr var(--timeline-h);
+    grid-template-areas:
+      "header header header"
+      "chips chips chips"
+      "filters canvas detail"
+      "timeline timeline timeline";
   }
   .filter-panel { width: 48px; overflow: hidden; }
   .filter-panel .filter-inner { display: none; }
@@ -582,9 +705,10 @@ body.high-contrast {
 @media (max-width: 768px) {
   .app {
     grid-template-columns: 1fr;
-    grid-template-rows: var(--header-h) 1fr;
+    grid-template-rows: var(--header-h) auto 1fr;
     grid-template-areas:
       "header"
+      "chips"
       "canvas";
   }
   .filter-panel {
@@ -625,14 +749,26 @@ body.high-contrast {
     <div id="search-container"></div>
     <div class="header-controls">
       <button class="view-btn active" data-mode="force">Force</button>
-      <button class="view-btn" data-mode="cluster-project">By Project</button>
-      <button class="view-btn" data-mode="cluster-type">By Type</button>
-      <button class="header-btn" id="show-all-toggle" title="Toggle between recent (30d) and all memories">Show All</button>
-      <button class="header-btn" id="stats-btn">Stats</button>
-      <button class="header-btn" id="slo-btn" title="SLO Dashboard">SLO</button>
-      <button class="header-btn" id="contrast-toggle" title="High contrast">HC</button>
+      <button class="view-btn overflow-hide-mobile" data-mode="cluster-project">By Project</button>
+      <button class="view-btn overflow-hide-mobile" data-mode="cluster-type">By Type</button>
+      <button class="header-btn overflow-hide-mobile" id="show-all-toggle" title="Toggle between recent (30d) and all memories">Show All</button>
+      <button class="header-btn overflow-hide-mobile" id="stats-btn" aria-label="Statistics dashboard">Stats</button>
+      <button class="header-btn overflow-hide-mobile" id="slo-btn" title="SLO Dashboard" aria-label="SLO dashboard">SLO</button>
+      <button class="header-btn overflow-hide-mobile" id="contrast-toggle" title="High contrast" aria-label="Toggle high contrast mode" tabindex="0">HC</button>
+      <div class="overflow-menu-wrapper">
+        <button class="overflow-toggle" aria-label="More options" aria-expanded="false" tabindex="0">&#x22EF;</button>
+        <div class="overflow-dropdown" role="menu">
+          <button role="menuitem" data-overflow="cluster-project">By Project</button>
+          <button role="menuitem" data-overflow="cluster-type">By Type</button>
+          <button role="menuitem" data-overflow="show-all">Show All</button>
+          <button role="menuitem" data-overflow="stats">Stats</button>
+          <button role="menuitem" data-overflow="slo">SLO</button>
+          <button role="menuitem" data-overflow="contrast">High Contrast</button>
+        </div>
+      </div>
     </div>
   </header>
+  <div id="filter-chip-bar" class="filter-chip-bar" aria-label="Active filters"></div>
   <aside id="filter-panel" class="filter-panel">
     <div id="review-panel"></div>
   </aside>
@@ -649,5 +785,143 @@ body.high-contrast {
 </div>
 <div id="aria-live" role="status" aria-live="polite" class="sr-only"></div>
 <script src="/static/app.js"></script>
+<script>
+// uiux-002: Mobile overflow menu
+(function() {
+  const toggle = document.querySelector('.overflow-toggle');
+  const dropdown = document.querySelector('.overflow-dropdown');
+  if (!toggle || !dropdown) return;
+
+  toggle.addEventListener('click', function(e) {
+    e.stopPropagation();
+    const open = dropdown.classList.toggle('open');
+    toggle.setAttribute('aria-expanded', String(open));
+  });
+
+  document.addEventListener('click', function() {
+    dropdown.classList.remove('open');
+    toggle.setAttribute('aria-expanded', 'false');
+  });
+
+  dropdown.addEventListener('click', function(e) {
+    const btn = e.target.closest('[data-overflow]');
+    if (!btn) return;
+    const action = btn.dataset.overflow;
+    dropdown.classList.remove('open');
+    toggle.setAttribute('aria-expanded', 'false');
+
+    if (action === 'cluster-project' || action === 'cluster-type') {
+      const viewBtn = document.querySelector('.view-btn[data-mode="' + action + '"]');
+      if (viewBtn) viewBtn.click();
+    } else if (action === 'show-all') {
+      const el = document.getElementById('show-all-toggle');
+      if (el) el.click();
+    } else if (action === 'stats') {
+      const el = document.getElementById('stats-btn');
+      if (el) el.click();
+    } else if (action === 'slo') {
+      const el = document.getElementById('slo-btn');
+      if (el) el.click();
+    } else if (action === 'contrast') {
+      const el = document.getElementById('contrast-toggle');
+      if (el) el.click();
+    }
+  });
+})();
+
+// uiux-005: Active filter chips
+(function() {
+  const chipBar = document.getElementById('filter-chip-bar');
+  if (!chipBar) return;
+
+  // Poll for the app state on the global scope — app.js uses modules,
+  // so we observe DOM changes on the filter panel badge to detect filter changes.
+  function getFilterState() {
+    // Read active filters from URL params (state syncs to URL)
+    const params = new URLSearchParams(window.location.search);
+    const chips = [];
+    if (params.has('project')) chips.push({ key: 'project', label: 'project: ' + params.get('project') });
+    if (params.has('type')) {
+      params.get('type').split(',').forEach(function(t) {
+        chips.push({ key: 'type', value: t, label: 'type: ' + t });
+      });
+    }
+    if (params.has('entity_type')) {
+      params.get('entity_type').split(',').forEach(function(t) {
+        chips.push({ key: 'entity_type', value: t, label: 'entity: ' + t });
+      });
+    }
+    if (params.has('tier')) {
+      params.get('tier').split(',').forEach(function(t) {
+        chips.push({ key: 'tier', value: t, label: 'tier: ' + t });
+      });
+    }
+    if (params.has('min_importance') && parseFloat(params.get('min_importance')) > 0) {
+      chips.push({ key: 'min_importance', label: 'importance \u2265 ' + Math.round(parseFloat(params.get('min_importance')) * 100) + '%' });
+    }
+    if (params.has('since')) chips.push({ key: 'since', label: 'from: ' + params.get('since') });
+    if (params.has('until')) chips.push({ key: 'until', label: 'until: ' + params.get('until') });
+    return chips;
+  }
+
+  function removeFilter(chip) {
+    var params = new URLSearchParams(window.location.search);
+    if (chip.key === 'type' && chip.value) {
+      var types = params.get('type').split(',').filter(function(t) { return t !== chip.value; });
+      if (types.length) params.set('type', types.join(','));
+      else params.delete('type');
+    } else if (chip.key === 'entity_type' && chip.value) {
+      var etypes = params.get('entity_type').split(',').filter(function(t) { return t !== chip.value; });
+      if (etypes.length) params.set('entity_type', etypes.join(','));
+      else params.delete('entity_type');
+    } else if (chip.key === 'tier' && chip.value) {
+      var tiers = params.get('tier').split(',').filter(function(t) { return t !== chip.value; });
+      if (tiers.length) params.set('tier', tiers.join(','));
+      else params.delete('tier');
+    } else {
+      params.delete(chip.key);
+    }
+    var qs = params.toString();
+    var hash = window.location.hash || '';
+    history.replaceState(null, '', qs ? '?' + qs + hash : window.location.pathname + hash);
+    // Trigger filter reset by clicking the filter reset button
+    var resetBtn = document.querySelector('.filter-reset');
+    // Reload to apply — simpler and reliable
+    window.location.reload();
+  }
+
+  function renderChips() {
+    var chips = getFilterState();
+    chipBar.textContent = '';
+    if (chips.length === 0) {
+      chipBar.classList.remove('active');
+      return;
+    }
+    chipBar.classList.add('active');
+    chips.forEach(function(chip) {
+      var span = document.createElement('span');
+      span.className = 'filter-chip';
+      span.textContent = chip.label + ' ';
+      var btn = document.createElement('button');
+      btn.textContent = '\u00d7';
+      btn.setAttribute('aria-label', 'Remove filter: ' + chip.label);
+      btn.addEventListener('click', function() { removeFilter(chip); });
+      span.appendChild(btn);
+      chipBar.appendChild(span);
+    });
+  }
+
+  // Observe URL changes (state syncs filters to URL via replaceState)
+  var _origReplaceState = history.replaceState;
+  history.replaceState = function() {
+    _origReplaceState.apply(this, arguments);
+    renderChips();
+  };
+  // Also on popstate
+  window.addEventListener('popstate', renderChips);
+  // Initial render
+  setTimeout(renderChips, 500);
+})();
+</script>
 </body>
 </html>

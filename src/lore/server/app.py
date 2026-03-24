@@ -58,6 +58,9 @@ from lore.server.routes.workspaces import router as workspaces_router
 setup_logging()
 logger = logging.getLogger(__name__)
 
+# ── Schema capability cache ────────────────────────────────────────
+_pgvector_available: bool | None = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -70,6 +73,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     pool = await init_pool(db_url)
     await run_migrations(pool, settings.migrations_dir)
+
+    # Cache pgvector availability at startup
+    global _pgvector_available
+    try:
+        async with pool.acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+            )
+            _pgvector_available = bool(result)
+            logger.info("pgvector available: %s", _pgvector_available)
+    except Exception:
+        logger.exception("Failed to check pgvector at startup")
+        _pgvector_available = False
 
     # Start background tasks
     import asyncio
@@ -86,6 +102,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     slo_task.cancel()
     scheduler_task.cancel()
     await close_pool()
+
+    # Reset cache on shutdown
+    _pgvector_available = None
 
 
 app = FastAPI(
@@ -170,6 +189,7 @@ async def health() -> dict:
 @app.get("/ready")
 async def ready() -> JSONResponse:
     """Readiness probe: checks DB pool and pgvector extension."""
+    global _pgvector_available
     checks: dict = {"db": False, "pgvector": False}
     try:
         from lore.server.db import _pool
@@ -184,10 +204,15 @@ async def ready() -> JSONResponse:
             await conn.fetchval("SELECT 1")
             checks["db"] = True
 
-            result = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')"
-            )
-            checks["pgvector"] = bool(result)
+            # Use cached value if available; otherwise query and cache
+            if _pgvector_available is not None:
+                checks["pgvector"] = _pgvector_available
+            else:
+                result = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+                )
+                _pgvector_available = bool(result)
+                checks["pgvector"] = _pgvector_available
     except Exception:
         logger.exception("Readiness check failed")
 

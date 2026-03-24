@@ -24,6 +24,7 @@ except ImportError:
 
 from lore.server.auth import AuthContext, get_auth_context, require_role
 from lore.server.db import get_pool
+from lore.server.routes._parsers import _parse_meta, _parse_tags
 from lore.server.models import (
     MemoryCreateRequest,
     MemoryCreateResponse,
@@ -45,12 +46,8 @@ _HALF_LIFE_DEFAULT = 30
 
 def _row_to_response(row: dict) -> MemoryResponse:
     """Convert a DB row to a MemoryResponse (no embedding)."""
-    tags = row.get("tags") or []
-    if isinstance(tags, str):
-        tags = json.loads(tags)
-    meta = row.get("meta") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+    tags = _parse_tags(row.get("tags"))
+    meta = _parse_meta(row.get("meta"))
     return MemoryResponse(
         id=row["id"],
         content=row["content"],

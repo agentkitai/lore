@@ -617,19 +617,161 @@ All endpoints except `/health` require `Authorization: Bearer <api_key>`.
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `GET` | `/health` | Health check |
+| `GET` | `/ready` | Readiness probe (DB + pgvector) |
 | `POST` | `/v1/org/init` | Initialize organization |
 | `POST` | `/v1/keys` | Create API key |
 | `GET` | `/v1/keys` | List API keys |
 | `DELETE` | `/v1/keys/{id}` | Revoke API key |
-| `POST` | `/v1/lessons` | Create memory |
-| `GET` | `/v1/lessons/{id}` | Get memory |
-| `GET` | `/v1/lessons` | List memories |
-| `PATCH` | `/v1/lessons/{id}` | Update memory |
-| `DELETE` | `/v1/lessons/{id}` | Delete memory |
-| `POST` | `/v1/lessons/search` | Semantic search |
+| `POST` | `/v1/memories` | Create memory |
+| `GET` | `/v1/memories` | List memories |
+| `GET` | `/v1/memories/{id}` | Get memory |
+| `PATCH` | `/v1/memories/{id}` | Update memory |
+| `DELETE` | `/v1/memories/{id}` | Delete memory |
+| `POST` | `/v1/memories/search` | Semantic search (requires embedding) |
+| `GET` | `/v1/retrieve` | Retrieve memories by text query |
+| `GET` | `/v1/ui/graph` | Knowledge graph data |
+| `GET` | `/v1/ui/stats` | Aggregate statistics |
+| `POST` | `/v1/lessons` | Create lesson (legacy) |
+| `GET` | `/v1/lessons` | List lessons (legacy) |
+| `POST` | `/v1/lessons/search` | Search lessons (legacy) |
 | `POST` | `/v1/lessons/export` | Export all |
 | `POST` | `/v1/lessons/import` | Bulk import |
 
 Rate limit: 100 requests per 60 seconds per API key.
+
+### Curl Examples
+
+#### POST /v1/memories — Create a memory
+
+```bash
+curl -X POST http://localhost:8765/v1/memories \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer lore_sk_your_key_here" \
+  -d '{
+    "content": "Stripe API returns 429 after 100 req/min. Use exponential backoff starting at 1s.",
+    "tags": ["stripe", "rate-limit"],
+    "confidence": 0.9,
+    "source": "debugging-session",
+    "project": "payments"
+  }'
+```
+
+**Response (201):**
+```json
+{
+  "id": "01HXYZ1234567890ABCDEF"
+}
+```
+
+#### GET /v1/memories — List memories
+
+```bash
+curl http://localhost:8765/v1/memories?limit=10&project=payments \
+  -H "Authorization: Bearer lore_sk_your_key_here"
+```
+
+**Response (200):**
+```json
+{
+  "memories": [
+    {
+      "id": "01HXYZ1234567890ABCDEF",
+      "content": "Stripe API returns 429 after 100 req/min...",
+      "context": null,
+      "tags": ["stripe", "rate-limit"],
+      "confidence": 0.9,
+      "source": "debugging-session",
+      "project": "payments",
+      "created_at": "2025-01-15T10:30:00Z",
+      "updated_at": "2025-01-15T10:30:00Z",
+      "expires_at": null,
+      "upvotes": 2,
+      "downvotes": 0,
+      "meta": {}
+    }
+  ],
+  "total": 1,
+  "limit": 10,
+  "offset": 0
+}
+```
+
+#### GET /v1/retrieve — Retrieve relevant memories
+
+```bash
+curl "http://localhost:8765/v1/retrieve?query=how+to+handle+rate+limits&limit=5&format=xml" \
+  -H "Authorization: Bearer lore_sk_your_key_here"
+```
+
+**Response (200):**
+```json
+{
+  "memories": [
+    {
+      "id": "01HXYZ1234567890ABCDEF",
+      "content": "Stripe API returns 429 after 100 req/min. Use exponential backoff starting at 1s.",
+      "type": "lesson",
+      "tier": "long",
+      "score": 0.87,
+      "created_at": "2025-01-15T10:30:00Z",
+      "source": "debugging-session",
+      "project": "payments",
+      "tags": ["stripe", "rate-limit"]
+    }
+  ],
+  "formatted": "<memories query=\"how to handle rate limits\">\n  <memory id=\"01HXYZ...\" score=\"0.87\" type=\"lesson\">\n    Stripe API returns 429...\n  </memory>\n</memories>",
+  "count": 1,
+  "query_time_ms": 42.5
+}
+```
+
+#### GET /v1/ui/graph — Knowledge graph data
+
+```bash
+curl "http://localhost:8765/v1/ui/graph?project=payments&limit=100" \
+  -H "Authorization: Bearer lore_sk_your_key_here"
+```
+
+**Response (200):**
+```json
+{
+  "nodes": [
+    {
+      "id": "01HXYZ...",
+      "kind": "memory",
+      "label": "Stripe API returns 429...",
+      "type": "lesson",
+      "tier": "long",
+      "project": "payments",
+      "importance": 0.85,
+      "tags": ["stripe", "rate-limit"],
+      "created_at": "2025-01-15T10:30:00Z"
+    },
+    {
+      "id": "ent_01ABC...",
+      "kind": "entity",
+      "label": "Stripe",
+      "type": "service",
+      "mention_count": 5
+    }
+  ],
+  "edges": [
+    {
+      "source": "01HXYZ...",
+      "target": "ent_01ABC...",
+      "rel_type": "mentions",
+      "weight": 0.95,
+      "label": "mentions"
+    }
+  ],
+  "stats": {
+    "total_memories": 150,
+    "total_entities": 42,
+    "total_relationships": 87,
+    "filtered_nodes": 2,
+    "filtered_edges": 1
+  }
+}
+```
 
 See [Self-Hosted Guide](self-hosted.md) for deployment instructions.

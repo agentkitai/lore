@@ -23,6 +23,8 @@ export class FilterPanel {
     toggle.className = 'filter-toggle';
     toggle.textContent = '\u2630';
     toggle.title = 'Toggle filters';
+    toggle.setAttribute('aria-label', 'Toggle filter panel');
+    toggle.setAttribute('tabindex', '0');
     toggle.onclick = () => this.container.classList.toggle('collapsed');
     this.container.appendChild(toggle);
 

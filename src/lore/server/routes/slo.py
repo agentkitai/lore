@@ -14,6 +14,8 @@ from pydantic import BaseModel
 
 from lore.server.auth import AuthContext, get_auth_context, require_role
 from lore.server.db import get_pool
+from lore.server.routes._helpers import build_update
+from lore.server.routes._parsers import _ts
 
 logger = logging.getLogger(__name__)
 
@@ -80,15 +82,6 @@ class SloAlertResponse(BaseModel):
 
 VALID_METRICS = {"p50_latency", "p95_latency", "p99_latency", "hit_rate"}
 VALID_OPERATORS = {"lt", "gt"}
-
-
-def _ts(val) -> Optional[str]:
-    if val is None:
-        return None
-    from datetime import datetime
-    if isinstance(val, datetime):
-        return val.isoformat()
-    return str(val)
 
 
 def _parse_jsonb(val) -> List[Dict[str, Any]]:

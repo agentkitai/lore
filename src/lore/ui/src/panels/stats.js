@@ -29,9 +29,19 @@ export class StatsPanel {
 
   async _load() {
     this.container.textContent = '';
+    // Skeleton loading (uiux-004)
     const loading = document.createElement('div');
     loading.className = 'stats-loading';
-    loading.textContent = 'Loading stats...';
+    for (let i = 0; i < 3; i++) {
+      const skelCard = document.createElement('div');
+      skelCard.className = 'skeleton skeleton-card';
+      loading.appendChild(skelCard);
+    }
+    for (let i = 0; i < 5; i++) {
+      const skelLine = document.createElement('div');
+      skelLine.className = 'skeleton skeleton-line';
+      loading.appendChild(skelLine);
+    }
     this.container.appendChild(loading);
 
     try {
@@ -53,6 +63,8 @@ export class StatsPanel {
     const closeBtn = document.createElement('button');
     closeBtn.className = 'detail-close';
     closeBtn.textContent = '\u00d7';
+    closeBtn.setAttribute('aria-label', 'Close stats panel');
+    closeBtn.setAttribute('tabindex', '0');
     closeBtn.onclick = () => this.close();
     this.container.appendChild(closeBtn);
 

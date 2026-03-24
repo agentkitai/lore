@@ -45,13 +45,13 @@ export class ReviewPanel {
     bulkRow.className = 'review-bulk';
 
     const approveAll = document.createElement('button');
-    approveAll.className = 'review-btn review-btn-approve';
+    approveAll.className = 'review-btn review-btn-approve btn-primary';
     approveAll.textContent = 'Approve All';
     approveAll.onclick = () => this._bulkAction('approve');
     bulkRow.appendChild(approveAll);
 
     const rejectAll = document.createElement('button');
-    rejectAll.className = 'review-btn review-btn-reject';
+    rejectAll.className = 'review-btn review-btn-reject btn-danger';
     rejectAll.textContent = 'Reject All';
     rejectAll.onclick = () => this._bulkAction('reject');
     bulkRow.appendChild(rejectAll);
@@ -84,13 +84,13 @@ export class ReviewPanel {
       actions.className = 'review-actions';
 
       const approveBtn = document.createElement('button');
-      approveBtn.className = 'review-btn review-btn-approve';
+      approveBtn.className = 'review-btn review-btn-approve btn-primary';
       approveBtn.textContent = 'Approve';
       approveBtn.onclick = (e) => { e.stopPropagation(); this._act(item.id, 'approve', li); };
       actions.appendChild(approveBtn);
 
       const rejectBtn = document.createElement('button');
-      rejectBtn.className = 'review-btn review-btn-reject';
+      rejectBtn.className = 'review-btn review-btn-reject btn-danger';
       rejectBtn.textContent = 'Reject';
       rejectBtn.onclick = (e) => { e.stopPropagation(); this._act(item.id, 'reject', li); };
       actions.appendChild(rejectBtn);

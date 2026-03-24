@@ -17,6 +17,10 @@ from lore.server.app import app
 
 @pytest_asyncio.fixture
 async def client():
+    # Reset pgvector cache between tests so each test controls its own state
+    import lore.server.app as app_mod
+    app_mod._pgvector_available = None
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c

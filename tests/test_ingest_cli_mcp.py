@@ -23,7 +23,7 @@ def _mock_lore():
 class TestCLIIngest:
     def test_single_item(self, tmp_path):
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 
@@ -42,7 +42,7 @@ class TestCLIIngest:
         f.write_text(json.dumps(data))
 
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 
@@ -55,7 +55,7 @@ class TestCLIIngest:
         f.write_text("line one\nline two\n\nline three\n")
 
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 
@@ -65,7 +65,7 @@ class TestCLIIngest:
 
     def test_file_not_found(self, tmp_path):
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 
@@ -74,7 +74,7 @@ class TestCLIIngest:
 
     def test_no_content_or_file(self, tmp_path):
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 
@@ -83,7 +83,7 @@ class TestCLIIngest:
 
     def test_dedup_mode_option(self, tmp_path):
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 
@@ -94,7 +94,7 @@ class TestCLIIngest:
     def test_dedup_mode_allow_skips_dedup(self, tmp_path):
         """--dedup-mode allow skips dedup check entirely."""
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 
@@ -107,7 +107,7 @@ class TestCLIIngest:
     def test_no_enrich_flag(self, tmp_path):
         """--no-enrich flag is wired through the pipeline."""
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 
@@ -117,7 +117,7 @@ class TestCLIIngest:
 
     def test_tags_option(self, tmp_path):
         db = str(tmp_path / "test.db")
-        with patch("lore.cli._get_lore") as mock_get:
+        with patch("lore.cli._helpers._get_lore") as mock_get:
             lore = _mock_lore()
             mock_get.return_value = lore
 

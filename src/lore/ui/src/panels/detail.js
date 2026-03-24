@@ -30,10 +30,17 @@ export class DetailPanel {
     this.container.classList.add('open');
     this.container.textContent = '';
 
-    // Loading state
+    // Loading state with skeleton (uiux-004)
     const loading = document.createElement('div');
     loading.className = 'detail-loading';
-    loading.textContent = 'Loading...';
+    const skelBlock = document.createElement('div');
+    skelBlock.className = 'skeleton skeleton-block';
+    loading.appendChild(skelBlock);
+    for (let i = 0; i < 4; i++) {
+      const skelLine = document.createElement('div');
+      skelLine.className = 'skeleton skeleton-line';
+      loading.appendChild(skelLine);
+    }
     this.container.appendChild(loading);
 
     const node = this.state.getNode(id);
@@ -79,6 +86,8 @@ export class DetailPanel {
     const closeBtn = document.createElement('button');
     closeBtn.className = 'detail-close';
     closeBtn.textContent = '\u00d7';
+    closeBtn.setAttribute('aria-label', 'Close detail panel');
+    closeBtn.setAttribute('tabindex', '0');
     closeBtn.onclick = () => this.state.selectNode(null);
     this.container.appendChild(closeBtn);
 
@@ -167,6 +176,8 @@ export class DetailPanel {
     const closeBtn = document.createElement('button');
     closeBtn.className = 'detail-close';
     closeBtn.textContent = '\u00d7';
+    closeBtn.setAttribute('aria-label', 'Close detail panel');
+    closeBtn.setAttribute('tabindex', '0');
     closeBtn.onclick = () => this.state.selectNode(null);
     this.container.appendChild(closeBtn);
 

@@ -14,6 +14,7 @@ from pydantic import BaseModel
 
 from lore.server.auth import AuthContext, get_auth_context
 from lore.server.db import get_pool
+from lore.server.routes._helpers import build_update
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,98 @@ async def post_recommendations(
     auth: AuthContext = Depends(get_auth_context),
 ) -> List[RecommendationResponse]:
     """Get suggestions with explicit context body."""
-    return []
+    import asyncio
+    import json as _json
+    from types import SimpleNamespace
+
+    if not body.context:
+        return []
+
+    pool = await get_pool()
+
+    # Load config
+    async with pool.acquire() as conn:
+        cfg = await conn.fetchrow(
+            "SELECT aggressiveness, max_suggestions FROM recommendation_config "
+            "WHERE workspace_id IS NULL AND agent_id IS NULL LIMIT 1",
+        )
+
+    aggressiveness = float(cfg["aggressiveness"]) if cfg else 0.5
+    max_suggestions = cfg["max_suggestions"] if cfg else 3
+
+    # Build a lightweight store adapter for the engine
+    class _AsyncpgStore:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def list(self, limit=500):
+            return self._rows[:limit]
+
+    async with pool.acquire() as conn:
+        mem_rows = await conn.fetch(
+            """SELECT id, content, embedding, meta,
+                      created_at, access_count, last_accessed_at
+               FROM memories
+               WHERE org_id = $1
+                 AND embedding IS NOT NULL
+               ORDER BY importance_score DESC NULLS LAST
+               LIMIT 500""",
+            auth.org_id,
+        )
+
+    # Wrap rows as objects the engine expects
+    candidates = []
+    for r in mem_rows:
+        meta = r["meta"]
+        if isinstance(meta, str):
+            meta = _json.loads(meta) if meta else {}
+        elif meta is None:
+            meta = {}
+        candidates.append(SimpleNamespace(
+            id=r["id"],
+            content=r["content"] or "",
+            embedding=r["embedding"],
+            metadata=meta,
+            created_at=r["created_at"],
+            access_count=r["access_count"] or 0,
+            last_accessed_at=r["last_accessed_at"],
+        ))
+
+    if not candidates:
+        return []
+
+    # Build embedder and engine
+    try:
+        from lore.embed import LocalEmbedder
+        from lore.recommend.engine import RecommendationEngine
+
+        embedder = LocalEmbedder()
+        engine = RecommendationEngine(
+            store=_AsyncpgStore(candidates),
+            embedder=embedder,
+            aggressiveness=aggressiveness,
+            max_suggestions=max_suggestions,
+        )
+
+        results = await asyncio.to_thread(
+            engine.suggest,
+            context=body.context,
+            session_entities=body.session_entities or None,
+            limit=body.max_results,
+        )
+    except Exception:
+        logger.exception("Recommendation engine failed")
+        return []
+
+    return [
+        RecommendationResponse(
+            memory_id=rec.memory_id,
+            content_preview=rec.content_preview,
+            score=round(rec.score, 4),
+            explanation=rec.explanation,
+        )
+        for rec in results
+    ]
 
 
 @router.post("/{memory_id}/feedback")
@@ -133,26 +225,22 @@ async def update_config(
         )
 
         if existing:
-            updates = []
-            params: list = [existing["id"]]
-            if body.aggressiveness is not None:
-                params.append(body.aggressiveness)
-                updates.append(f"aggressiveness = ${len(params)}")
-            if body.enabled is not None:
-                params.append(body.enabled)
-                updates.append(f"enabled = ${len(params)}")
-            if body.max_suggestions is not None:
-                params.append(body.max_suggestions)
-                updates.append(f"max_suggestions = ${len(params)}")
-            if body.cooldown_minutes is not None:
-                params.append(body.cooldown_minutes)
-                updates.append(f"cooldown_minutes = ${len(params)}")
-            if updates:
-                updates.append("updated_at = now()")
-                await conn.execute(
-                    f"UPDATE recommendation_config SET {', '.join(updates)} WHERE id = $1",
-                    *params,
-                )
+            sql, params = build_update(
+                "recommendation_config",
+                {
+                    "aggressiveness": body.aggressiveness,
+                    "enabled": body.enabled,
+                    "max_suggestions": body.max_suggestions,
+                    "cooldown_minutes": body.cooldown_minutes,
+                },
+                where_field="id",
+                where_value=existing["id"],
+            )
+            if sql:
+                # Append updated_at = now() to the SET clause
+                # Insert before the WHERE clause
+                sql = sql.replace(" WHERE ", ", updated_at = now() WHERE ", 1)
+                await conn.execute(sql, *params)
         else:
             await conn.execute(
                 """INSERT INTO recommendation_config
