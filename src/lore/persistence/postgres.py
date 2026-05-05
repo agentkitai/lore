@@ -7,6 +7,7 @@ existing route SQL until 1B–1G migrate them.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 try:
@@ -18,12 +19,21 @@ from ulid import ULID
 
 from lore.persistence.exceptions import BackendUnavailableError, StoreNotFoundError
 from lore.persistence.types import (
+    GraphStats,
     MemoryFilter,
     MemoryPatch,
+    NewEntity,
     NewMemory,
+    NewMention,
+    NewRelationship,
+    PendingRelationshipRow,
     RecallParams,
     ScoredMemory,
+    StoredEntity,
     StoredMemory,
+    StoredMention,
+    StoredRelationship,
+    TimelineBucketRow,
 )
 
 
@@ -54,6 +64,28 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=row["last_accessed_at"],
+    )
+
+
+def _row_to_entity(row: "asyncpg.Record") -> StoredEntity:
+    aliases = row["aliases"]
+    if isinstance(aliases, str):
+        aliases = json.loads(aliases)
+    metadata = row["metadata"]
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    return StoredEntity(
+        id=row["id"],
+        name=row["name"],
+        entity_type=row["entity_type"],
+        aliases=tuple(aliases or ()),
+        description=row["description"],
+        metadata=dict(metadata or {}),
+        mention_count=row["mention_count"] or 0,
+        first_seen_at=row["first_seen_at"],
+        last_seen_at=row["last_seen_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
@@ -387,6 +419,221 @@ class PostgresStore:
         if row is None:
             raise StoreNotFoundError("memories", memory_id)
         return _row_to_stored(row)
+
+
+    # ── GraphOps: upsert_entity, get_entity ────────────────────────
+
+    async def upsert_entity(self, entity: NewEntity) -> StoredEntity:
+        entity_id = f"ent_{ULID()}"
+        now = datetime.now(timezone.utc)
+        first_seen = entity.first_seen_at or now
+        last_seen = entity.last_seen_at or now
+
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO entities (id, name, entity_type, aliases, description,
+                                      metadata, mention_count, first_seen_at,
+                                      last_seen_at)
+                VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9)
+                ON CONFLICT (name) DO UPDATE SET
+                    mention_count = entities.mention_count + EXCLUDED.mention_count,
+                    last_seen_at = GREATEST(entities.last_seen_at, EXCLUDED.last_seen_at),
+                    aliases = (
+                        SELECT jsonb_agg(DISTINCT v)
+                        FROM jsonb_array_elements(
+                            COALESCE(entities.aliases, '[]'::jsonb) ||
+                            COALESCE(EXCLUDED.aliases, '[]'::jsonb)
+                        ) v
+                    ),
+                    metadata = COALESCE(entities.metadata, '{}'::jsonb) ||
+                               COALESCE(EXCLUDED.metadata, '{}'::jsonb),
+                    updated_at = now()
+                RETURNING id, name, entity_type, aliases, description, metadata,
+                          mention_count, first_seen_at, last_seen_at,
+                          created_at, updated_at
+                """,
+                entity_id,
+                entity.name,
+                entity.entity_type,
+                json.dumps(list(entity.aliases)),
+                entity.description,
+                json.dumps(dict(entity.metadata)),
+                entity.mention_count,
+                first_seen,
+                last_seen,
+            )
+        return _row_to_entity(row)
+
+    async def get_entity(self, entity_id: str) -> Optional[StoredEntity]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE id = $1
+                """,
+                entity_id,
+            )
+        return _row_to_entity(row) if row else None
+
+    # ── GraphOps stubs (T4–T11) ─────────────────────────────────────
+
+    # T4
+    async def get_entity_by_name(self, name: str) -> Optional[StoredEntity]:
+        raise NotImplementedError("Phase 1B T4")
+
+    async def list_entities(
+        self,
+        *,
+        entity_type: Optional[str] = None,
+        min_mentions: int = 0,
+        limit: int = 100,
+    ) -> Sequence[StoredEntity]:
+        raise NotImplementedError("Phase 1B T4")
+
+    # T5
+    async def update_entity_counts(
+        self,
+        entity_id: str,
+        *,
+        mention_delta: int,
+        last_seen_at: datetime,
+    ) -> None:
+        raise NotImplementedError("Phase 1B T5")
+
+    async def delete_entity(self, entity_id: str) -> bool:
+        raise NotImplementedError("Phase 1B T5")
+
+    # T6
+    async def get_mentions_for_memory(self, memory_id: str) -> Sequence[StoredMention]:
+        raise NotImplementedError("Phase 1B T6")
+
+    async def get_mentions_for_entity(
+        self,
+        entity_id: str,
+        *,
+        limit: int = 100,
+    ) -> Sequence[StoredMention]:
+        raise NotImplementedError("Phase 1B T6")
+
+    async def save_mention(self, mention: NewMention) -> None:
+        raise NotImplementedError("Phase 1B T6")
+
+    async def count_memories_for_entity(self, entity_id: str) -> int:
+        raise NotImplementedError("Phase 1B T6")
+
+    # T7
+    async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
+        raise NotImplementedError("Phase 1B T7")
+
+    async def get_active_relationship(
+        self,
+        source_id: str,
+        target_id: str,
+        *,
+        rel_type: str,
+    ) -> Optional[StoredRelationship]:
+        raise NotImplementedError("Phase 1B T7")
+
+    async def save_relationship(self, rel: NewRelationship) -> StoredRelationship:
+        raise NotImplementedError("Phase 1B T7")
+
+    # T8
+    async def list_relationships_for_entity(
+        self,
+        entity_id: str,
+        *,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[StoredRelationship]:
+        raise NotImplementedError("Phase 1B T8")
+
+    async def update_relationship_status(
+        self,
+        rel_id: str,
+        *,
+        status: str,
+    ) -> StoredRelationship:
+        raise NotImplementedError("Phase 1B T8")
+
+    async def update_relationship_weight(
+        self,
+        rel_id: str,
+        *,
+        weight: float,
+    ) -> None:
+        raise NotImplementedError("Phase 1B T8")
+
+    async def expire_relationship(self, rel_id: str) -> None:
+        raise NotImplementedError("Phase 1B T8")
+
+    # T9
+    async def list_pending_relationships(
+        self,
+        *,
+        rel_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[PendingRelationshipRow]:
+        raise NotImplementedError("Phase 1B T9")
+
+    async def save_rejected_pattern(
+        self,
+        source_name: str,
+        target_name: str,
+        rel_type: str,
+        *,
+        source_memory_id: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        raise NotImplementedError("Phase 1B T9")
+
+    # T10
+    async def query_relationships(
+        self,
+        entity_ids: Sequence[str],
+        *,
+        direction: str = "both",
+        active_only: bool = True,
+        at_time: Optional[datetime] = None,
+        rel_types: Optional[Sequence[str]] = None,
+    ) -> Sequence[StoredRelationship]:
+        raise NotImplementedError("Phase 1B T10")
+
+    # T11
+    async def get_graph_stats(
+        self,
+        *,
+        project: Optional[str] = None,
+    ) -> GraphStats:
+        raise NotImplementedError("Phase 1B T11")
+
+    async def get_timeline_buckets(
+        self,
+        *,
+        trunc: str,
+        project: Optional[str] = None,
+    ) -> Sequence[TimelineBucketRow]:
+        raise NotImplementedError("Phase 1B T11")
+
+    async def get_memories_by_entities(
+        self,
+        entity_ids: Sequence[str],
+        *,
+        exclude_memory_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        raise NotImplementedError("Phase 1B T11")
+
+    async def search_memories_text(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        raise NotImplementedError("Phase 1B T11")
 
 
 class _BoundConn:
