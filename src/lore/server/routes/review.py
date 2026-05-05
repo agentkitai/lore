@@ -141,6 +141,21 @@ async def review_inbox(
     )
 
 
+@router.post("/bulk", response_model=BulkReviewResponse)
+async def bulk_review(
+    body: BulkReviewRequest,
+    store: Store = Depends(get_store),
+) -> BulkReviewResponse:
+    """Approve or reject multiple relationships at once."""
+    try:
+        result = await bulk_review_service(
+            store, body.ids, action=body.action, reason=body.reason,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return BulkReviewResponse(updated=result.updated, action=result.action)
+
+
 @router.post("/{relationship_id}", response_model=ReviewActionResponse)
 async def review_relationship(
     relationship_id: str,
@@ -161,18 +176,3 @@ async def review_relationship(
         status=result.status,
         previous_status=result.previous_status,
     )
-
-
-@router.post("/bulk", response_model=BulkReviewResponse)
-async def bulk_review(
-    body: BulkReviewRequest,
-    store: Store = Depends(get_store),
-) -> BulkReviewResponse:
-    """Approve or reject multiple relationships at once."""
-    try:
-        result = await bulk_review_service(
-            store, body.ids, action=body.action, reason=body.reason,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return BulkReviewResponse(updated=result.updated, action=result.action)
