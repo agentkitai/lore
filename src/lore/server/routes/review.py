@@ -1,6 +1,8 @@
 """Review endpoints for approval UX (E6).
 
-Lets users view, approve, and reject pending knowledge graph connections.
+Refactored in Phase 1B to delegate to services.graph.review. The risk-score
+math and rejected-pattern persistence live in the service layer; this module
+is a thin FastAPI shell.
 """
 
 from __future__ import annotations
@@ -8,27 +10,34 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from lore.server.db import get_pool
-from lore.server.routes._parsers import _ts
+from lore.persistence import Store
+from lore.persistence.exceptions import StoreNotFoundError
+from lore.server.db import get_store
+from lore.services.graph.review import (
+    PendingReview,
+    bulk_review as bulk_review_service,
+    list_pending_reviews,
+    review_relationship as review_relationship_service,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/review", tags=["review"])
 
 
-# ── Response models ───────────────────────────────────────────────
+# ── Wire models (unchanged from pre-1B) ──────────────────────────
 
 
 class RiskScore(BaseModel):
     """Risk scoring breakdown for a pending connection."""
     total: float = 0.0
-    confidence_risk: float = 0.0  # based on relationship weight / confidence
-    source_reliability: float = 0.0  # based on source memory's importance score
-    entity_importance: float = 0.0  # based on entity mention counts
-    staleness_risk: float = 0.0  # based on age of the relationship
+    confidence_risk: float = 0.0
+    source_reliability: float = 0.0
+    entity_importance: float = 0.0
+    staleness_risk: float = 0.0
 
 
 class ReviewItemResponse(BaseModel):
@@ -60,7 +69,7 @@ class ReviewActionResponse(BaseModel):
 
 
 class BulkReviewRequest(BaseModel):
-    action: str  # "approve" or "reject"
+    action: str
     ids: List[str]
     reason: Optional[str] = None
 
@@ -70,156 +79,49 @@ class BulkReviewResponse(BaseModel):
     action: str
 
 
-# ── Helpers ───────────────────────────────────────────────────────
-
-
-async def _table_exists(conn, table_name: str) -> bool:
-    return await conn.fetchval(
-        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
-        table_name,
+def _to_review_item(p: PendingReview) -> ReviewItemResponse:
+    return ReviewItemResponse(
+        id=p.id,
+        source_entity={
+            "id": p.source_entity_id,
+            "name": p.source_name,
+            "entity_type": p.source_entity_type,
+        },
+        target_entity={
+            "id": p.target_entity_id,
+            "name": p.target_name,
+            "entity_type": p.target_entity_type,
+        },
+        rel_type=p.rel_type,
+        weight=p.weight,
+        source_memory_id=p.source_memory_id,
+        source_memory_content=p.source_memory_content,
+        risk_score=RiskScore(
+            total=p.risk_score.total,
+            confidence_risk=p.risk_score.confidence_risk,
+            source_reliability=p.risk_score.source_reliability,
+            entity_importance=p.risk_score.entity_importance,
+            staleness_risk=p.risk_score.staleness_risk,
+        ),
+        created_at=p.created_at.isoformat() if p.created_at else None,
     )
 
 
-def _compute_risk_score(
-    weight: float,
-    source_importance: Optional[float],
-    source_mention_count: int,
-    target_mention_count: int,
-    age_hours: float,
-) -> RiskScore:
-    """Compute a composite risk score for a pending relationship.
-
-    Higher score = higher risk = needs more careful review.
-    Components:
-    - confidence_risk: low weight means the connection is uncertain (0-40 points)
-    - source_reliability: low importance_score on source memory (0-25 points)
-    - entity_importance: high-mention entities are more impactful if wrong (0-25 points)
-    - staleness_risk: older pending items may be stale context (0-10 points)
-    """
-    # Confidence risk: inverse of weight, scaled 0-40
-    confidence_risk = round(max(0.0, (1.0 - min(weight, 1.0)) * 40.0), 2)
-
-    # Source reliability: inverse of importance, scaled 0-25
-    imp = source_importance if source_importance is not None else 0.5
-    source_reliability = round(max(0.0, (1.0 - min(imp, 1.0)) * 25.0), 2)
-
-    # Entity importance: high-mention entities carry more risk, scaled 0-25
-    max_mentions = max(source_mention_count, target_mention_count, 1)
-    entity_importance = round(min(25.0, max_mentions * 2.5), 2)
-
-    # Staleness risk: older items get small penalty, scaled 0-10
-    staleness_risk = round(min(10.0, age_hours / 168.0 * 10.0), 2)  # 168h = 1 week
-
-    total = round(confidence_risk + source_reliability + entity_importance + staleness_risk, 2)
-    return RiskScore(
-        total=total,
-        confidence_risk=confidence_risk,
-        source_reliability=source_reliability,
-        entity_importance=entity_importance,
-        staleness_risk=staleness_risk,
-    )
-
-
-# ── GET /v1/review ────────────────────────────────────────────────
+# ── Handlers ──────────────────────────────────────────────────────
 
 
 @router.get("", response_model=ReviewListResponse)
 async def get_pending_reviews(
     limit: int = Query(50, ge=1, le=500),
     rel_type: Optional[str] = Query(None),
+    store: Store = Depends(get_store),
 ) -> ReviewListResponse:
     """List pending relationships for review."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        if not await _table_exists(conn, "relationships"):
-            return ReviewListResponse()
-
-        params: list = []
-        where_parts = ["r.status = 'pending'"]
-
-        if rel_type:
-            params.append(rel_type)
-            where_parts.append(f"r.rel_type = ${len(params)}")
-
-        where_sql = " AND ".join(where_parts)
-        params.append(limit)
-        limit_idx = len(params)
-
-        rows = await conn.fetch(
-            f"""SELECT r.id, r.source_entity_id, r.target_entity_id,
-                       r.rel_type, r.weight, r.source_memory_id, r.created_at,
-                       se.name as source_name, se.entity_type as source_type,
-                       se.id as se_id, se.mention_count as source_mentions,
-                       te.name as target_name, te.entity_type as target_type,
-                       te.id as te_id, te.mention_count as target_mentions
-                FROM relationships r
-                JOIN entities se ON se.id = r.source_entity_id
-                JOIN entities te ON te.id = r.target_entity_id
-                WHERE {where_sql}
-                ORDER BY r.created_at DESC
-                LIMIT ${limit_idx}""",
-            *params,
-        )
-
-        total = await conn.fetchval(
-            "SELECT COUNT(*) FROM relationships WHERE status = 'pending'",
-        )
-
-        items: List[ReviewItemResponse] = []
-        for row in rows:
-            mem_content = None
-            source_importance = None
-            if row["source_memory_id"]:
-                mem_row = await conn.fetchrow(
-                    "SELECT content, importance_score FROM memories WHERE id = $1",
-                    row["source_memory_id"],
-                )
-                if mem_row:
-                    content = mem_row["content"] or ""
-                    mem_content = content[:200]
-                    source_importance = float(mem_row["importance_score"]) if mem_row["importance_score"] is not None else None
-
-            # Compute age in hours
-            age_hours = 0.0
-            if row["created_at"]:
-                from datetime import datetime, timezone
-                now = datetime.now(timezone.utc)
-                created = row["created_at"]
-                if hasattr(created, "timestamp"):
-                    age_hours = (now.timestamp() - created.timestamp()) / 3600.0
-
-            risk = _compute_risk_score(
-                weight=float(row["weight"] or 1.0),
-                source_importance=source_importance,
-                source_mention_count=int(row.get("source_mentions") or 0),
-                target_mention_count=int(row.get("target_mentions") or 0),
-                age_hours=age_hours,
-            )
-
-            items.append(ReviewItemResponse(
-                id=row["id"],
-                source_entity={
-                    "id": row["se_id"],
-                    "name": row["source_name"],
-                    "entity_type": row["source_type"],
-                },
-                target_entity={
-                    "id": row["te_id"],
-                    "name": row["target_name"],
-                    "entity_type": row["target_type"],
-                },
-                rel_type=row["rel_type"],
-                weight=float(row["weight"] or 1.0),
-                source_memory_id=row["source_memory_id"],
-                source_memory_content=mem_content,
-                risk_score=risk,
-                created_at=_ts(row["created_at"]),
-            ))
-
-    return ReviewListResponse(pending=items, total_pending=total or 0)
-
-
-# ── GET /v1/review/inbox ──────────────────────────────────────────
+    listing = await list_pending_reviews(store, rel_type=rel_type, limit=limit)
+    return ReviewListResponse(
+        pending=[_to_review_item(p) for p in listing.pending],
+        total_pending=listing.total_pending,
+    )
 
 
 @router.get("/inbox", response_model=ReviewListResponse)
@@ -227,138 +129,50 @@ async def review_inbox(
     limit: int = Query(50, ge=1, le=500),
     rel_type: Optional[str] = Query(None),
     min_risk: Optional[float] = Query(None, ge=0.0, description="Minimum risk score to include"),
+    store: Store = Depends(get_store),
 ) -> ReviewListResponse:
-    """Return pending review items sorted by risk score (highest risk first).
-
-    This is the primary endpoint for the approval inbox, surfacing
-    the most important items that need attention first.
-    """
-    # Fetch a larger set and sort by risk score
-    result = await get_pending_reviews(limit=min(limit * 2, 500), rel_type=rel_type)
-
-    # Sort by risk score descending (highest risk first)
-    sorted_items = sorted(
-        result.pending,
-        key=lambda item: item.risk_score.total if item.risk_score else 0.0,
-        reverse=True,
+    """Pending review items sorted by risk score (highest first); same shape as /v1/review."""
+    listing = await list_pending_reviews(
+        store, rel_type=rel_type, limit=limit, min_risk=min_risk,
     )
-
-    # Filter by min_risk if specified
-    if min_risk is not None:
-        sorted_items = [
-            item for item in sorted_items
-            if item.risk_score and item.risk_score.total >= min_risk
-        ]
-
-    # Trim to requested limit
-    sorted_items = sorted_items[:limit]
-
-    return ReviewListResponse(pending=sorted_items, total_pending=result.total_pending)
-
-
-# ── POST /v1/review/{relationship_id} ────────────────────────────
+    return ReviewListResponse(
+        pending=[_to_review_item(p) for p in listing.pending],
+        total_pending=listing.total_pending,
+    )
 
 
 @router.post("/{relationship_id}", response_model=ReviewActionResponse)
 async def review_relationship(
     relationship_id: str,
     body: ReviewActionRequest,
+    store: Store = Depends(get_store),
 ) -> ReviewActionResponse:
     """Approve or reject a relationship."""
-    if body.action not in ("approve", "reject"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid action: {body.action!r}. Must be 'approve' or 'reject'.",
+    try:
+        result = await review_relationship_service(
+            store, relationship_id, action=body.action, reason=body.reason,
         )
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT id, status, source_entity_id, target_entity_id, rel_type, source_memory_id "
-            "FROM relationships WHERE id = $1",
-            relationship_id,
-        )
-        if row is None:
-            raise HTTPException(status_code=404, detail="Relationship not found")
-
-        previous_status = row["status"]
-        new_status = "approved" if body.action == "approve" else "rejected"
-
-        await conn.execute(
-            "UPDATE relationships SET status = $1, updated_at = now() WHERE id = $2",
-            new_status, relationship_id,
-        )
-
-        if body.action == "reject":
-            # Save rejected pattern
-            source_name = await conn.fetchval(
-                "SELECT name FROM entities WHERE id = $1", row["source_entity_id"],
-            )
-            target_name = await conn.fetchval(
-                "SELECT name FROM entities WHERE id = $1", row["target_entity_id"],
-            )
-            if source_name and target_name:
-                if await _table_exists(conn, "rejected_patterns"):
-                    from ulid import ULID
-                    await conn.execute(
-                        """INSERT INTO rejected_patterns (id, source_name, target_name, rel_type, source_memory_id, reason)
-                           VALUES ($1, $2, $3, $4, $5, $6)
-                           ON CONFLICT (source_name, target_name, rel_type) DO NOTHING""",
-                        str(ULID()), source_name, target_name,
-                        row["rel_type"], row["source_memory_id"], body.reason,
-                    )
-
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except StoreNotFoundError:
+        raise HTTPException(status_code=404, detail="Relationship not found")
     return ReviewActionResponse(
-        id=relationship_id,
-        status=new_status,
-        previous_status=previous_status,
+        id=result.id,
+        status=result.status,
+        previous_status=result.previous_status,
     )
 
 
-# ── POST /v1/review/bulk ─────────────────────────────────────────
-
-
 @router.post("/bulk", response_model=BulkReviewResponse)
-async def bulk_review(body: BulkReviewRequest) -> BulkReviewResponse:
+async def bulk_review(
+    body: BulkReviewRequest,
+    store: Store = Depends(get_store),
+) -> BulkReviewResponse:
     """Approve or reject multiple relationships at once."""
-    if body.action not in ("approve", "reject"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid action: {body.action!r}. Must be 'approve' or 'reject'.",
+    try:
+        result = await bulk_review_service(
+            store, body.ids, action=body.action, reason=body.reason,
         )
-    if not body.ids:
-        return BulkReviewResponse(updated=0, action=body.action)
-
-    new_status = "approved" if body.action == "approve" else "rejected"
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            result = await conn.execute(
-                "UPDATE relationships SET status = $1, updated_at = now() WHERE id = ANY($2)",
-                new_status, body.ids,
-            )
-            # Parse "UPDATE N" to get count
-            updated = int(result.split()[-1]) if result else 0
-
-            if body.action == "reject" and await _table_exists(conn, "rejected_patterns"):
-                from ulid import ULID
-                rows = await conn.fetch(
-                    """SELECT r.rel_type, r.source_memory_id,
-                              se.name as source_name, te.name as target_name
-                       FROM relationships r
-                       JOIN entities se ON se.id = r.source_entity_id
-                       JOIN entities te ON te.id = r.target_entity_id
-                       WHERE r.id = ANY($1)""",
-                    body.ids,
-                )
-                for row in rows:
-                    await conn.execute(
-                        """INSERT INTO rejected_patterns (id, source_name, target_name, rel_type, source_memory_id, reason)
-                           VALUES ($1, $2, $3, $4, $5, $6)
-                           ON CONFLICT (source_name, target_name, rel_type) DO NOTHING""",
-                        str(ULID()), row["source_name"], row["target_name"],
-                        row["rel_type"], row["source_memory_id"], body.reason,
-                    )
-
-    return BulkReviewResponse(updated=updated, action=body.action)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return BulkReviewResponse(updated=result.updated, action=result.action)
