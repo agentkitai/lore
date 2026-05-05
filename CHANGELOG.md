@@ -9,9 +9,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - Server-side persistence layer (`lore.persistence`) defining the `Store` protocol with the `MemoryOps` slice. New `PostgresStore` implementation extracted from route SQL. Contract test suite at `tests/persistence/` runs against every Store implementation. (Foundation for SQLite solo mode — see `docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md`.)
 - Service layer (`lore.services`) for memory ops and retrieve. Routes call services; services call Store. No HTTP behavior changes.
+- `Store` protocol grows the `GraphOps` slice (24 typed methods spanning entities, mentions, relationships, traversal, stats, and a UI-facing text search). `PostgresStore` implements all of them.
+- `lore.services.graph` package (`entities.py`, `graph.py`, `review.py`) wraps the GraphOps store layer. Includes the risk-score pure function lifted from the old `routes/review.py`.
 
 ### Internal
 - `routes/memories.py` and `routes/retrieve.py` no longer contain raw SQL. CI guard `scripts/check_routes_no_sql.py` enforces this for migrated routes.
+- All 8 graph route handlers (`routes/graph/{memories,entities,stats,topics}.py`) and the 4 review handlers (`routes/review.py`) refactored to call services exclusively. Inline SQL, `_table_exists` checks, and `_compute_risk_score` removed from those route files. CI guard now covers 7 migrated route files.
+- New contract tests at `tests/persistence/test_contract_graph.py` (49 tests across 24 GraphOps methods).
+- New service tests at `tests/services/test_graph_{entities,graph,review}.py` (41 tests) and route tests at `tests/server/test_graph_routes.py` (21 tests with FakeStore mocks).
+- Phase 1B follow-up: cascade-delete contract test for `delete_entity` deferred to a future task (mentions/relationships rows when an entity is deleted).
 
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 
