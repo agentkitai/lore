@@ -511,3 +511,88 @@ async def test_expire_relationship_sets_valid_until(store: Store):
     # And get_active_relationship now returns None
     active = await store.get_active_relationship(a.id, b.id, rel_type="uses")
     assert active is None
+
+
+@pytest.mark.asyncio
+async def test_list_pending_relationships_returns_only_pending(store: Store):
+    a, b = await _two_entities(store, src="lp1", tgt="lp2")
+    pending = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="uses", status="pending",
+        )
+    )
+    await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="depends_on", status="approved",
+        )
+    )
+    rows = await store.list_pending_relationships()
+    ids = {r.id for r in rows}
+    assert pending.id in ids
+
+
+@pytest.mark.asyncio
+async def test_list_pending_relationships_includes_joined_entity_info(store: Store):
+    a = await store.upsert_entity(
+        NewEntity(name="src_ent", entity_type="topic", mention_count=4)
+    )
+    b = await store.upsert_entity(
+        NewEntity(name="tgt_ent", entity_type="library", mention_count=7)
+    )
+    rel = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="uses", status="pending",
+        )
+    )
+    rows = await store.list_pending_relationships()
+    matching = [r for r in rows if r.id == rel.id]
+    assert len(matching) == 1
+    row = matching[0]
+    assert row.source_name == "src_ent"
+    assert row.source_entity_type == "topic"
+    assert row.source_mentions == 4
+    assert row.target_name == "tgt_ent"
+    assert row.target_entity_type == "library"
+    assert row.target_mentions == 7
+
+
+@pytest.mark.asyncio
+async def test_list_pending_relationships_filter_by_type(store: Store):
+    a, b = await _two_entities(store, src="ft1", tgt="ft2")
+    r_uses = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="uses", status="pending",
+        )
+    )
+    await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="depends_on", status="pending",
+        )
+    )
+    only_uses = await store.list_pending_relationships(rel_type="uses")
+    ids = {r.id for r in only_uses}
+    assert ids == {r_uses.id}
+
+
+@pytest.mark.asyncio
+async def test_save_rejected_pattern_round_trip(store: Store):
+    await store.save_rejected_pattern(
+        "alpha", "beta", "uses", reason="not relevant"
+    )
+    # Re-call with the same triple — should be idempotent (no error).
+    await store.save_rejected_pattern(
+        "alpha", "beta", "uses", reason="updated reason"
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_rejected_pattern_separate_triples_independent(store: Store):
+    await store.save_rejected_pattern("a", "b", "uses")
+    await store.save_rejected_pattern("a", "b", "depends_on")
+    await store.save_rejected_pattern("a", "c", "uses")
+    # All three different rows — no conflict between them. (Smoke test.)

@@ -793,7 +793,48 @@ class PostgresStore:
         rel_type: Optional[str] = None,
         limit: int = 100,
     ) -> Sequence[PendingRelationshipRow]:
-        raise NotImplementedError("Phase 1B T9")
+        where: list[str] = ["r.status = 'pending'"]
+        params: list[Any] = []
+        if rel_type is not None:
+            params.append(rel_type)
+            where.append(f"r.rel_type = ${len(params)}")
+        params.append(limit)
+        sql = f"""
+            SELECT r.id, r.source_entity_id, r.target_entity_id, r.rel_type,
+                   r.weight, r.source_memory_id, r.created_at,
+                   se.name AS source_name,
+                   se.entity_type AS source_entity_type,
+                   se.mention_count AS source_mentions,
+                   te.name AS target_name,
+                   te.entity_type AS target_entity_type,
+                   te.mention_count AS target_mentions
+            FROM relationships r
+            JOIN entities se ON se.id = r.source_entity_id
+            JOIN entities te ON te.id = r.target_entity_id
+            WHERE {' AND '.join(where)}
+            ORDER BY r.created_at DESC
+            LIMIT ${len(params)}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [
+            PendingRelationshipRow(
+                id=r["id"],
+                source_entity_id=r["source_entity_id"],
+                target_entity_id=r["target_entity_id"],
+                rel_type=r["rel_type"],
+                weight=float(r["weight"]) if r["weight"] is not None else 1.0,
+                source_memory_id=r["source_memory_id"],
+                created_at=r["created_at"],
+                source_name=r["source_name"],
+                source_entity_type=r["source_entity_type"],
+                source_mentions=r["source_mentions"] or 0,
+                target_name=r["target_name"],
+                target_entity_type=r["target_entity_type"],
+                target_mentions=r["target_mentions"] or 0,
+            )
+            for r in rows
+        ]
 
     async def save_rejected_pattern(
         self,
@@ -804,7 +845,22 @@ class PostgresStore:
         source_memory_id: Optional[str] = None,
         reason: Optional[str] = None,
     ) -> None:
-        raise NotImplementedError("Phase 1B T9")
+        pattern_id = f"rpat_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO rejected_patterns
+                    (id, source_name, target_name, rel_type, source_memory_id, reason)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (source_name, target_name, rel_type) DO NOTHING
+                """,
+                pattern_id,
+                source_name,
+                target_name,
+                rel_type,
+                source_memory_id,
+                reason,
+            )
 
     # T10
     async def query_relationships(
