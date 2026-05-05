@@ -20,6 +20,7 @@ from lore.persistence import (
     StoredMention,
     StoredRelationship,
 )
+from lore.persistence.types import GraphStats, TimelineBucketRow
 
 
 @pytest.mark.asyncio
@@ -724,3 +725,147 @@ async def test_query_relationships_empty_input_returns_empty(store: Store):
 async def test_query_relationships_invalid_direction_raises(store: Store):
     with pytest.raises(ValueError):
         await store.query_relationships(["ent_x"], direction="upstream")
+
+
+# ---------------------------------------------------------------------------
+# T11 — get_graph_stats, get_timeline_buckets, get_memories_by_entities,
+#        search_memories_text
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_graph_stats_returns_typed_result(store: Store):
+    # Empty/initial state — stats should still return without error
+    stats = await store.get_graph_stats()
+    assert isinstance(stats, GraphStats)
+    assert stats.total_memories >= 0
+    assert stats.total_entities >= 0
+
+
+@pytest.mark.asyncio
+async def test_get_graph_stats_counts_entities_and_relationships(store: Store):
+    a, b = await _two_entities(store, src="gs_a", tgt="gs_b")
+    await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    stats = await store.get_graph_stats()
+    assert stats.total_entities >= 2
+    assert stats.total_relationships >= 1
+    by_et = stats.by_entity_type
+    assert by_et.get("topic", 0) >= 2
+
+
+@pytest.mark.asyncio
+async def test_get_graph_stats_top_entities_ordered(store: Store):
+    await store.upsert_entity(NewEntity(name="te_low", entity_type="topic", mention_count=1))
+    await store.upsert_entity(NewEntity(name="te_high", entity_type="topic", mention_count=100))
+    stats = await store.get_graph_stats()
+    names = [e["name"] for e in stats.top_entities[:5]]
+    # te_high should appear before te_low (DESC), if both are in the top 5
+    if "te_high" in names and "te_low" in names:
+        assert names.index("te_high") < names.index("te_low")
+
+
+@pytest.mark.asyncio
+async def test_get_graph_stats_with_project_filter(store: Store):
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="proj_a memo", embedding=[0.0] * 384, project="proj_a")
+    )
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="proj_b memo", embedding=[0.0] * 384, project="proj_b")
+    )
+    only_a = await store.get_graph_stats(project="proj_a")
+    assert only_a.total_memories == 1
+
+
+@pytest.mark.asyncio
+async def test_get_timeline_buckets_basic(store: Store):
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="t1", embedding=[0.0] * 384)
+    )
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="t2", embedding=[0.0] * 384)
+    )
+    rows = await store.get_timeline_buckets(trunc="day")
+    assert len(rows) >= 1
+    assert all(isinstance(r, TimelineBucketRow) for r in rows)
+    # All buckets should sum to >= 2 from our inserts
+    total = sum(r.count for r in rows)
+    assert total >= 2
+
+
+@pytest.mark.asyncio
+async def test_get_timeline_buckets_invalid_trunc(store: Store):
+    with pytest.raises(ValueError):
+        await store.get_timeline_buckets(trunc="century")
+
+
+@pytest.mark.asyncio
+async def test_get_memories_by_entities(store: Store):
+    e = await store.upsert_entity(NewEntity(name="byent", entity_type="topic"))
+    m1 = await store.insert_memory(
+        NewMemory(org_id="solo", content="from-byent-1", embedding=[0.0] * 384)
+    )
+    m2 = await store.insert_memory(
+        NewMemory(org_id="solo", content="from-byent-2", embedding=[0.0] * 384)
+    )
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m1.id))
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m2.id))
+    rows = await store.get_memories_by_entities([e.id])
+    ids = {r.id for r in rows}
+    assert {m1.id, m2.id}.issubset(ids)
+
+
+@pytest.mark.asyncio
+async def test_get_memories_by_entities_excludes_memory_id(store: Store):
+    e = await store.upsert_entity(NewEntity(name="byentx", entity_type="topic"))
+    m1 = await store.insert_memory(
+        NewMemory(org_id="solo", content="ex1", embedding=[0.0] * 384)
+    )
+    m2 = await store.insert_memory(
+        NewMemory(org_id="solo", content="ex2", embedding=[0.0] * 384)
+    )
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m1.id))
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m2.id))
+    rows = await store.get_memories_by_entities([e.id], exclude_memory_id=m1.id)
+    ids = {r.id for r in rows}
+    assert m1.id not in ids
+    assert m2.id in ids
+
+
+@pytest.mark.asyncio
+async def test_get_memories_by_entities_empty_input_returns_empty(store: Store):
+    rows = await store.get_memories_by_entities([])
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_search_memories_text_finds_substring(store: Store):
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="redis pub/sub patterns", embedding=[0.0] * 384)
+    )
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="postgres explain analyze", embedding=[0.0] * 384)
+    )
+    redis_rows = await store.search_memories_text("redis")
+    contents = {r.content for r in redis_rows}
+    assert any("redis" in c for c in contents)
+
+
+@pytest.mark.asyncio
+async def test_search_memories_text_case_insensitive(store: Store):
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="Kubernetes deployments", embedding=[0.0] * 384)
+    )
+    rows = await store.search_memories_text("KUBERNETES")
+    assert any("Kubernetes" in r.content for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_search_memories_text_respects_limit(store: Store):
+    for i in range(5):
+        await store.insert_memory(
+            NewMemory(org_id="solo", content=f"matchme item {i}", embedding=[0.0] * 384)
+        )
+    rows = await store.search_memories_text("matchme", limit=2)
+    assert len(rows) == 2

@@ -7,7 +7,7 @@ existing route SQL until 1B–1G migrate them.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
 try:
@@ -119,6 +119,9 @@ def _row_to_entity(row: "asyncpg.Record") -> StoredEntity:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+_VALID_TRUNCS = frozenset({"hour", "day", "week", "month"})
 
 
 class PostgresStore:
@@ -922,7 +925,106 @@ class PostgresStore:
         *,
         project: Optional[str] = None,
     ) -> GraphStats:
-        raise NotImplementedError("Phase 1B T11")
+        proj_clause = "WHERE project = $1" if project else ""
+        proj_args: list[Any] = [project] if project else []
+
+        cutoff_24h = datetime.now(timezone.utc) - timedelta(hours=24)
+        cutoff_7d = datetime.now(timezone.utc) - timedelta(days=7)
+
+        async with self._acquire() as conn:
+            total_memories = await conn.fetchval(
+                f"SELECT COUNT(*) FROM memories {proj_clause}", *proj_args,
+            )
+
+            if project:
+                recent_24h = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE project = $1 AND created_at >= $2",
+                    project, cutoff_24h,
+                )
+                recent_7d = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE project = $1 AND created_at >= $2",
+                    project, cutoff_7d,
+                )
+                avg_imp = await conn.fetchval(
+                    "SELECT AVG(COALESCE(importance_score, 1.0)) FROM memories WHERE project = $1",
+                    project,
+                )
+                oldest = await conn.fetchval(
+                    "SELECT MIN(created_at) FROM memories WHERE project = $1", project,
+                )
+                newest = await conn.fetchval(
+                    "SELECT MAX(created_at) FROM memories WHERE project = $1", project,
+                )
+                type_rows = await conn.fetch(
+                    "SELECT COALESCE(meta->>'type', 'general') AS t, COUNT(*) AS c "
+                    "FROM memories WHERE project = $1 GROUP BY t",
+                    project,
+                )
+                proj_rows = await conn.fetch(
+                    "SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c "
+                    "FROM memories WHERE project = $1 GROUP BY p",
+                    project,
+                )
+            else:
+                recent_24h = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE created_at >= $1", cutoff_24h,
+                )
+                recent_7d = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE created_at >= $1", cutoff_7d,
+                )
+                avg_imp = await conn.fetchval(
+                    "SELECT AVG(COALESCE(importance_score, 1.0)) FROM memories"
+                )
+                oldest = await conn.fetchval("SELECT MIN(created_at) FROM memories")
+                newest = await conn.fetchval("SELECT MAX(created_at) FROM memories")
+                type_rows = await conn.fetch(
+                    "SELECT COALESCE(meta->>'type', 'general') AS t, COUNT(*) AS c "
+                    "FROM memories GROUP BY t",
+                )
+                proj_rows = await conn.fetch(
+                    "SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c "
+                    "FROM memories GROUP BY p",
+                )
+
+            # Entities and relationships are global (no project scope)
+            total_entities = await conn.fetchval("SELECT COUNT(*) FROM entities") or 0
+            total_relationships = await conn.fetchval(
+                "SELECT COUNT(*) FROM relationships"
+            ) or 0
+            et_rows = await conn.fetch(
+                "SELECT entity_type, COUNT(*) AS c FROM entities GROUP BY entity_type"
+            )
+            top_rows = await conn.fetch(
+                "SELECT name, entity_type, mention_count FROM entities "
+                "ORDER BY mention_count DESC LIMIT 5"
+            )
+
+        by_type = {r["t"]: r["c"] for r in type_rows}
+        by_project = {r["p"]: r["c"] for r in proj_rows}
+        by_entity_type = {r["entity_type"]: r["c"] for r in et_rows}
+        top_entities = [
+            {
+                "name": r["name"],
+                "type": r["entity_type"],
+                "mention_count": r["mention_count"],
+            }
+            for r in top_rows
+        ]
+
+        return GraphStats(
+            total_memories=total_memories or 0,
+            total_entities=total_entities,
+            total_relationships=total_relationships,
+            by_type=by_type,
+            by_project=by_project,
+            by_entity_type=by_entity_type,
+            top_entities=top_entities,
+            avg_importance=round(float(avg_imp or 0), 3),
+            recent_24h=recent_24h or 0,
+            recent_7d=recent_7d or 0,
+            oldest_memory=oldest,
+            newest_memory=newest,
+        )
 
     async def get_timeline_buckets(
         self,
@@ -930,7 +1032,31 @@ class PostgresStore:
         trunc: str,
         project: Optional[str] = None,
     ) -> Sequence[TimelineBucketRow]:
-        raise NotImplementedError("Phase 1B T11")
+        if trunc not in _VALID_TRUNCS:
+            raise ValueError(
+                f"trunc must be one of {sorted(_VALID_TRUNCS)}; got {trunc!r}"
+            )
+        proj_clause = "WHERE project = $1" if project else ""
+        proj_args: list[Any] = [project] if project else []
+        sql = f"""
+            SELECT date_trunc('{trunc}', created_at) AS bucket_date,
+                   COALESCE(meta->>'type', 'general') AS mem_type,
+                   COUNT(*) AS cnt
+            FROM memories
+            {proj_clause}
+            GROUP BY bucket_date, mem_type
+            ORDER BY bucket_date
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *proj_args)
+        return [
+            TimelineBucketRow(
+                bucket_date=r["bucket_date"],
+                mem_type=r["mem_type"],
+                count=r["cnt"],
+            )
+            for r in rows
+        ]
 
     async def get_memories_by_entities(
         self,
@@ -939,7 +1065,29 @@ class PostgresStore:
         exclude_memory_id: Optional[str] = None,
         limit: int = 20,
     ) -> Sequence[StoredMemory]:
-        raise NotImplementedError("Phase 1B T11")
+        if not entity_ids:
+            return []
+        where: list[str] = ["em.entity_id = ANY($1)"]
+        params: list[Any] = [list(entity_ids)]
+        if exclude_memory_id is not None:
+            params.append(exclude_memory_id)
+            where.append(f"m.id != ${len(params)}")
+        params.append(limit)
+        sql = f"""
+            SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,
+                            m.confidence, m.source, m.project,
+                            m.created_at, m.updated_at, m.expires_at,
+                            m.upvotes, m.downvotes, m.meta,
+                            m.importance_score, m.access_count, m.last_accessed_at
+            FROM entity_mentions em
+            JOIN memories m ON m.id = em.memory_id
+            WHERE {' AND '.join(where)}
+            ORDER BY m.created_at DESC
+            LIMIT ${len(params)}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_stored(r) for r in rows]
 
     async def search_memories_text(
         self,
@@ -947,7 +1095,23 @@ class PostgresStore:
         *,
         limit: int = 20,
     ) -> Sequence[StoredMemory]:
-        raise NotImplementedError("Phase 1B T11")
+        pattern = f"%{query}%"
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, content, context, tags, confidence, source,
+                       project, created_at, updated_at, expires_at, upvotes,
+                       downvotes, meta, importance_score, access_count,
+                       last_accessed_at
+                FROM memories
+                WHERE content ILIKE $1
+                ORDER BY importance_score DESC NULLS LAST, created_at DESC
+                LIMIT $2
+                """,
+                pattern,
+                limit,
+            )
+        return [_row_to_stored(r) for r in rows]
 
 
 class _BoundConn:
