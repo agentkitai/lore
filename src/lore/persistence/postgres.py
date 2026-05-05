@@ -439,12 +439,13 @@ class PostgresStore:
                 ON CONFLICT (name) DO UPDATE SET
                     mention_count = entities.mention_count + EXCLUDED.mention_count,
                     last_seen_at = GREATEST(entities.last_seen_at, EXCLUDED.last_seen_at),
-                    aliases = (
-                        SELECT jsonb_agg(DISTINCT v)
-                        FROM jsonb_array_elements(
-                            COALESCE(entities.aliases, '[]'::jsonb) ||
-                            COALESCE(EXCLUDED.aliases, '[]'::jsonb)
-                        ) v
+                    aliases = COALESCE(
+                        (SELECT jsonb_agg(DISTINCT v)
+                         FROM jsonb_array_elements(
+                             COALESCE(entities.aliases, '[]'::jsonb) ||
+                             COALESCE(EXCLUDED.aliases, '[]'::jsonb)
+                         ) v),
+                        '[]'::jsonb
                     ),
                     metadata = COALESCE(entities.metadata, '{}'::jsonb) ||
                                COALESCE(EXCLUDED.metadata, '{}'::jsonb),

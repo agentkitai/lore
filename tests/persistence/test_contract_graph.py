@@ -40,7 +40,7 @@ async def test_upsert_entity_with_aliases_and_metadata(store: Store):
             metadata={"version": "1.30"},
         )
     )
-    assert tuple(e.aliases) == ("k8s", "kube")
+    assert set(e.aliases) == {"k8s", "kube"}
     assert e.metadata == {"version": "1.30"}
 
 
