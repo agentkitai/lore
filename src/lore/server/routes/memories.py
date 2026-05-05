@@ -23,7 +23,7 @@ except ImportError:
     raise ImportError("python-ulid is required. Install with: pip install python-ulid")
 
 from lore.server.auth import AuthContext, get_auth_context, require_role
-from lore.server.db import get_pool
+from lore.server.db import get_pool, get_store
 from lore.server.routes._parsers import _parse_meta, _parse_tags
 from lore.server.models import (
     MemoryCreateRequest,
@@ -34,6 +34,16 @@ from lore.server.models import (
     MemorySearchResponse,
     MemorySearchResult,
     MemoryUpdateRequest,
+)
+from lore.persistence.exceptions import StoreNotFound
+from lore.services.memories import (
+    create_memory as _create_memory,
+    get_memory as _get_memory,
+    list_memories as _list_memories,
+    update_memory as _update_memory,
+    delete_memory as _delete_memory,
+    search_memories as _search_memories,
+    vote_memory as _vote_memory,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,48 +143,36 @@ async def create_memory(
     body: MemoryCreateRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
 ) -> MemoryCreateResponse:
-    """Create a new memory."""
-    project = body.project
-    if auth.project is not None:
-        project = auth.project
+    """Create a memory. Routes layer: parse → call service → serialize."""
+    store = await get_store()
 
-    now = datetime.now(timezone.utc)
-    memory_id = str(ULID())
+    # Embedding stays at this layer for now — Phase 1B will factor it out.
+    from lore.server.routes.retrieve import _get_embedder
+    embedder = _get_embedder()
+    embedding = body.embedding if body.embedding else await asyncio.to_thread(embedder.embed, body.content)
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO memories
-               (id, org_id, content, context, tags, confidence,
-                source, project, embedding, created_at, updated_at, expires_at,
-                upvotes, downvotes, meta)
-               VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9,
-                       $10, $11, $12, $13, $14, $15::jsonb)""",
-            memory_id,
-            auth.org_id,
-            body.content,
-            body.context,
-            json.dumps(body.tags),
-            body.confidence,
-            body.source,
-            project,
-            json.dumps(body.embedding) if body.embedding else None,
-            now,
-            now,
-            body.expires_at,
-            0,
-            0,
-            json.dumps(body.meta),
-        )
+    stored = await _create_memory(
+        store,
+        org_id=auth.org_id,
+        content=body.content,
+        context=body.context,
+        embedding=embedding,
+        tags=body.tags or [],
+        confidence=body.confidence if body.confidence is not None else 0.5,
+        source=body.source,
+        project=auth.project or body.project,
+        expires_at=body.expires_at,
+        meta=body.meta or {},
+    )
 
-    # Fire-and-forget enrichment
+    # Fire-and-forget enrichment unchanged from before
     enrich = body.enrich
     if enrich is None:
         enrich = os.environ.get("LORE_ENRICHMENT_ENABLED", "").lower() in ("true", "1", "yes")
     if enrich:
-        asyncio.create_task(_enrich_memory(memory_id, body.content, body.context))
+        asyncio.create_task(_enrich_memory(stored.id, stored.content, stored.context))
 
-    return MemoryCreateResponse(id=memory_id)
+    return MemoryCreateResponse(id=stored.id)
 
 
 # ── Search ─────────────────────────────────────────────────────────
