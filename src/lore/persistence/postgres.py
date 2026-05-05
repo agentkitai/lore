@@ -202,7 +202,14 @@ class PostgresStore:
         return _row_to_stored(row)
 
     async def delete_memory(self, org_id: str, memory_id: str) -> bool:
-        raise NotImplementedError("delete_memory: implemented in T8")
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM memories WHERE id = $1 AND org_id = $2",
+                memory_id,
+                org_id,
+            )
+        # asyncpg returns "DELETE n"
+        return result.endswith(" 1")
 
     async def list_memories(self, filter: MemoryFilter) -> Sequence[StoredMemory]:
         raise NotImplementedError("list_memories: implemented in T9")

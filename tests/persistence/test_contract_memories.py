@@ -85,3 +85,21 @@ async def test_update_memory_partial(store: Store):
 async def test_update_memory_raises_when_missing(store: Store):
     with pytest.raises(StoreNotFound):
         await store.update_memory("solo", "mem_missing", MemoryPatch(content="x"))
+
+
+@pytest.mark.asyncio
+async def test_delete_memory(store: Store):
+    inserted = await store.insert_memory(
+        NewMemory(org_id="solo", content="to delete", embedding=_vec(4))
+    )
+    assert (await store.get_memory("solo", inserted.id)) is not None
+
+    deleted = await store.delete_memory("solo", inserted.id)
+    assert deleted is True
+
+    assert (await store.get_memory("solo", inserted.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_returns_false_when_missing(store: Store):
+    assert (await store.delete_memory("solo", "mem_missing")) is False
