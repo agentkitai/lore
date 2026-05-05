@@ -12,21 +12,35 @@ from lore.persistence.exceptions import (
 from lore.persistence.factory import make_store
 from lore.persistence.protocol import Store
 from lore.persistence.types import (
+    GraphStats,
     MemoryFilter,
     MemoryPatch,
+    NewEntity,
+    NewMention,
     NewMemory,
+    NewRelationship,
+    PendingRelationshipRow,
     RecallParams,
     ScoredMemory,
+    StoredEntity,
     StoredMemory,
+    StoredMention,
+    StoredRelationship,
+    TimelineBucketRow,
 )
 
 __all__ = [
     "BackendUnavailableError",
     "ConfigError",
+    "GraphStats",
     "LoreError",
     "MemoryFilter",
     "MemoryPatch",
+    "NewEntity",
+    "NewMention",
     "NewMemory",
+    "NewRelationship",
+    "PendingRelationshipRow",
     "RecallParams",
     "ScoredMemory",
     "Store",
@@ -34,6 +48,10 @@ __all__ = [
     "StoreError",
     "StoreNotFoundError",
     "StoreSchemaMismatchError",
+    "StoredEntity",
     "StoredMemory",
+    "StoredMention",
+    "StoredRelationship",
+    "TimelineBucketRow",
     "make_store",
 ]
