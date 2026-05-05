@@ -191,6 +191,7 @@ class PostgresStore:
             "UPDATE memories "
             f"SET {', '.join(sets)} "
             "WHERE id = $1 AND org_id = $2 "
+            "AND (expires_at IS NULL OR expires_at > now()) "
             "RETURNING id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
             "meta, importance_score, access_count, last_accessed_at"
@@ -337,7 +338,7 @@ class PostgresStore:
         except (ValueError, IndexError):
             return 0
 
-    async def bump_access_counts(self, memory_ids: Sequence[str]) -> None:
+    async def bump_access_counts(self, org_id: str, memory_ids: Sequence[str]) -> None:
         if not memory_ids:
             return
         async with self._acquire() as conn:
@@ -349,9 +350,10 @@ class PostgresStore:
                     importance_score = COALESCE(confidence, 1.0)
                         * GREATEST(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1)
                         * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
-                WHERE id = ANY($1)
+                WHERE id = ANY($1) AND org_id = $2
                 """,
                 list(memory_ids),
+                org_id,
             )
 
     async def vote_memory(

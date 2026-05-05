@@ -66,7 +66,7 @@ class Store(Protocol):
         """Delete rows with expires_at < now(); returns rowcount."""
         ...
 
-    async def bump_access_counts(self, memory_ids: Sequence[str]) -> None:
+    async def bump_access_counts(self, org_id: str, memory_ids: Sequence[str]) -> None:
         """Increment access_count + last_accessed_at + recompute importance_score."""
         ...
 

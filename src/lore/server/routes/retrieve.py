@@ -235,7 +235,7 @@ async def retrieve(
 
     # Fire-and-forget: bump access_count + recalculate importance for returned memories
     if memories:
-        asyncio.create_task(_bump_access_counts([m.id for m in memories]))
+        asyncio.create_task(_bump_access_counts(auth.org_id, [m.id for m in memories]))
 
     return RetrieveResponse(
         memories=memories,
@@ -303,7 +303,7 @@ async def _record_retrieval_event(
         logger.warning("Failed to record retrieval event", exc_info=True)
 
 
-async def _bump_access_counts(memory_ids: List[str]) -> None:
+async def _bump_access_counts(org_id: str, memory_ids: List[str]) -> None:
     """Bump access_count, last_accessed_at, and recalculate importance (fire-and-forget)."""
     try:
 
@@ -318,8 +318,9 @@ async def _bump_access_counts(memory_ids: List[str]) -> None:
                        importance_score = COALESCE(confidence, 1.0)
                            * GREATEST(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1)
                            * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
-                   WHERE id = ANY($1)""",
+                   WHERE id = ANY($1) AND org_id = $2""",
                 memory_ids,
+                org_id,
             )
     except Exception:
         logger.warning("Failed to bump access counts", exc_info=True)

@@ -232,11 +232,36 @@ async def test_bump_access_counts_increments(store: Store):
         NewMemory(org_id="solo", content="popular", embedding=_vec(40))
     )
     assert m.access_count == 0
-    await store.bump_access_counts([m.id])
+    await store.bump_access_counts("solo", [m.id])
     after = await store.get_memory("solo", m.id)
     assert after is not None
     assert after.access_count == 1
     assert after.last_accessed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_bump_access_counts_cross_org_isolation(store: Store):
+    """bump_access_counts must not touch rows belonging to a different org."""
+    m = await store.insert_memory(
+        NewMemory(org_id="org_a", content="org_a memory", embedding=_vec(41))
+    )
+    assert m.access_count == 0
+    # Attempt to bump from org_b — should silently affect 0 rows
+    await store.bump_access_counts("org_b", [m.id])
+    after = await store.get_memory("org_a", m.id)
+    assert after is not None
+    assert after.access_count == 0
+
+
+@pytest.mark.asyncio
+async def test_update_memory_raises_when_expired(store: Store):
+    """Updating an expired memory must raise StoreNotFound."""
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="stale", embedding=_vec(42), expires_at=past)
+    )
+    with pytest.raises(StoreNotFound):
+        await store.update_memory("solo", m.id, MemoryPatch(content="too late"))
 
 
 @pytest.mark.asyncio
