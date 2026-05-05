@@ -308,23 +308,25 @@ async def get_memory(
     auth: AuthContext = Depends(get_auth_context),
 ) -> MemoryResponse:
     """Get a single memory by ID."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""SELECT id, content, context, tags, confidence,
-                       source, project, created_at, updated_at, expires_at,
-                       upvotes, downvotes, meta
-                FROM memories WHERE id = ${len(scope_params) + 1} AND {scope_sql}""",
-            *scope_params,
-            memory_id,
-        )
-
-    if row is None:
+    store = await get_store()
+    m = await _get_memory(store, auth.org_id, memory_id)
+    if m is None:
         raise HTTPException(status_code=404, detail="Memory not found")
-
-    return _row_to_response(dict(row))
+    return MemoryResponse(
+        id=m.id,
+        content=m.content,
+        context=m.context,
+        tags=list(m.tags),
+        confidence=m.confidence,
+        source=m.source,
+        project=m.project,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+        expires_at=m.expires_at,
+        upvotes=m.upvotes,
+        downvotes=m.downvotes,
+        meta=dict(m.meta),
+    )
 
 
 # ── Update ─────────────────────────────────────────────────────────
