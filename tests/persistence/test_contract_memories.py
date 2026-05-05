@@ -149,3 +149,63 @@ async def test_list_memories_excludes_expired_by_default(store: Store):
         MemoryFilter(org_id="solo", include_expired=True)
     )
     assert {m.id for m in with_expired} >= {fresh.id, expired.id}
+
+
+import json as _json
+from pathlib import Path as _Path
+
+_FIXTURES = _json.loads(
+    (_Path(__file__).parent / "fixtures" / "embeddings.json").read_text()
+)
+
+
+@pytest.mark.asyncio
+async def test_recall_by_embedding_returns_ranked_results(store: Store):
+    # Insert 5 fixture memories
+    inserted = []
+    for i, item in enumerate(_FIXTURES[:5]):
+        m = await store.insert_memory(
+            NewMemory(
+                org_id="solo",
+                content=item["text"],
+                embedding=item["embedding"],
+            )
+        )
+        inserted.append((m, item))
+
+    # Query with the embedding of the first item — it should rank #1
+    target = inserted[0][1]
+    results = await store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target["embedding"],
+            limit=5,
+            min_score=0.0,
+        )
+    )
+    assert len(results) >= 1
+    assert results[0].content == target["text"]
+    # Score is in [0, 1] for cosine-similarity-derived score
+    assert 0.0 <= results[0].score <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_recall_respects_min_score(store: Store):
+    target = _FIXTURES[0]
+    other = _FIXTURES[5] if len(_FIXTURES) > 5 else _FIXTURES[1]
+    await store.insert_memory(
+        NewMemory(org_id="solo", content=target["text"], embedding=target["embedding"])
+    )
+    await store.insert_memory(
+        NewMemory(org_id="solo", content=other["text"], embedding=other["embedding"])
+    )
+    # min_score=0.999 should exclude the unrelated entry
+    results = await store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target["embedding"],
+            limit=10,
+            min_score=0.999,
+        )
+    )
+    assert all(r.score >= 0.999 for r in results)

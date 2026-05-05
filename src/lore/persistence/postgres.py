@@ -256,8 +256,75 @@ class PostgresStore:
             rows = await conn.fetch(sql, *params)
         return [_row_to_stored(r) for r in rows]
 
-    async def recall_by_embedding(self, params: RecallParams) -> Sequence[ScoredMemory]:
-        raise NotImplementedError("recall_by_embedding: implemented in T10")
+    async def recall_by_embedding(
+        self, params: "RecallParams"
+    ) -> Sequence[ScoredMemory]:
+        where: list[str] = ["org_id = $1"]
+        sql_params: list[Any] = [params.org_id]
+        if params.project is not None:
+            sql_params.append(params.project)
+            where.append(f"project = ${len(sql_params)}")
+        if params.exclude_expired:
+            where.append("(expires_at IS NULL OR expires_at > now())")
+        where.append("embedding IS NOT NULL")
+
+        sql_params.append(json.dumps(list(params.query_vec)))
+        emb_idx = len(sql_params)
+        sql_params.append(params.min_score)
+        score_idx = len(sql_params)
+        sql_params.append(params.limit)
+        limit_idx = len(sql_params)
+
+        sql = f"""
+            SELECT id, org_id, content, context, tags, confidence, source, project,
+                   created_at, updated_at, expires_at, upvotes, downvotes, meta,
+                   importance_score, access_count, last_accessed_at,
+                   (1 - (embedding <=> ${emb_idx}::vector)) *
+                   COALESCE(importance_score, 1.0) *
+                   power(0.5,
+                       LEAST(
+                           EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0,
+                           COALESCE(
+                               EXTRACT(EPOCH FROM (now() - last_accessed_at)) / 86400.0,
+                               EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0
+                           )
+                       )
+                       / {params.half_life_days}
+                   ) AS score
+            FROM memories
+            WHERE {' AND '.join(where)}
+              AND (1 - (embedding <=> ${emb_idx}::vector)) >= ${score_idx}
+            ORDER BY score DESC
+            LIMIT ${limit_idx}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *sql_params)
+        scored: list[ScoredMemory] = []
+        for r in rows:
+            sm = _row_to_stored(r)
+            scored.append(
+                ScoredMemory(
+                    id=sm.id,
+                    org_id=sm.org_id,
+                    content=sm.content,
+                    context=sm.context,
+                    tags=sm.tags,
+                    confidence=sm.confidence,
+                    source=sm.source,
+                    project=sm.project,
+                    created_at=sm.created_at,
+                    updated_at=sm.updated_at,
+                    expires_at=sm.expires_at,
+                    upvotes=sm.upvotes,
+                    downvotes=sm.downvotes,
+                    meta=sm.meta,
+                    importance_score=sm.importance_score,
+                    access_count=sm.access_count,
+                    last_accessed_at=sm.last_accessed_at,
+                    score=float(r["score"]),
+                )
+            )
+        return scored
 
     async def expire_memories(self) -> int:
         raise NotImplementedError("expire_memories: implemented in T11")
