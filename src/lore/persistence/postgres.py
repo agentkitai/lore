@@ -724,7 +724,24 @@ class PostgresStore:
         status: Optional[str] = None,
         limit: int = 100,
     ) -> Sequence[StoredRelationship]:
-        raise NotImplementedError("Phase 1B T8")
+        where: list[str] = ["(source_entity_id = $1 OR target_entity_id = $1)"]
+        params: list[Any] = [entity_id]
+        if status is not None:
+            params.append(status)
+            where.append(f"COALESCE(status, 'approved') = ${len(params)}")
+        params.append(limit)
+        sql = f"""
+            SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                   properties, source_fact_id, source_memory_id,
+                   valid_from, valid_until, status, created_at, updated_at
+            FROM relationships
+            WHERE {' AND '.join(where)}
+            ORDER BY weight DESC NULLS LAST, created_at DESC
+            LIMIT ${len(params)}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_relationship(r) for r in rows]
 
     async def update_relationship_status(
         self,
@@ -732,7 +749,22 @@ class PostgresStore:
         *,
         status: str,
     ) -> StoredRelationship:
-        raise NotImplementedError("Phase 1B T8")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE relationships
+                SET status = $2, updated_at = now()
+                WHERE id = $1
+                RETURNING id, source_entity_id, target_entity_id, rel_type, weight,
+                          properties, source_fact_id, source_memory_id,
+                          valid_from, valid_until, status, created_at, updated_at
+                """,
+                rel_id,
+                status,
+            )
+        if row is None:
+            raise StoreNotFoundError("relationships", rel_id)
+        return _row_to_relationship(row)
 
     async def update_relationship_weight(
         self,
@@ -740,10 +772,19 @@ class PostgresStore:
         *,
         weight: float,
     ) -> None:
-        raise NotImplementedError("Phase 1B T8")
+        async with self._acquire() as conn:
+            await conn.execute(
+                "UPDATE relationships SET weight = $2, updated_at = now() WHERE id = $1",
+                rel_id,
+                weight,
+            )
 
     async def expire_relationship(self, rel_id: str) -> None:
-        raise NotImplementedError("Phase 1B T8")
+        async with self._acquire() as conn:
+            await conn.execute(
+                "UPDATE relationships SET valid_until = now(), updated_at = now() WHERE id = $1",
+                rel_id,
+            )
 
     # T9
     async def list_pending_relationships(

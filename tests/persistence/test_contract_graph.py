@@ -403,3 +403,111 @@ async def test_save_relationship_with_properties_round_trip(store: Store):
         )
     )
     assert rel.properties == {"verified": True, "source": "manual"}
+
+
+# ---------------------------------------------------------------------------
+# T8 — relationship lifecycle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_relationships_for_entity_either_side(store: Store):
+    a, b = await _two_entities(store, src="x", tgt="y")
+    c = await store.upsert_entity(NewEntity(name="z", entity_type="topic"))
+    r1 = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    r2 = await store.save_relationship(
+        NewRelationship(source_entity_id=c.id, target_entity_id=a.id, rel_type="depends_on")
+    )
+    rows = await store.list_relationships_for_entity(a.id)
+    ids = {r.id for r in rows}
+    assert {r1.id, r2.id}.issubset(ids)
+
+
+@pytest.mark.asyncio
+async def test_list_relationships_for_entity_filters_by_status(store: Store):
+    a, b = await _two_entities(store, src="s1", tgt="s2")
+    r_pending = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="uses", status="pending",
+        )
+    )
+    r_approved = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="depends_on", status="approved",
+        )
+    )
+    only_pending = await store.list_relationships_for_entity(a.id, status="pending")
+    assert {r.id for r in only_pending} == {r_pending.id}
+
+
+@pytest.mark.asyncio
+async def test_list_relationships_respects_limit(store: Store):
+    a, b = await _two_entities(store, src="l1", tgt="l2")
+    for i in range(5):
+        await store.save_relationship(
+            NewRelationship(
+                source_entity_id=a.id, target_entity_id=b.id,
+                rel_type=f"rel_{i}",
+            )
+        )
+    rows = await store.list_relationships_for_entity(a.id, limit=2)
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_relationship_status_round_trip(store: Store):
+    a, b = await _two_entities(store, src="u1", tgt="u2")
+    rel = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="uses", status="pending",
+        )
+    )
+    updated = await store.update_relationship_status(rel.id, status="approved")
+    assert updated.status == "approved"
+    assert updated.id == rel.id
+
+
+@pytest.mark.asyncio
+async def test_update_relationship_status_raises_when_missing(store: Store):
+    from lore.persistence.exceptions import StoreNotFoundError
+    with pytest.raises(StoreNotFoundError):
+        await store.update_relationship_status("rel_missing", status="approved")
+
+
+@pytest.mark.asyncio
+async def test_update_relationship_weight_changes_weight(store: Store):
+    a, b = await _two_entities(store, src="w1", tgt="w2")
+    rel = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id, target_entity_id=b.id,
+            rel_type="uses", weight=0.3,
+        )
+    )
+    await store.update_relationship_weight(rel.id, weight=0.9)
+    after = await store.get_relationship(rel.id)
+    assert after.weight == pytest.approx(0.9)
+
+
+@pytest.mark.asyncio
+async def test_update_relationship_weight_silent_on_missing(store: Store):
+    await store.update_relationship_weight("rel_missing", weight=0.5)
+
+
+@pytest.mark.asyncio
+async def test_expire_relationship_sets_valid_until(store: Store):
+    a, b = await _two_entities(store, src="e1", tgt="e2")
+    rel = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    assert rel.valid_until is None
+    await store.expire_relationship(rel.id)
+    after = await store.get_relationship(rel.id)
+    assert after.valid_until is not None
+    # And get_active_relationship now returns None
+    active = await store.get_active_relationship(a.id, b.id, rel_type="uses")
+    assert active is None
