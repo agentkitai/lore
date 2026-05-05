@@ -145,8 +145,61 @@ class PostgresStore:
 
     # ── MemoryOps stubs — implemented in subsequent Phase 1A tasks ──
 
-    async def update_memory(self, org_id: str, memory_id: str, patch: MemoryPatch) -> StoredMemory:
-        raise NotImplementedError("update_memory: implemented in T7")
+    async def update_memory(
+        self,
+        org_id: str,
+        memory_id: str,
+        patch: "MemoryPatch",
+    ) -> StoredMemory:
+        # Build SET clause from non-None patch fields
+        sets: list[str] = []
+        params: list = [memory_id, org_id]
+        if patch.content is not None:
+            params.append(patch.content)
+            sets.append(f"content = ${len(params)}")
+        if patch.context is not None:
+            params.append(patch.context)
+            sets.append(f"context = ${len(params)}")
+        if patch.tags is not None:
+            params.append(json.dumps(list(patch.tags)))
+            sets.append(f"tags = ${len(params)}::jsonb")
+        if patch.confidence is not None:
+            params.append(patch.confidence)
+            sets.append(f"confidence = ${len(params)}")
+        if patch.source is not None:
+            params.append(patch.source)
+            sets.append(f"source = ${len(params)}")
+        if patch.project is not None:
+            params.append(patch.project)
+            sets.append(f"project = ${len(params)}")
+        if patch.expires_at is not None:
+            params.append(patch.expires_at)
+            sets.append(f"expires_at = ${len(params)}")
+        if patch.meta is not None:
+            params.append(json.dumps(dict(patch.meta)))
+            sets.append(f"meta = ${len(params)}::jsonb")
+
+        if not sets:
+            # No-op patch: just return the current row
+            existing = await self.get_memory(org_id, memory_id)
+            if existing is None:
+                raise StoreNotFound("memories", memory_id)
+            return existing
+
+        sets.append("updated_at = now()")
+        sql = (
+            "UPDATE memories "
+            f"SET {', '.join(sets)} "
+            "WHERE id = $1 AND org_id = $2 "
+            "RETURNING id, org_id, content, context, tags, confidence, source, "
+            "project, created_at, updated_at, expires_at, upvotes, downvotes, "
+            "meta, importance_score, access_count, last_accessed_at"
+        )
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+        if row is None:
+            raise StoreNotFound("memories", memory_id)
+        return _row_to_stored(row)
 
     async def delete_memory(self, org_id: str, memory_id: str) -> bool:
         raise NotImplementedError("delete_memory: implemented in T8")

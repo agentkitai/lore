@@ -63,3 +63,25 @@ async def test_get_respects_org_isolation(store: Store):
     assert await store.get_memory("org_b", inserted.id) is None
     # Fetching with the right org returns the row
     assert (await store.get_memory("org_a", inserted.id)) is not None
+
+
+@pytest.mark.asyncio
+async def test_update_memory_partial(store: Store):
+    inserted = await store.insert_memory(
+        NewMemory(org_id="solo", content="original", embedding=_vec(3))
+    )
+    updated = await store.update_memory(
+        "solo",
+        inserted.id,
+        MemoryPatch(content="rewritten", tags=("edited",)),
+    )
+    assert updated.content == "rewritten"
+    assert tuple(updated.tags) == ("edited",)
+    # Confidence not in patch → preserved
+    assert updated.confidence == inserted.confidence
+
+
+@pytest.mark.asyncio
+async def test_update_memory_raises_when_missing(store: Store):
+    with pytest.raises(StoreNotFound):
+        await store.update_memory("solo", "mem_missing", MemoryPatch(content="x"))
