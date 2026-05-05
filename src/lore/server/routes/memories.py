@@ -376,3 +376,38 @@ def _stored_to_memory_response(m) -> MemoryResponse:
         created_at=m.created_at, updated_at=m.updated_at, expires_at=m.expires_at,
         upvotes=m.upvotes, downvotes=m.downvotes, meta=dict(m.meta),
     )
+
+
+# ── Vote endpoints ─────────────────────────────────────────────────
+
+
+@router.post("/{memory_id}/upvote")
+async def upvote_memory(
+    memory_id: str,
+    auth: AuthContext = Depends(require_role("writer", "admin")),
+):
+    """Increment the upvote counter for a memory."""
+    store = await get_store()
+    try:
+        updated = await _vote_memory(
+            store, org_id=auth.org_id, memory_id=memory_id, direction="up"
+        )
+    except StoreNotFound:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"id": updated.id, "upvotes": updated.upvotes, "downvotes": updated.downvotes}
+
+
+@router.post("/{memory_id}/downvote")
+async def downvote_memory(
+    memory_id: str,
+    auth: AuthContext = Depends(require_role("writer", "admin")),
+):
+    """Increment the downvote counter for a memory."""
+    store = await get_store()
+    try:
+        updated = await _vote_memory(
+            store, org_id=auth.org_id, memory_id=memory_id, direction="down"
+        )
+    except StoreNotFound:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"id": updated.id, "upvotes": updated.upvotes, "downvotes": updated.downvotes}
