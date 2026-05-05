@@ -596,3 +596,131 @@ async def test_save_rejected_pattern_separate_triples_independent(store: Store):
     await store.save_rejected_pattern("a", "b", "depends_on")
     await store.save_rejected_pattern("a", "c", "uses")
     # All three different rows — no conflict between them. (Smoke test.)
+
+
+# ---------------------------------------------------------------------------
+# T10 — query_relationships (graph traversal hop query)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_outbound_only(store: Store):
+    a = await store.upsert_entity(NewEntity(name="qo_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(name="qo_b", entity_type="topic"))
+    c = await store.upsert_entity(NewEntity(name="qo_c", entity_type="topic"))
+    out_rel = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    await store.save_relationship(
+        NewRelationship(source_entity_id=c.id, target_entity_id=a.id, rel_type="depends_on")
+    )
+    rows = await store.query_relationships([a.id], direction="outbound")
+    ids = {r.id for r in rows}
+    assert ids == {out_rel.id}
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_inbound_only(store: Store):
+    a, b = await _two_entities(store, src="qi_a", tgt="qi_b")
+    in_rel = await store.save_relationship(
+        NewRelationship(source_entity_id=b.id, target_entity_id=a.id, rel_type="uses")
+    )
+    await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="depends_on")
+    )
+    rows = await store.query_relationships([a.id], direction="inbound")
+    ids = {r.id for r in rows}
+    assert ids == {in_rel.id}
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_both(store: Store):
+    a, b = await _two_entities(store, src="qb_a", tgt="qb_b")
+    r_out = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    r_in = await store.save_relationship(
+        NewRelationship(source_entity_id=b.id, target_entity_id=a.id, rel_type="depends_on")
+    )
+    rows = await store.query_relationships([a.id], direction="both")
+    ids = {r.id for r in rows}
+    assert ids == {r_out.id, r_in.id}
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_active_only_excludes_expired(store: Store):
+    a, b = await _two_entities(store, src="qa_a", tgt="qa_b")
+    rel = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    await store.expire_relationship(rel.id)
+    rows = await store.query_relationships([a.id], active_only=True)
+    assert all(r.id != rel.id for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_active_only_false_includes_expired(store: Store):
+    a, b = await _two_entities(store, src="qaf_a", tgt="qaf_b")
+    rel = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    await store.expire_relationship(rel.id)
+    rows = await store.query_relationships([a.id], active_only=False)
+    assert any(r.id == rel.id for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_at_time(store: Store):
+    a, b = await _two_entities(store, src="qt_a", tgt="qt_b")
+    # Save relationship that becomes valid in the past
+    past_from = datetime.now(timezone.utc) - timedelta(days=2)
+    past_until = datetime.now(timezone.utc) - timedelta(days=1)
+    rel = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id,
+            target_entity_id=b.id,
+            rel_type="uses",
+            valid_from=past_from,
+            valid_until=past_until,
+        )
+    )
+    # Querying at a time within the validity window should find it
+    middle = past_from + timedelta(hours=12)
+    rows = await store.query_relationships(
+        [a.id], direction="both", active_only=False, at_time=middle
+    )
+    ids = {r.id for r in rows}
+    assert rel.id in ids
+    # Querying at a time after valid_until should not
+    later = datetime.now(timezone.utc)
+    rows_later = await store.query_relationships(
+        [a.id], direction="both", active_only=False, at_time=later
+    )
+    later_ids = {r.id for r in rows_later}
+    assert rel.id not in later_ids
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_filters_by_rel_types(store: Store):
+    a, b = await _two_entities(store, src="qrt_a", tgt="qrt_b")
+    r_uses = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="depends_on")
+    )
+    rows = await store.query_relationships([a.id], rel_types=["uses"])
+    ids = {r.id for r in rows}
+    assert ids == {r_uses.id}
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_empty_input_returns_empty(store: Store):
+    rows = await store.query_relationships([])
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_query_relationships_invalid_direction_raises(store: Store):
+    with pytest.raises(ValueError):
+        await store.query_relationships(["ent_x"], direction="upstream")

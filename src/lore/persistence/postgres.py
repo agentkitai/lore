@@ -872,7 +872,49 @@ class PostgresStore:
         at_time: Optional[datetime] = None,
         rel_types: Optional[Sequence[str]] = None,
     ) -> Sequence[StoredRelationship]:
-        raise NotImplementedError("Phase 1B T10")
+        if direction not in ("inbound", "outbound", "both"):
+            raise ValueError(
+                f"direction must be 'inbound', 'outbound', or 'both'; got {direction!r}"
+            )
+        if not entity_ids:
+            return []
+
+        where: list[str] = []
+        params: list[Any] = [list(entity_ids)]
+        # Direction filter
+        if direction == "inbound":
+            where.append("target_entity_id = ANY($1)")
+        elif direction == "outbound":
+            where.append("source_entity_id = ANY($1)")
+        else:  # both
+            where.append("(source_entity_id = ANY($1) OR target_entity_id = ANY($1))")
+
+        # Active-only filter: only applied when at_time is NOT supplied.
+        # When at_time is provided, the temporal window condition replaces
+        # the simple active_only check.
+        if active_only and at_time is None:
+            where.append("valid_until IS NULL")
+        if at_time is not None:
+            params.append(at_time)
+            idx = len(params)
+            where.append(
+                f"valid_from <= ${idx} AND (valid_until IS NULL OR valid_until > ${idx})"
+            )
+        if rel_types:
+            params.append(list(rel_types))
+            where.append(f"rel_type = ANY(${len(params)})")
+
+        sql = f"""
+            SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                   properties, source_fact_id, source_memory_id,
+                   valid_from, valid_until, status, created_at, updated_at
+            FROM relationships
+            WHERE {' AND '.join(where)}
+            ORDER BY weight DESC NULLS LAST, created_at DESC
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_relationship(r) for r in rows]
 
     # T11
     async def get_graph_stats(
