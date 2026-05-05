@@ -535,10 +535,27 @@ class PostgresStore:
         mention_delta: int,
         last_seen_at: datetime,
     ) -> None:
-        raise NotImplementedError("Phase 1B T5")
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE entities
+                SET mention_count = mention_count + $2,
+                    last_seen_at = GREATEST(last_seen_at, $3),
+                    updated_at = now()
+                WHERE id = $1
+                """,
+                entity_id,
+                mention_delta,
+                last_seen_at,
+            )
 
     async def delete_entity(self, entity_id: str) -> bool:
-        raise NotImplementedError("Phase 1B T5")
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM entities WHERE id = $1",
+                entity_id,
+            )
+        return result.endswith(" 1")
 
     # T6
     async def get_mentions_for_memory(self, memory_id: str) -> Sequence[StoredMention]:

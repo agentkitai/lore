@@ -6,7 +6,7 @@ tests/persistence/conftest.py — Phase 1A wires Postgres only.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -161,3 +161,50 @@ async def test_list_entities_respects_limit(store: Store):
         await store.upsert_entity(NewEntity(name=f"e{i}", entity_type="t"))
     rows = await store.list_entities(entity_type="t", limit=2)
     assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_update_entity_counts_increments(store: Store):
+    e = await store.upsert_entity(
+        NewEntity(name="grafana", entity_type="tool", mention_count=2)
+    )
+    new_seen = datetime.now(timezone.utc)
+    await store.update_entity_counts(
+        e.id, mention_delta=3, last_seen_at=new_seen
+    )
+    after = await store.get_entity(e.id)
+    assert after is not None
+    assert after.mention_count == 5
+    assert after.last_seen_at >= e.last_seen_at
+
+
+@pytest.mark.asyncio
+async def test_update_entity_counts_does_not_regress_last_seen(store: Store):
+    e = await store.upsert_entity(NewEntity(name="prom", entity_type="tool"))
+    earlier = e.last_seen_at - timedelta(days=1)
+    await store.update_entity_counts(
+        e.id, mention_delta=1, last_seen_at=earlier
+    )
+    after = await store.get_entity(e.id)
+    assert after.last_seen_at == e.last_seen_at  # unchanged (GREATEST)
+    assert after.mention_count == e.mention_count + 1
+
+
+@pytest.mark.asyncio
+async def test_update_entity_counts_silent_on_missing(store: Store):
+    # Should not raise; just does nothing.
+    await store.update_entity_counts(
+        "ent_missing", mention_delta=10, last_seen_at=datetime.now(timezone.utc)
+    )
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_returns_true_when_deleted(store: Store):
+    e = await store.upsert_entity(NewEntity(name="todelete", entity_type="x"))
+    assert (await store.delete_entity(e.id)) is True
+    assert (await store.get_entity(e.id)) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_entity_returns_false_when_missing(store: Store):
+    assert (await store.delete_entity("ent_missing")) is False
