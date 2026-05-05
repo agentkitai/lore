@@ -76,3 +76,15 @@ cd ts && npm test
 ## Commit Messages
 
 Use conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`, `chore:`.
+
+## Architecture invariants
+
+Routes that have been migrated to the service layer must not contain raw SQL
+or import the DB driver directly. Run before pushing:
+
+```bash
+python scripts/check_routes_no_sql.py
+```
+
+The CI pipeline runs this automatically; a failure means a migrated route
+has regressed back to inline SQL.

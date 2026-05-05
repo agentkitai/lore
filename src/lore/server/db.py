@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 try:
     import asyncpg
 except ImportError:
     asyncpg = None  # type: ignore[assignment]
+
+if TYPE_CHECKING:
+    from lore.persistence.protocol import Store
 
 logger = logging.getLogger(__name__)
 
@@ -71,3 +74,37 @@ async def run_migrations(pool: "asyncpg.Pool", migrations_dir: str = "migrations
             sql = sql_file.read_text()
             await conn.execute(sql)
             logger.info("Migration complete: %s", sql_file.name)
+
+
+# ── Store (new persistence abstraction) ───────────────────────────────────────
+# Coexists with _pool / init_pool / get_pool / close_pool above.
+# Other routes continue using get_pool() until they migrate in 1B–1G.
+
+_store: "Store | None" = None  # type: ignore[assignment]
+
+
+async def init_store(database_url: str) -> "Store":
+    """Create and store the global Store. Idempotent."""
+    global _store
+    from lore.persistence.factory import make_store
+
+    if _store is None:
+        _store = await make_store(database_url)
+        logger.info("Store initialized: %s", type(_store).__name__)
+    return _store
+
+
+async def get_store() -> "Store":
+    """Return the global Store. Raises if not initialized."""
+    if _store is None:
+        raise RuntimeError("Store not initialized. Call init_store() first.")
+    return _store
+
+
+async def close_store() -> None:
+    """Close the global Store."""
+    global _store
+    if _store is not None:
+        await _store.close()
+        _store = None
+        logger.info("Store closed")

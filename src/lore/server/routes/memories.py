@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Optional
 
 try:
@@ -17,14 +16,9 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
-try:
-    from ulid import ULID
-except ImportError:
-    raise ImportError("python-ulid is required. Install with: pip install python-ulid")
-
+from lore.persistence.exceptions import StoreNotFoundError
 from lore.server.auth import AuthContext, get_auth_context, require_role
-from lore.server.db import get_pool
-from lore.server.routes._parsers import _parse_meta, _parse_tags
+from lore.server.db import get_pool, get_store
 from lore.server.models import (
     MemoryCreateRequest,
     MemoryCreateResponse,
@@ -34,6 +28,28 @@ from lore.server.models import (
     MemorySearchResponse,
     MemorySearchResult,
     MemoryUpdateRequest,
+)
+from lore.server.routes._parsers import _parse_meta, _parse_tags
+from lore.services.memories import (
+    create_memory as _create_memory,
+)
+from lore.services.memories import (
+    delete_memory as _delete_memory,
+)
+from lore.services.memories import (
+    get_memory as _get_memory,
+)
+from lore.services.memories import (
+    list_memories as _list_memories,
+)
+from lore.services.memories import (
+    search_memories as _search_memories,
+)
+from lore.services.memories import (
+    update_memory as _update_memory,
+)
+from lore.services.memories import (
+    vote_memory as _vote_memory,
 )
 
 logger = logging.getLogger(__name__)
@@ -133,48 +149,36 @@ async def create_memory(
     body: MemoryCreateRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
 ) -> MemoryCreateResponse:
-    """Create a new memory."""
-    project = body.project
-    if auth.project is not None:
-        project = auth.project
+    """Create a memory. Routes layer: parse → call service → serialize."""
+    store = await get_store()
 
-    now = datetime.now(timezone.utc)
-    memory_id = str(ULID())
+    # Embedding stays at this layer for now — Phase 1B will factor it out.
+    from lore.server.routes.retrieve import _get_embedder
+    embedder = _get_embedder()
+    embedding = body.embedding if body.embedding else await asyncio.to_thread(embedder.embed, body.content)
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO memories
-               (id, org_id, content, context, tags, confidence,
-                source, project, embedding, created_at, updated_at, expires_at,
-                upvotes, downvotes, meta)
-               VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9,
-                       $10, $11, $12, $13, $14, $15::jsonb)""",
-            memory_id,
-            auth.org_id,
-            body.content,
-            body.context,
-            json.dumps(body.tags),
-            body.confidence,
-            body.source,
-            project,
-            json.dumps(body.embedding) if body.embedding else None,
-            now,
-            now,
-            body.expires_at,
-            0,
-            0,
-            json.dumps(body.meta),
-        )
+    stored = await _create_memory(
+        store,
+        org_id=auth.org_id,
+        content=body.content,
+        context=body.context,
+        embedding=embedding,
+        tags=body.tags or [],
+        confidence=body.confidence if body.confidence is not None else 0.5,
+        source=body.source,
+        project=auth.project or body.project,
+        expires_at=body.expires_at,
+        meta=body.meta or {},
+    )
 
-    # Fire-and-forget enrichment
+    # Fire-and-forget enrichment unchanged from before
     enrich = body.enrich
     if enrich is None:
         enrich = os.environ.get("LORE_ENRICHMENT_ENABLED", "").lower() in ("true", "1", "yes")
     if enrich:
-        asyncio.create_task(_enrich_memory(memory_id, body.content, body.context))
+        asyncio.create_task(_enrich_memory(stored.id, stored.content, stored.context))
 
-    return MemoryCreateResponse(id=memory_id)
+    return MemoryCreateResponse(id=stored.id)
 
 
 # ── Search ─────────────────────────────────────────────────────────
@@ -186,79 +190,37 @@ async def search_memories(
     auth: AuthContext = Depends(get_auth_context),
 ) -> MemorySearchResponse:
     """Semantic search with multiplicative scoring."""
-    where_parts: list[str] = ["org_id = $1"]
-    params: list = [auth.org_id]
-
-    project = body.project
-    if auth.project is not None:
-        project = auth.project
-    if project is not None:
-        params.append(project)
-        where_parts.append(f"project = ${len(params)}")
-
-    if body.tags:
-        params.append(json.dumps(body.tags))
-        where_parts.append(f"tags @> ${len(params)}::jsonb")
-
-    where_parts.append("(expires_at IS NULL OR expires_at > now())")
-    where_parts.append("embedding IS NOT NULL")
-    where_sql = " AND ".join(where_parts)
-
-    params.append(json.dumps(body.embedding))
-    emb_idx = len(params)
-    params.append(body.limit)
-    limit_idx = len(params)
-
-    query = f"""
-        SELECT id, content, context, tags, confidence,
-               source, project, created_at, updated_at, expires_at,
-               upvotes, downvotes, meta,
-               importance_score, access_count, last_accessed_at,
-               (1 - (embedding <=> ${emb_idx}::vector)) *
-               COALESCE(importance_score, 1.0) *
-               power(0.5,
-                   LEAST(
-                       EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0,
-                       COALESCE(
-                           EXTRACT(EPOCH FROM (now() - last_accessed_at)) / 86400.0,
-                           EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0
-                       )
-                   )
-                   / (CASE meta->>'type'
-                       WHEN 'code' THEN 14
-                       WHEN 'note' THEN 21
-                       WHEN 'lesson' THEN 30
-                       WHEN 'convention' THEN 60
-                       ELSE {_HALF_LIFE_DEFAULT}
-                     END)
-               )
-               AS score
-        FROM memories
-        WHERE {where_sql}
-        ORDER BY score DESC
-        LIMIT ${limit_idx}
-    """
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(query, *params)
-
-    results = []
-    for r in rows:
-        rd = dict(r)
-        score = float(rd.pop("score", 0.0))
-        rd.pop("importance_score", None)
-        rd.pop("access_count", None)
-        rd.pop("last_accessed_at", None)
-        if score < body.min_confidence:
-            continue
-        mem_resp = _row_to_response(rd)
-        results.append(MemorySearchResult(
-            **mem_resp.model_dump(),
-            score=round(max(score, 0.0), 6),
-        ))
-
-    return MemorySearchResponse(memories=results)
+    store = await get_store()
+    # body.embedding is the pre-computed query vector (384-dim)
+    results = await _search_memories(
+        store,
+        org_id=auth.org_id,
+        query_vec=body.embedding,
+        limit=body.limit,
+        min_score=body.min_confidence,
+        project=auth.project or body.project,
+    )
+    return MemorySearchResponse(
+        memories=[
+            MemorySearchResult(
+                id=r.id,
+                content=r.content,
+                context=r.context,
+                tags=list(r.tags),
+                confidence=r.confidence,
+                source=r.source,
+                project=r.project,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+                expires_at=r.expires_at,
+                upvotes=r.upvotes,
+                downvotes=r.downvotes,
+                meta=dict(r.meta),
+                score=round(max(r.score, 0.0), 6),
+            )
+            for r in results
+        ]
+    )
 
 
 # ── Access tracking ────────────────────────────────────────────────
@@ -310,23 +272,25 @@ async def get_memory(
     auth: AuthContext = Depends(get_auth_context),
 ) -> MemoryResponse:
     """Get a single memory by ID."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""SELECT id, content, context, tags, confidence,
-                       source, project, created_at, updated_at, expires_at,
-                       upvotes, downvotes, meta
-                FROM memories WHERE id = ${len(scope_params) + 1} AND {scope_sql}""",
-            *scope_params,
-            memory_id,
-        )
-
-    if row is None:
+    store = await get_store()
+    m = await _get_memory(store, auth.org_id, memory_id)
+    if m is None:
         raise HTTPException(status_code=404, detail="Memory not found")
-
-    return _row_to_response(dict(row))
+    return MemoryResponse(
+        id=m.id,
+        content=m.content,
+        context=m.context,
+        tags=list(m.tags),
+        confidence=m.confidence,
+        source=m.source,
+        project=m.project,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+        expires_at=m.expires_at,
+        upvotes=m.upvotes,
+        downvotes=m.downvotes,
+        meta=dict(m.meta),
+    )
 
 
 # ── Update ─────────────────────────────────────────────────────────
@@ -338,58 +302,29 @@ async def update_memory(
     body: MemoryUpdateRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
 ) -> MemoryResponse:
-    """Update a memory. Supports atomic upvote/downvote."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    set_parts: list[str] = []
-    params: list = list(scope_params)
-
-    if body.confidence is not None:
-        params.append(body.confidence)
-        set_parts.append(f"confidence = ${len(params)}")
-
-    if body.tags is not None:
-        params.append(json.dumps(body.tags))
-        set_parts.append(f"tags = ${len(params)}::jsonb")
-
-    if body.meta is not None:
-        params.append(json.dumps(body.meta))
-        set_parts.append(f"meta = ${len(params)}::jsonb")
-
-    for vote_field in ("upvotes", "downvotes"):
-        val = getattr(body, vote_field)
-        if val is not None:
-            if isinstance(val, str):
-                delta = 1 if val == "+1" else -1
-                params.append(delta)
-                set_parts.append(f"{vote_field} = {vote_field} + ${len(params)}")
-            else:
-                params.append(val)
-                set_parts.append(f"{vote_field} = ${len(params)}")
-
-    if not set_parts:
+    """Update a memory."""
+    if (
+        body.confidence is None
+        and body.tags is None
+        and body.meta is None
+        and body.upvotes is None
+        and body.downvotes is None
+    ):
         raise HTTPException(status_code=422, detail="No fields to update")
 
-    set_parts.append("updated_at = now()")
-
-    params.append(memory_id)
-    id_idx = len(params)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""UPDATE memories SET {', '.join(set_parts)}
-                WHERE id = ${id_idx} AND {scope_sql}
-                RETURNING id, content, context, tags, confidence,
-                          source, project, created_at, updated_at, expires_at,
-                          upvotes, downvotes, meta""",
-            *params,
+    store = await get_store()
+    try:
+        updated = await _update_memory(
+            store,
+            org_id=auth.org_id,
+            memory_id=memory_id,
+            confidence=body.confidence,
+            tags=body.tags,
+            meta=body.meta,
         )
-
-    if row is None:
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")
-
-    return _row_to_response(dict(row))
+    return _stored_to_memory_response(updated)
 
 
 # ── Delete ─────────────────────────────────────────────────────────
@@ -401,17 +336,9 @@ async def delete_memory(
     auth: AuthContext = Depends(require_role("writer", "admin")),
 ) -> None:
     """Delete a memory."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            f"DELETE FROM memories WHERE id = ${len(scope_params) + 1} AND {scope_sql}",
-            *scope_params,
-            memory_id,
-        )
-
-    if result == "DELETE 0":
+    store = await get_store()
+    deleted = await _delete_memory(store, org_id=auth.org_id, memory_id=memory_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Memory not found")
 
 
@@ -421,64 +348,72 @@ async def delete_memory(
 @router.get("", response_model=MemoryListResponse)
 async def list_memories(
     project: Optional[str] = Query(None),
-    query: Optional[str] = Query(None),
-    category: Optional[str] = Query(None),
-    min_reputation: Optional[int] = Query(None, alias="minReputation"),
-    limit: int = Query(50, ge=1, le=200),
+    type: Optional[str] = Query(None),
+    tier: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    include_expired: bool = Query(False),
     auth: AuthContext = Depends(get_auth_context),
 ) -> MemoryListResponse:
     """List memories with pagination."""
-    where_parts: list[str] = ["org_id = $1"]
-    params: list = [auth.org_id]
-
-    if auth.project is not None:
-        params.append(auth.project)
-        where_parts.append(f"project = ${len(params)}")
-    elif project is not None:
-        params.append(project)
-        where_parts.append(f"project = ${len(params)}")
-
-    if query:
-        params.append(f"%{query}%")
-        idx = len(params)
-        where_parts.append(f"(content ILIKE ${idx} OR context ILIKE ${idx})")
-
-    if category:
-        params.append(json.dumps([category]))
-        where_parts.append(f"tags @> ${len(params)}::jsonb")
-
-    if min_reputation is not None:
-        params.append(min_reputation)
-        where_parts.append(f"reputation_score >= ${len(params)}")
-
-    where_sql = " AND ".join(where_parts)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM memories WHERE {where_sql}",
-            *params,
-        )
-
-        params.append(limit)
-        limit_idx = len(params)
-        params.append(offset)
-        offset_idx = len(params)
-
-        rows = await conn.fetch(
-            f"""SELECT id, content, context, tags, confidence,
-                       source, project, created_at, updated_at, expires_at,
-                       upvotes, downvotes, meta, reputation_score, quality_signals
-                FROM memories WHERE {where_sql}
-                ORDER BY created_at DESC
-                LIMIT ${limit_idx} OFFSET ${offset_idx}""",
-            *params,
-        )
-
+    store = await get_store()
+    rows = await _list_memories(
+        store,
+        org_id=auth.org_id,
+        project=auth.project or project,
+        type=type,
+        tier=tier,
+        limit=limit,
+        offset=offset,
+        include_expired=include_expired,
+    )
     return MemoryListResponse(
-        memories=[_row_to_response(dict(r)) for r in rows],
-        total=total,
+        memories=[_stored_to_memory_response(m) for m in rows],
+        total=len(rows),
         limit=limit,
         offset=offset,
     )
+
+
+def _stored_to_memory_response(m) -> MemoryResponse:
+    return MemoryResponse(
+        id=m.id, content=m.content, context=m.context, tags=list(m.tags),
+        confidence=m.confidence, source=m.source, project=m.project,
+        created_at=m.created_at, updated_at=m.updated_at, expires_at=m.expires_at,
+        upvotes=m.upvotes, downvotes=m.downvotes, meta=dict(m.meta),
+    )
+
+
+# ── Vote endpoints ─────────────────────────────────────────────────
+
+
+@router.post("/{memory_id}/upvote")
+async def upvote_memory(
+    memory_id: str,
+    auth: AuthContext = Depends(require_role("writer", "admin")),
+):
+    """Increment the upvote counter for a memory."""
+    store = await get_store()
+    try:
+        updated = await _vote_memory(
+            store, org_id=auth.org_id, memory_id=memory_id, direction="up"
+        )
+    except StoreNotFoundError:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"id": updated.id, "upvotes": updated.upvotes, "downvotes": updated.downvotes}
+
+
+@router.post("/{memory_id}/downvote")
+async def downvote_memory(
+    memory_id: str,
+    auth: AuthContext = Depends(require_role("writer", "admin")),
+):
+    """Increment the downvote counter for a memory."""
+    store = await get_store()
+    try:
+        updated = await _vote_memory(
+            store, org_id=auth.org_id, memory_id=memory_id, direction="down"
+        )
+    except StoreNotFoundError:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"id": updated.id, "upvotes": updated.upvotes, "downvotes": updated.downvotes}

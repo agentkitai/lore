@@ -10,8 +10,6 @@ Usage:
 
 import asyncio
 import json
-import re
-import sys
 from datetime import datetime, timezone
 
 import asyncpg

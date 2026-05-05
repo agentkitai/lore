@@ -300,3 +300,22 @@ Consolidation can run in dry-run mode (preview only) or execute mode (applies ch
 - Secrets (API keys, passwords, tokens) are detected and either masked or blocked
 - Configurable security scan levels and action overrides
 - Integration with `detect-secrets` for advanced secret detection (optional)
+
+## Persistence layer
+
+Lore's server-side persistence is defined by the `Store` protocol in
+`lore.persistence.protocol`. Implementations:
+
+- `PostgresStore` — asyncpg + pgvector. Production default.
+- (Coming in Phase 3) `SqliteStore` — aiosqlite + sqlite-vec. For solo / embedded use.
+
+The protocol is grown slice-by-slice. Phase 1A shipped the `MemoryOps` slice;
+Phase 1B–1G migrate the remaining route SQL into the protocol. Until a slice
+is migrated, those routes still call `asyncpg` directly via `get_pool()`.
+
+### Architectural invariants
+1. Routes contain zero SQL. Services contain zero SQL. SQL lives only in Store implementations.
+2. The Service layer is the only place business logic exists once. The HTTP front-end and the embedded API both call into services.
+3. Backend chosen by `database_url` URL scheme. `LORE_BACKEND` env var is just a shortcut.
+
+These invariants are guarded by `scripts/check_routes_no_sql.py` for the migrated slice; coverage grows as more routes migrate.

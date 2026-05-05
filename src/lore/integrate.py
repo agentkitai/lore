@@ -191,7 +191,7 @@ def _generate_claude_code(server_url: str, api_key: Optional[str]) -> None:
     if claude_md_path.exists():
         existing = claude_md_path.read_text()
         if "Lore" in existing:
-            print(f"  CLAUDE.md already contains Lore instructions — skipped.")
+            print("  CLAUDE.md already contains Lore instructions — skipped.")
         else:
             # Append Lore section
             with open(claude_md_path, "a") as f:
@@ -241,7 +241,7 @@ def _generate_cursor(server_url: str, api_key: Optional[str]) -> None:
     if rules_path.exists():
         existing = rules_path.read_text()
         if "Lore" in existing:
-            print(f"  .cursorrules already contains Lore instructions — skipped.")
+            print("  .cursorrules already contains Lore instructions — skipped.")
         else:
             with open(rules_path, "a") as f:
                 f.write("\n\n" + CURSOR_RULES_CONTENT)
@@ -294,7 +294,7 @@ def _generate_codex(server_url: str, api_key: Optional[str]) -> None:
     if config_path.exists():
         existing = config_path.read_text()
         if "lore" in existing.lower():
-            print(f"  codex.yaml already contains Lore config — skipped.")
+            print("  codex.yaml already contains Lore config — skipped.")
         else:
             with open(config_path, "a") as f:
                 f.write("\n" + content)
@@ -311,12 +311,10 @@ def _generate_codex(server_url: str, api_key: Optional[str]) -> None:
 
 def _generate_openclaw(server_url: str, api_key: Optional[str]) -> None:
     """Generate OpenClaw MCP config."""
-    cwd = Path.cwd()
-
     project = os.path.basename(os.getcwd())
     remote_parts = []
     if server_url != "http://localhost:8765":
-        remote_parts.append(f',\n        "LORE_STORE": "remote"')
+        remote_parts.append(',\n        "LORE_STORE": "remote"')
         remote_parts.append(f',\n        "LORE_API_URL": "{server_url}"')
     if api_key:
         remote_parts.append(f',\n        "LORE_API_KEY": "{api_key}"')

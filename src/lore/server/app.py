@@ -29,7 +29,7 @@ except ImportError:
 
 from lore.server.auth import AuthError
 from lore.server.config import settings
-from lore.server.db import close_pool, get_pool, init_pool, run_migrations
+from lore.server.db import close_pool, close_store, get_pool, init_pool, init_store, run_migrations
 from lore.server.logging_config import setup_logging
 from lore.server.middleware import install_middleware
 from lore.server.routes.analytics import router as analytics_router
@@ -45,8 +45,8 @@ from lore.server.routes.plugins import router as plugins_router
 from lore.server.routes.policies import router as policies_router
 from lore.server.routes.profiles import router as profiles_router
 from lore.server.routes.recent import router as recent_router
-from lore.server.routes.retention import router as retention_router
 from lore.server.routes.recommendations import router as recommendations_router
+from lore.server.routes.retention import router as retention_router
 from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.review import router as review_router
 from lore.server.routes.setup_validation import router as setup_validation_router
@@ -74,6 +74,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     pool = await init_pool(db_url)
     await run_migrations(pool, settings.migrations_dir)
+    await init_store(db_url)
 
     # Cache pgvector availability at startup
     global _pgvector_available
@@ -102,6 +103,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     slo_task.cancel()
     scheduler_task.cancel()
+    await close_store()
     await close_pool()
 
     # Reset cache on shutdown
