@@ -103,3 +103,49 @@ async def test_delete_memory(store: Store):
 @pytest.mark.asyncio
 async def test_delete_returns_false_when_missing(store: Store):
     assert (await store.delete_memory("solo", "mem_missing")) is False
+
+
+@pytest.mark.asyncio
+async def test_list_memories_filters_by_project(store: Store):
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="a", project="x", embedding=_vec(5))
+    )
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="b", project="y", embedding=_vec(6))
+    )
+    only_x = await store.list_memories(MemoryFilter(org_id="solo", project="x"))
+    assert {m.content for m in only_x} == {"a"}
+
+
+@pytest.mark.asyncio
+async def test_list_memories_respects_limit_and_order(store: Store):
+    import asyncio
+    for i in range(3):
+        await store.insert_memory(
+            NewMemory(org_id="solo", content=f"item-{i}", embedding=_vec(10 + i))
+        )
+        await asyncio.sleep(0.01)
+    rows = await store.list_memories(MemoryFilter(org_id="solo", limit=2))
+    assert len(rows) == 2
+    # ordered by created_at DESC
+    assert rows[0].created_at >= rows[1].created_at
+
+
+@pytest.mark.asyncio
+async def test_list_memories_excludes_expired_by_default(store: Store):
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    expired = await store.insert_memory(
+        NewMemory(org_id="solo", content="expired", embedding=_vec(20), expires_at=past)
+    )
+    fresh = await store.insert_memory(
+        NewMemory(org_id="solo", content="fresh", embedding=_vec(21))
+    )
+    visible = await store.list_memories(MemoryFilter(org_id="solo"))
+    ids = {m.id for m in visible}
+    assert fresh.id in ids
+    assert expired.id not in ids
+
+    with_expired = await store.list_memories(
+        MemoryFilter(org_id="solo", include_expired=True)
+    )
+    assert {m.id for m in with_expired} >= {fresh.id, expired.id}

@@ -211,8 +211,50 @@ class PostgresStore:
         # asyncpg returns "DELETE n"
         return result.endswith(" 1")
 
-    async def list_memories(self, filter: MemoryFilter) -> Sequence[StoredMemory]:
-        raise NotImplementedError("list_memories: implemented in T9")
+    async def list_memories(
+        self, filter: "MemoryFilter"
+    ) -> Sequence[StoredMemory]:
+        where: list[str] = ["org_id = $1"]
+        params: list[Any] = [filter.org_id]
+        if filter.project is not None:
+            params.append(filter.project)
+            where.append(f"project = ${len(params)}")
+        if filter.type is not None:
+            params.append(filter.type)
+            where.append(f"meta->>'type' = ${len(params)}")
+        if filter.tier is not None:
+            params.append(filter.tier)
+            where.append(f"meta->>'tier' = ${len(params)}")
+        if filter.tags:
+            params.append(json.dumps(list(filter.tags)))
+            where.append(f"tags @> ${len(params)}::jsonb")
+        if filter.since is not None:
+            params.append(filter.since)
+            where.append(f"created_at >= ${len(params)}")
+        if filter.until is not None:
+            params.append(filter.until)
+            where.append(f"created_at < ${len(params)}")
+        if not filter.include_expired:
+            where.append("(expires_at IS NULL OR expires_at > now())")
+
+        sql = (
+            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "project, created_at, updated_at, expires_at, upvotes, downvotes, "
+            "meta, importance_score, access_count, last_accessed_at "
+            "FROM memories "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC"
+        )
+        if filter.limit is not None:
+            params.append(filter.limit)
+            sql += f" LIMIT ${len(params)}"
+        if filter.offset:
+            params.append(filter.offset)
+            sql += f" OFFSET ${len(params)}"
+
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_stored(r) for r in rows]
 
     async def recall_by_embedding(self, params: RecallParams) -> Sequence[ScoredMemory]:
         raise NotImplementedError("recall_by_embedding: implemented in T10")
