@@ -1,13 +1,13 @@
 """Server-side persistence layer."""
 
 from lore.persistence.exceptions import (
-    BackendUnavailable,
+    BackendUnavailableError,
     ConfigError,
     LoreError,
-    StoreBusy,
+    StoreBusyError,
     StoreError,
-    StoreNotFound,
-    StoreSchemaMismatch,
+    StoreNotFoundError,
+    StoreSchemaMismatchError,
 )
 from lore.persistence.factory import make_store
 from lore.persistence.protocol import Store
@@ -21,7 +21,7 @@ from lore.persistence.types import (
 )
 
 __all__ = [
-    "BackendUnavailable",
+    "BackendUnavailableError",
     "ConfigError",
     "LoreError",
     "MemoryFilter",
@@ -30,10 +30,10 @@ __all__ = [
     "RecallParams",
     "ScoredMemory",
     "Store",
-    "StoreBusy",
+    "StoreBusyError",
     "StoreError",
-    "StoreNotFound",
-    "StoreSchemaMismatch",
+    "StoreNotFoundError",
+    "StoreSchemaMismatchError",
     "StoredMemory",
     "make_store",
 ]

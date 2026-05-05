@@ -6,7 +6,6 @@ import inspect
 
 from lore.persistence import Store
 
-
 REQUIRED_MEMORY_OPS = {
     "insert_memory",
     "get_memory",

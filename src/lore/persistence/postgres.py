@@ -7,7 +7,6 @@ existing route SQL until 1B–1G migrate them.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any, Optional, Sequence
 
 try:
@@ -17,7 +16,7 @@ except ImportError:  # pragma: no cover
 
 from ulid import ULID
 
-from lore.persistence.exceptions import BackendUnavailable, StoreNotFound
+from lore.persistence.exceptions import BackendUnavailableError, StoreNotFoundError
 from lore.persistence.types import (
     MemoryFilter,
     MemoryPatch,
@@ -63,7 +62,7 @@ class PostgresStore:
 
     def __init__(self, *, pool=None, conn=None):
         if asyncpg is None:
-            raise BackendUnavailable(
+            raise BackendUnavailableError(
                 "asyncpg is not installed. Install with: pip install lore-sdk[server]"
             )
         if (pool is None) == (conn is None):
@@ -183,7 +182,7 @@ class PostgresStore:
             # No-op patch: just return the current row
             existing = await self.get_memory(org_id, memory_id)
             if existing is None:
-                raise StoreNotFound("memories", memory_id)
+                raise StoreNotFoundError("memories", memory_id)
             return existing
 
         sets.append("updated_at = now()")
@@ -199,7 +198,7 @@ class PostgresStore:
         async with self._acquire() as conn:
             row = await conn.fetchrow(sql, *params)
         if row is None:
-            raise StoreNotFound("memories", memory_id)
+            raise StoreNotFoundError("memories", memory_id)
         return _row_to_stored(row)
 
     async def delete_memory(self, org_id: str, memory_id: str) -> bool:
@@ -386,7 +385,7 @@ class PostgresStore:
                 org_id,
             )
         if row is None:
-            raise StoreNotFound("memories", memory_id)
+            raise StoreNotFoundError("memories", memory_id)
         return _row_to_stored(row)
 
 

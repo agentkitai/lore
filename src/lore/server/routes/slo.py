@@ -14,7 +14,6 @@ from pydantic import BaseModel
 
 from lore.server.auth import AuthContext, get_auth_context, require_role
 from lore.server.db import get_pool
-from lore.server.routes._helpers import build_update
 from lore.server.routes._parsers import _ts
 
 logger = logging.getLogger(__name__)
@@ -263,8 +262,6 @@ async def slo_status() -> List[SloStatusResponse]:
     """Get current pass/fail status for all SLOs."""
     pool = await get_pool()
     async with pool.acquire() as conn:
-        # Get first org_id for metric computation
-        org_id = await conn.fetchval("SELECT id FROM orgs LIMIT 1")
         slos = await conn.fetch(
             """SELECT id, org_id, name, metric, operator, threshold, window_minutes, enabled
                FROM slo_definitions

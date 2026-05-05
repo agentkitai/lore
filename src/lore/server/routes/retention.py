@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import List, Optional
+from typing import List
 
 try:
     from fastapi import APIRouter, Depends
@@ -43,6 +43,7 @@ class RetentionResponse(BaseModel):
 def _get_lore():
     """Lazy-import and instantiate a local Lore instance."""
     import os
+
     from lore import Lore
 
     enrichment = bool(os.environ.get("OPENAI_API_KEY"))

@@ -9,7 +9,6 @@ import asyncio
 import json
 import logging
 import os
-from datetime import datetime, timezone
 from typing import Optional
 
 try:
@@ -17,14 +16,9 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
-try:
-    from ulid import ULID
-except ImportError:
-    raise ImportError("python-ulid is required. Install with: pip install python-ulid")
-
+from lore.persistence.exceptions import StoreNotFoundError
 from lore.server.auth import AuthContext, get_auth_context, require_role
 from lore.server.db import get_pool, get_store
-from lore.server.routes._parsers import _parse_meta, _parse_tags
 from lore.server.models import (
     MemoryCreateRequest,
     MemoryCreateResponse,
@@ -35,14 +29,26 @@ from lore.server.models import (
     MemorySearchResult,
     MemoryUpdateRequest,
 )
-from lore.persistence.exceptions import StoreNotFound
+from lore.server.routes._parsers import _parse_meta, _parse_tags
 from lore.services.memories import (
     create_memory as _create_memory,
-    get_memory as _get_memory,
-    list_memories as _list_memories,
-    update_memory as _update_memory,
+)
+from lore.services.memories import (
     delete_memory as _delete_memory,
+)
+from lore.services.memories import (
+    get_memory as _get_memory,
+)
+from lore.services.memories import (
+    list_memories as _list_memories,
+)
+from lore.services.memories import (
     search_memories as _search_memories,
+)
+from lore.services.memories import (
+    update_memory as _update_memory,
+)
+from lore.services.memories import (
     vote_memory as _vote_memory,
 )
 
@@ -316,7 +322,7 @@ async def update_memory(
             tags=body.tags,
             meta=body.meta,
         )
-    except StoreNotFound:
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")
     return _stored_to_memory_response(updated)
 
@@ -392,7 +398,7 @@ async def upvote_memory(
         updated = await _vote_memory(
             store, org_id=auth.org_id, memory_id=memory_id, direction="up"
         )
-    except StoreNotFound:
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"id": updated.id, "upvotes": updated.upvotes, "downvotes": updated.downvotes}
 
@@ -408,6 +414,6 @@ async def downvote_memory(
         updated = await _vote_memory(
             store, org_id=auth.org_id, memory_id=memory_id, direction="down"
         )
-    except StoreNotFound:
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"id": updated.id, "upvotes": updated.upvotes, "downvotes": updated.downvotes}

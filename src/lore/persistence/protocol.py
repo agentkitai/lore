@@ -47,7 +47,7 @@ class Store(Protocol):
     async def update_memory(
         self, org_id: str, memory_id: str, patch: MemoryPatch
     ) -> StoredMemory:
-        """Apply a patch and return the updated row. Raises StoreNotFound if missing."""
+        """Apply a patch and return the updated row. Raises StoreNotFoundError if missing."""
         ...
 
     async def delete_memory(self, org_id: str, memory_id: str) -> bool:

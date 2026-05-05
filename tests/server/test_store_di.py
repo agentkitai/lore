@@ -20,8 +20,9 @@ async def test_get_store_raises_before_init():
 @pytest.mark.asyncio
 async def test_init_store_then_get_store():
     import os
-    from lore.server import db as server_db
+
     from lore.persistence.postgres import PostgresStore
+    from lore.server import db as server_db
 
     db_url = os.environ.get(
         "LORE_TEST_DATABASE_URL", "postgresql://lore:lore@localhost:5432/lore_test"

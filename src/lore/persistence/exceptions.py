@@ -15,7 +15,7 @@ class StoreError(LoreError):
     """Base for any error raised by a Store implementation."""
 
 
-class StoreNotFound(StoreError):
+class StoreNotFoundError(StoreError):
     """A row the caller asserted must exist was not found."""
 
     def __init__(self, entity: str, identifier: str):
@@ -24,11 +24,11 @@ class StoreNotFound(StoreError):
         super().__init__(f"{entity} not found: id={identifier!r}")
 
 
-class StoreBusy(StoreError):
+class StoreBusyError(StoreError):
     """Storage is temporarily contended; retry may succeed."""
 
 
-class StoreSchemaMismatch(StoreError):
+class StoreSchemaMismatchError(StoreError):
     """The DB's schema version does not match what this Lore expects."""
 
 
@@ -36,5 +36,5 @@ class ConfigError(LoreError):
     """Bad configuration: URL, env var, or flag combination."""
 
 
-class BackendUnavailable(ConfigError):
+class BackendUnavailableError(ConfigError):
     """The selected backend's runtime is not available (driver, extension)."""

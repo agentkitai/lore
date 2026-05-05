@@ -6,7 +6,7 @@ from __future__ import annotations
 import pytest
 
 from lore.services.memories import create_memory
-from lore.services.retrieve import retrieve, RetrieveOutput
+from lore.services.retrieve import RetrieveOutput, retrieve
 
 
 @pytest.mark.asyncio

@@ -187,8 +187,8 @@ class TestMemoryList:
 class TestMemoryUpdate:
     def test_patch_not_found(self, client):
         test_client, store = client
-        from lore.persistence.exceptions import StoreNotFound
-        store.update_memory.side_effect = StoreNotFound("memory", "nonexistent")
+        from lore.persistence.exceptions import StoreNotFoundError
+        store.update_memory.side_effect = StoreNotFoundError("memory", "nonexistent")
         resp = test_client.patch("/v1/memories/nonexistent", json={
             "confidence": 0.8,
         })

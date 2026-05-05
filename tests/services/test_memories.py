@@ -4,13 +4,11 @@ from __future__ import annotations
 
 import pytest
 
-from lore.persistence import MemoryFilter, NewMemory
 from lore.services.memories import (
     create_memory,
     delete_memory,
     get_memory,
     list_memories,
-    search_memories,
     update_memory,
     vote_memory,
 )

@@ -5,7 +5,9 @@ These tests run against every Store implementation (Phase 1A: Postgres only).
 
 from __future__ import annotations
 
+import json as _json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path as _Path
 from typing import Sequence
 
 import pytest
@@ -18,7 +20,7 @@ from lore.persistence import (
     Store,
     StoredMemory,
 )
-from lore.persistence.exceptions import StoreNotFound
+from lore.persistence.exceptions import StoreNotFoundError
 
 
 def _vec(seed: int) -> Sequence[float]:
@@ -83,7 +85,7 @@ async def test_update_memory_partial(store: Store):
 
 @pytest.mark.asyncio
 async def test_update_memory_raises_when_missing(store: Store):
-    with pytest.raises(StoreNotFound):
+    with pytest.raises(StoreNotFoundError):
         await store.update_memory("solo", "mem_missing", MemoryPatch(content="x"))
 
 
@@ -150,9 +152,6 @@ async def test_list_memories_excludes_expired_by_default(store: Store):
     )
     assert {m.id for m in with_expired} >= {fresh.id, expired.id}
 
-
-import json as _json
-from pathlib import Path as _Path
 
 _FIXTURES = _json.loads(
     (_Path(__file__).parent / "fixtures" / "embeddings.json").read_text()
@@ -255,12 +254,12 @@ async def test_bump_access_counts_cross_org_isolation(store: Store):
 
 @pytest.mark.asyncio
 async def test_update_memory_raises_when_expired(store: Store):
-    """Updating an expired memory must raise StoreNotFound."""
+    """Updating an expired memory must raise StoreNotFoundError."""
     past = datetime.now(timezone.utc) - timedelta(hours=1)
     m = await store.insert_memory(
         NewMemory(org_id="solo", content="stale", embedding=_vec(42), expires_at=past)
     )
-    with pytest.raises(StoreNotFound):
+    with pytest.raises(StoreNotFoundError):
         await store.update_memory("solo", m.id, MemoryPatch(content="too late"))
 
 
@@ -287,5 +286,5 @@ async def test_vote_memory_invalid_direction(store: Store):
 
 @pytest.mark.asyncio
 async def test_vote_memory_raises_when_missing(store: Store):
-    with pytest.raises(StoreNotFound):
+    with pytest.raises(StoreNotFoundError):
         await store.vote_memory("solo", "mem_missing", direction="up")

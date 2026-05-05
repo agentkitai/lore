@@ -45,8 +45,8 @@ from lore.server.routes.plugins import router as plugins_router
 from lore.server.routes.policies import router as policies_router
 from lore.server.routes.profiles import router as profiles_router
 from lore.server.routes.recent import router as recent_router
-from lore.server.routes.retention import router as retention_router
 from lore.server.routes.recommendations import router as recommendations_router
+from lore.server.routes.retention import router as retention_router
 from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.review import router as review_router
 from lore.server.routes.setup_validation import router as setup_validation_router
