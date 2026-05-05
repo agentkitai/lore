@@ -209,3 +209,18 @@ async def test_recall_respects_min_score(store: Store):
         )
     )
     assert all(r.score >= 0.999 for r in results)
+
+
+@pytest.mark.asyncio
+async def test_expire_memories_deletes_past_expiry(store: Store):
+    past = datetime.now(timezone.utc) - timedelta(seconds=1)
+    expired = await store.insert_memory(
+        NewMemory(org_id="solo", content="expired", embedding=_vec(30), expires_at=past)
+    )
+    keep = await store.insert_memory(
+        NewMemory(org_id="solo", content="alive", embedding=_vec(31))
+    )
+    n = await store.expire_memories()
+    assert n >= 1
+    assert (await store.get_memory("solo", expired.id)) is None
+    assert (await store.get_memory("solo", keep.id)) is not None

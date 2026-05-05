@@ -327,7 +327,15 @@ class PostgresStore:
         return scored
 
     async def expire_memories(self) -> int:
-        raise NotImplementedError("expire_memories: implemented in T11")
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < now()"
+            )
+        # asyncpg "DELETE n"
+        try:
+            return int(result.split()[-1])
+        except (ValueError, IndexError):
+            return 0
 
     async def bump_access_counts(self, memory_ids: Sequence[str]) -> None:
         raise NotImplementedError("bump_access_counts: implemented in T12")
