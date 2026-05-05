@@ -9,6 +9,7 @@ from lore.persistence.exceptions import (
     StoreNotFound,
     StoreSchemaMismatch,
 )
+from lore.persistence.factory import make_store
 from lore.persistence.protocol import Store
 from lore.persistence.types import (
     MemoryFilter,
@@ -34,4 +35,5 @@ __all__ = [
     "StoreNotFound",
     "StoreSchemaMismatch",
     "StoredMemory",
+    "make_store",
 ]
