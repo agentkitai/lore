@@ -338,58 +338,29 @@ async def update_memory(
     body: MemoryUpdateRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
 ) -> MemoryResponse:
-    """Update a memory. Supports atomic upvote/downvote."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    set_parts: list[str] = []
-    params: list = list(scope_params)
-
-    if body.confidence is not None:
-        params.append(body.confidence)
-        set_parts.append(f"confidence = ${len(params)}")
-
-    if body.tags is not None:
-        params.append(json.dumps(body.tags))
-        set_parts.append(f"tags = ${len(params)}::jsonb")
-
-    if body.meta is not None:
-        params.append(json.dumps(body.meta))
-        set_parts.append(f"meta = ${len(params)}::jsonb")
-
-    for vote_field in ("upvotes", "downvotes"):
-        val = getattr(body, vote_field)
-        if val is not None:
-            if isinstance(val, str):
-                delta = 1 if val == "+1" else -1
-                params.append(delta)
-                set_parts.append(f"{vote_field} = {vote_field} + ${len(params)}")
-            else:
-                params.append(val)
-                set_parts.append(f"{vote_field} = ${len(params)}")
-
-    if not set_parts:
+    """Update a memory."""
+    if (
+        body.confidence is None
+        and body.tags is None
+        and body.meta is None
+        and body.upvotes is None
+        and body.downvotes is None
+    ):
         raise HTTPException(status_code=422, detail="No fields to update")
 
-    set_parts.append("updated_at = now()")
-
-    params.append(memory_id)
-    id_idx = len(params)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""UPDATE memories SET {', '.join(set_parts)}
-                WHERE id = ${id_idx} AND {scope_sql}
-                RETURNING id, content, context, tags, confidence,
-                          source, project, created_at, updated_at, expires_at,
-                          upvotes, downvotes, meta""",
-            *params,
+    store = await get_store()
+    try:
+        updated = await _update_memory(
+            store,
+            org_id=auth.org_id,
+            memory_id=memory_id,
+            confidence=body.confidence,
+            tags=body.tags,
+            meta=body.meta,
         )
-
-    if row is None:
+    except StoreNotFound:
         raise HTTPException(status_code=404, detail="Memory not found")
-
-    return _row_to_response(dict(row))
+    return _stored_to_memory_response(updated)
 
 
 # ── Delete ─────────────────────────────────────────────────────────
@@ -401,17 +372,9 @@ async def delete_memory(
     auth: AuthContext = Depends(require_role("writer", "admin")),
 ) -> None:
     """Delete a memory."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            f"DELETE FROM memories WHERE id = ${len(scope_params) + 1} AND {scope_sql}",
-            *scope_params,
-            memory_id,
-        )
-
-    if result == "DELETE 0":
+    store = await get_store()
+    deleted = await _delete_memory(store, org_id=auth.org_id, memory_id=memory_id)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Memory not found")
 
 
