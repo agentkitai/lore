@@ -484,7 +484,18 @@ class PostgresStore:
 
     # T4
     async def get_entity_by_name(self, name: str) -> Optional[StoredEntity]:
-        raise NotImplementedError("Phase 1B T4")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE name = $1
+                """,
+                name,
+            )
+        return _row_to_entity(row) if row else None
 
     async def list_entities(
         self,
@@ -493,7 +504,28 @@ class PostgresStore:
         min_mentions: int = 0,
         limit: int = 100,
     ) -> Sequence[StoredEntity]:
-        raise NotImplementedError("Phase 1B T4")
+        where: list[str] = []
+        params: list[Any] = []
+        if entity_type is not None:
+            params.append(entity_type)
+            where.append(f"entity_type = ${len(params)}")
+        if min_mentions > 0:
+            params.append(min_mentions)
+            where.append(f"mention_count >= ${len(params)}")
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        params.append(limit)
+        sql = f"""
+            SELECT id, name, entity_type, aliases, description, metadata,
+                   mention_count, first_seen_at, last_seen_at,
+                   created_at, updated_at
+            FROM entities
+            {where_sql}
+            ORDER BY mention_count DESC
+            LIMIT ${len(params)}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_entity(r) for r in rows]
 
     # T5
     async def update_entity_counts(
