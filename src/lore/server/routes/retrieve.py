@@ -16,7 +16,8 @@ except ImportError:
 from pydantic import BaseModel
 
 from lore.server.auth import AuthContext, get_auth_context
-from lore.server.db import get_pool
+from lore.server.db import get_pool, get_store
+from lore.services.retrieve import retrieve as _retrieve_service
 
 logger = logging.getLogger(__name__)
 
@@ -168,94 +169,41 @@ async def retrieve(
     embedder = _get_embedder()
     query_vec = embedder.embed(query)
 
-    # Build SQL query
-    where_parts: list[str] = ["org_id = $1"]
-    params: list = [auth.org_id]
-
     # Project scoping: auth key scope overrides query param
     effective_project = project
     if auth.project is not None:
         effective_project = auth.project
-    if effective_project is not None:
-        params.append(effective_project)
-        where_parts.append(f"project = ${len(params)}")
 
-    # Exclude expired
-    where_parts.append("(expires_at IS NULL OR expires_at > now())")
+    store = await get_store()
+    out = await _retrieve_service(
+        store,
+        org_id=auth.org_id,
+        query_text=query,
+        query_vec=query_vec,
+        limit=limit,
+        min_score=min_score,
+        project=effective_project,
+        format=format,
+    )
 
-    # Embedding must exist
-    where_parts.append("embedding IS NOT NULL")
-
-    where_sql = " AND ".join(where_parts)
-
-    # Embedding parameter
-    params.append(json.dumps(query_vec))
-    emb_idx = len(params)
-
-    # Min score parameter
-    params.append(min_score)
-    score_idx = len(params)
-
-    # Limit parameter
-    params.append(limit)
-    limit_idx = len(params)
-
-    # SQL with time-adjusted importance scoring (same formula as memories/search)
-    sql = f"""
-        SELECT id,
-               content,
-               COALESCE(meta->>'type', 'unknown') AS type,
-               COALESCE(meta->>'tier', 'long') AS tier,
-               source, project, tags,
-               created_at, importance_score,
-               (1 - (embedding <=> ${emb_idx}::vector)) *
-               COALESCE(importance_score, 1.0) *
-               power(0.5,
-                   LEAST(
-                       EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0,
-                       COALESCE(
-                           EXTRACT(EPOCH FROM (now() - last_accessed_at)) / 86400.0,
-                           EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0
-                       )
-                   )
-                   / {_HALF_LIFE_DEFAULT}
-               )
-               AS score
-        FROM memories
-        WHERE {where_sql}
-          AND (1 - (embedding <=> ${emb_idx}::vector)) >= ${score_idx}
-        ORDER BY score DESC
-        LIMIT ${limit_idx}
-    """
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(sql, *params)
-
-    # Build response
-    memories: List[RetrieveMemory] = []
-    for r in rows:
-        rd = dict(r)
-        tags = rd.get("tags") or []
-        if isinstance(tags, str):
-            tags = json.loads(tags)
-        created_at = rd.get("created_at")
-        if hasattr(created_at, "isoformat"):
-            created_at = created_at.isoformat()
-
-        memories.append(RetrieveMemory(
-            id=rd["id"],
-            content=rd["content"],
-            type=rd.get("type", "general"),
-            tier=rd.get("tier", "long"),
-            score=round(float(rd.get("score", 0.0)), 4),
-            created_at=str(created_at or ""),
-            source=rd.get("source"),
-            project=rd.get("project"),
-            tags=tags,
-        ))
+    # Convert ScoredMemory dataclasses to RetrieveMemory pydantic models
+    memories: List[RetrieveMemory] = [
+        RetrieveMemory(
+            id=m.id,
+            content=m.content,
+            type=(m.meta or {}).get("type", "unknown"),
+            tier=(m.meta or {}).get("tier", "long"),
+            score=round(float(m.score), 4),
+            created_at=m.created_at.isoformat() if hasattr(m.created_at, "isoformat") else str(m.created_at),
+            source=m.source,
+            project=m.project,
+            tags=list(m.tags),
+        )
+        for m in out.memories
+    ]
 
     # Auto-inject recent session snapshots (last 24h)
+    session_memories: List[RetrieveMemory] = []
     if include_session_context:
         existing_ids = {m.id for m in memories}
         session_memories = await _fetch_session_snapshots(
@@ -265,9 +213,12 @@ async def retrieve(
         )
         memories.extend(session_memories)
 
-    # Format output
-    formatter = _FORMATTERS[format]
-    formatted = formatter(memories, query)
+    # Re-format if session memories were appended (otherwise out.formatted is fine)
+    if include_session_context and session_memories:
+        formatter = _FORMATTERS[format]
+        formatted = formatter(memories, query)
+    else:
+        formatted = out.formatted
 
     elapsed_ms = round((time.monotonic() - start) * 1000, 2)
 
