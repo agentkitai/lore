@@ -14,9 +14,11 @@ from lore.persistence import (
     NewEntity,
     NewMemory,
     NewMention,
+    NewRelationship,
     Store,
     StoredEntity,
     StoredMention,
+    StoredRelationship,
 )
 
 
@@ -292,3 +294,112 @@ async def test_count_memories_distinct_per_memory(store: Store):
     await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
     await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
     assert (await store.count_memories_for_entity(e.id)) == 1
+
+
+# ---------------------------------------------------------------------------
+# T7 — relationship insert / get
+# ---------------------------------------------------------------------------
+
+
+async def _two_entities(store: Store, *, src="alpha", tgt="beta"):
+    a = await store.upsert_entity(NewEntity(name=src, entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(name=tgt, entity_type="topic"))
+    return a, b
+
+
+@pytest.mark.asyncio
+async def test_save_relationship_round_trip(store: Store):
+    a, b = await _two_entities(store)
+    rel = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id,
+            target_entity_id=b.id,
+            rel_type="depends_on",
+            weight=0.7,
+        )
+    )
+    assert isinstance(rel, StoredRelationship)
+    assert rel.id.startswith("rel_")
+    assert rel.source_entity_id == a.id
+    assert rel.weight == pytest.approx(0.7)
+    assert rel.valid_until is None
+    assert rel.status == "approved"
+
+
+@pytest.mark.asyncio
+async def test_save_relationship_default_valid_from_is_now(store: Store):
+    a, b = await _two_entities(store, src="x1", tgt="x2")
+    before = datetime.now(timezone.utc)
+    rel = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    after = datetime.now(timezone.utc)
+    assert before <= rel.valid_from <= after
+
+
+@pytest.mark.asyncio
+async def test_get_relationship_round_trip(store: Store):
+    a, b = await _two_entities(store, src="g1", tgt="g2")
+    rel = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="works_on")
+    )
+    fetched = await store.get_relationship(rel.id)
+    assert fetched is not None
+    assert fetched.id == rel.id
+
+
+@pytest.mark.asyncio
+async def test_get_relationship_returns_none_when_missing(store: Store):
+    assert (await store.get_relationship("rel_missing")) is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_relationship_finds_active(store: Store):
+    a, b = await _two_entities(store, src="a1", tgt="a2")
+    rel = await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    active = await store.get_active_relationship(a.id, b.id, rel_type="uses")
+    assert active is not None
+    assert active.id == rel.id
+
+
+@pytest.mark.asyncio
+async def test_get_active_relationship_ignores_different_type(store: Store):
+    a, b = await _two_entities(store, src="t1", tgt="t2")
+    await store.save_relationship(
+        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+    )
+    none_match = await store.get_active_relationship(a.id, b.id, rel_type="depends_on")
+    assert none_match is None
+
+
+@pytest.mark.asyncio
+async def test_get_active_relationship_returns_none_for_expired(store: Store):
+    a, b = await _two_entities(store, src="e1", tgt="e2")
+    past_until = datetime.now(timezone.utc)
+    await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id,
+            target_entity_id=b.id,
+            rel_type="part_of",
+            valid_until=past_until,
+        )
+    )
+    # Even though the row exists, it's expired (valid_until IS NOT NULL)
+    none_match = await store.get_active_relationship(a.id, b.id, rel_type="part_of")
+    assert none_match is None
+
+
+@pytest.mark.asyncio
+async def test_save_relationship_with_properties_round_trip(store: Store):
+    a, b = await _two_entities(store, src="p1", tgt="p2")
+    rel = await store.save_relationship(
+        NewRelationship(
+            source_entity_id=a.id,
+            target_entity_id=b.id,
+            rel_type="created_by",
+            properties={"verified": True, "source": "manual"},
+        )
+    )
+    assert rel.properties == {"verified": True, "source": "manual"}

@@ -78,6 +78,27 @@ def _row_to_mention(row: "asyncpg.Record") -> StoredMention:
     )
 
 
+def _row_to_relationship(row: "asyncpg.Record") -> StoredRelationship:
+    properties = row["properties"]
+    if isinstance(properties, str):
+        properties = json.loads(properties)
+    return StoredRelationship(
+        id=row["id"],
+        source_entity_id=row["source_entity_id"],
+        target_entity_id=row["target_entity_id"],
+        rel_type=row["rel_type"],
+        weight=float(row["weight"]) if row["weight"] is not None else 1.0,
+        properties=dict(properties or {}),
+        source_fact_id=row["source_fact_id"],
+        source_memory_id=row["source_memory_id"],
+        valid_from=row["valid_from"],
+        valid_until=row["valid_until"],
+        status=row["status"] or "approved",
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
 def _row_to_entity(row: "asyncpg.Record") -> StoredEntity:
     aliases = row["aliases"]
     if isinstance(aliases, str):
@@ -628,7 +649,18 @@ class PostgresStore:
 
     # T7
     async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
-        raise NotImplementedError("Phase 1B T7")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                       properties, source_fact_id, source_memory_id,
+                       valid_from, valid_until, status, created_at, updated_at
+                FROM relationships
+                WHERE id = $1
+                """,
+                rel_id,
+            )
+        return _row_to_relationship(row) if row else None
 
     async def get_active_relationship(
         self,
@@ -637,10 +669,52 @@ class PostgresStore:
         *,
         rel_type: str,
     ) -> Optional[StoredRelationship]:
-        raise NotImplementedError("Phase 1B T7")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                       properties, source_fact_id, source_memory_id,
+                       valid_from, valid_until, status, created_at, updated_at
+                FROM relationships
+                WHERE source_entity_id = $1
+                  AND target_entity_id = $2
+                  AND rel_type = $3
+                  AND valid_until IS NULL
+                """,
+                source_id,
+                target_id,
+                rel_type,
+            )
+        return _row_to_relationship(row) if row else None
 
     async def save_relationship(self, rel: NewRelationship) -> StoredRelationship:
-        raise NotImplementedError("Phase 1B T7")
+        rel_id = f"rel_{ULID()}"
+        valid_from = rel.valid_from or datetime.now(timezone.utc)
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO relationships
+                    (id, source_entity_id, target_entity_id, rel_type, weight,
+                     properties, source_fact_id, source_memory_id,
+                     valid_from, valid_until, status)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+                RETURNING id, source_entity_id, target_entity_id, rel_type, weight,
+                          properties, source_fact_id, source_memory_id,
+                          valid_from, valid_until, status, created_at, updated_at
+                """,
+                rel_id,
+                rel.source_entity_id,
+                rel.target_entity_id,
+                rel.rel_type,
+                rel.weight,
+                json.dumps(dict(rel.properties)),
+                rel.source_fact_id,
+                rel.source_memory_id,
+                valid_from,
+                rel.valid_until,
+                rel.status,
+            )
+        return _row_to_relationship(row)
 
     # T8
     async def list_relationships_for_entity(
