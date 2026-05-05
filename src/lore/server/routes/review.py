@@ -18,8 +18,12 @@ from lore.persistence.exceptions import StoreNotFoundError
 from lore.server.db import get_store
 from lore.services.graph.review import (
     PendingReview,
-    bulk_review as bulk_review_service,
     list_pending_reviews,
+)
+from lore.services.graph.review import (
+    bulk_review as bulk_review_service,
+)
+from lore.services.graph.review import (
     review_relationship as review_relationship_service,
 )
 

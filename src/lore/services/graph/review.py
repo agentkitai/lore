@@ -11,11 +11,8 @@ from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from lore.persistence import (
-    PendingRelationshipRow,
     Store,
-    StoredMemory,
 )
-
 
 # ── Dataclasses ───────────────────────────────────────────────
 

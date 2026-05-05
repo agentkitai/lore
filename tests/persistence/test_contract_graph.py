@@ -17,7 +17,6 @@ from lore.persistence import (
     NewRelationship,
     Store,
     StoredEntity,
-    StoredMention,
     StoredRelationship,
 )
 from lore.persistence.types import GraphStats, TimelineBucketRow
@@ -435,7 +434,7 @@ async def test_list_relationships_for_entity_filters_by_status(store: Store):
             rel_type="uses", status="pending",
         )
     )
-    r_approved = await store.save_relationship(
+    await store.save_relationship(
         NewRelationship(
             source_entity_id=a.id, target_entity_id=b.id,
             rel_type="depends_on", status="approved",

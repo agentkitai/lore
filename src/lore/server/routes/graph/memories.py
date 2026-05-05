@@ -6,7 +6,7 @@ Refactored in Phase 1B to call services exclusively. No SQL or get_pool() here.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 

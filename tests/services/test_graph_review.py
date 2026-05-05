@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
 
 from lore.persistence import (
@@ -14,16 +12,13 @@ from lore.persistence import (
 from lore.persistence.exceptions import StoreNotFoundError
 from lore.services.graph.review import (
     BulkReviewResult,
-    PendingReview,
     ReviewActionResult,
     ReviewListing,
-    RiskScore,
     _compute_risk_score,
     bulk_review,
     list_pending_reviews,
     review_relationship,
 )
-
 
 # ── Risk score unit tests (no DB needed) ─────────────────────
 

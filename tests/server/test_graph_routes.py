@@ -8,8 +8,7 @@ dependency_overrides to inject the fake.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Mapping, Optional, Sequence
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -313,8 +312,8 @@ def test_get_timeline_invalid_bucket(fake_store):
 
 
 def test_get_timeline_basic(fake_store):
-    from lore.server.routes.graph.router import router
     from lore.persistence.types import TimelineBucketRow
+    from lore.server.routes.graph.router import router
     now = _utc_now()
     fake_store.get_timeline_buckets.return_value = [
         TimelineBucketRow(bucket_date=now, mem_type="lesson", count=2),
