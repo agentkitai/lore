@@ -12,8 +12,13 @@ import sys
 from pathlib import Path
 
 MIGRATED_ROUTES = {
+    "src/lore/server/routes/graph/entities.py",
+    "src/lore/server/routes/graph/memories.py",
+    "src/lore/server/routes/graph/stats.py",
+    "src/lore/server/routes/graph/topics.py",
     "src/lore/server/routes/memories.py",
     "src/lore/server/routes/retrieve.py",
+    "src/lore/server/routes/review.py",
 }
 
 FORBIDDEN_PATTERNS = [
@@ -44,6 +49,9 @@ ALLOWLIST = {
         "embedding = $2::",                   # _enrich_memory UPDATE embedding SQL
         "fetchrow",                           # record_access UPDATE SQL (f"""UPDATE via fetchrow)
         "a memory.",                          # Update/Delete docstrings (not raw SQL)
+    ],
+    "src/lore/server/routes/graph/memories.py": [
+        "No SQL or get_pool() here.",         # module docstring asserting absence (not actual usage)
     ],
 }
 
