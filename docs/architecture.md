@@ -304,14 +304,19 @@ Consolidation can run in dry-run mode (preview only) or execute mode (applies ch
 ## Persistence layer
 
 Lore's server-side persistence is defined by the `Store` protocol in
-`lore.persistence.protocol`. Implementations:
+`lore.persistence.protocol`. The protocol defines two slices:
 
-- `PostgresStore` — asyncpg + pgvector. Production default.
+- **MemoryOps** (Phase 1A): insert, get, update, delete, list, recall, expire, bump, vote operations on memories.
+- **GraphOps** (Phase 1B): 24 typed methods spanning entity/mention/relationship management, graph traversal, stats, and a UI-facing text search.
+
+Implementations:
+
+- `PostgresStore` — asyncpg + pgvector. Production default. Implements both MemoryOps and GraphOps.
 - (Coming in Phase 3) `SqliteStore` — aiosqlite + sqlite-vec. For solo / embedded use.
 
-The protocol is grown slice-by-slice. Phase 1A shipped the `MemoryOps` slice;
-Phase 1B–1G migrate the remaining route SQL into the protocol. Until a slice
-is migrated, those routes still call `asyncpg` directly via `get_pool()`.
+The protocol is grown slice-by-slice. Phase 1A shipped the `MemoryOps` slice; Phase 1B completed the `GraphOps` slice; Phase 1C–1G will migrate remaining route SQL. Until a slice is migrated, those routes still call `asyncpg` directly via `get_pool()`.
+
+Routes call services; services call the Store. Contract test suite at `tests/persistence/test_contract_*.py` validates every Store implementation against the shared protocol.
 
 ### Architectural invariants
 1. Routes contain zero SQL. Services contain zero SQL. SQL lives only in Store implementations.
