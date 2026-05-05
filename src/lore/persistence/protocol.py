@@ -8,15 +8,25 @@ SnapshotOps, AnalyticsOps, PolicyOps, AuthOps, etc.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Optional, Protocol, Sequence, runtime_checkable
 
 from lore.persistence.types import (
+    GraphStats,
     MemoryFilter,
     MemoryPatch,
+    NewEntity,
     NewMemory,
+    NewMention,
+    NewRelationship,
+    PendingRelationshipRow,
     RecallParams,
     ScoredMemory,
+    StoredEntity,
     StoredMemory,
+    StoredMention,
+    StoredRelationship,
+    TimelineBucketRow,
 )
 
 
@@ -25,7 +35,7 @@ class Store(Protocol):
     """The Store protocol.
 
     Implementations: PostgresStore (Phase 1A), SqliteStore (Phase 3).
-    Method groups are added incrementally; Phase 1A defines MemoryOps.
+    Method groups are added incrementally; Phase 1A defines MemoryOps, Phase 1B adds GraphOps.
     """
 
     # ── lifecycle ────────────────────────────────────────────────────
@@ -74,4 +84,183 @@ class Store(Protocol):
         self, org_id: str, memory_id: str, *, direction: str
     ) -> StoredMemory:
         """direction is 'up' or 'down'. Returns the updated memory."""
+        ...
+
+    # ── GraphOps ─────────────────────────────────────────────────────
+
+    # Entity ops
+    async def get_entity(self, entity_id: str) -> Optional[StoredEntity]:
+        """Return an entity by id, or None if absent."""
+        ...
+
+    async def get_entity_by_name(self, name: str) -> Optional[StoredEntity]:
+        """Return an entity whose name matches exactly (case-sensitive); services normalize."""
+        ...
+
+    async def list_entities(
+        self,
+        *,
+        entity_type: Optional[str] = None,
+        min_mentions: int = 0,
+        limit: int = 100,
+    ) -> Sequence[StoredEntity]:
+        """List entities filtered by type and minimum mention_count, ordered by mention_count DESC."""
+        ...
+
+    async def upsert_entity(self, entity: NewEntity) -> StoredEntity:
+        """Insert or merge an entity by name; returns the stored row with id."""
+        ...
+
+    async def update_entity_counts(
+        self,
+        entity_id: str,
+        *,
+        mention_delta: int,
+        last_seen_at: datetime,
+    ) -> None:
+        """Atomically adjust mention_count and bump last_seen_at."""
+        ...
+
+    async def delete_entity(self, entity_id: str) -> bool:
+        """Delete an entity (cascades to mentions and relationships); True if removed."""
+        ...
+
+    # Mention ops
+    async def get_mentions_for_memory(self, memory_id: str) -> Sequence[StoredMention]:
+        """All mentions linking entities to a given memory."""
+        ...
+
+    async def get_mentions_for_entity(
+        self,
+        entity_id: str,
+        *,
+        limit: int = 100,
+    ) -> Sequence[StoredMention]:
+        """All mentions linking memories to a given entity, newest first."""
+        ...
+
+    async def save_mention(self, mention: NewMention) -> None:
+        """Idempotent insert; (entity_id, memory_id) is unique."""
+        ...
+
+    async def count_memories_for_entity(self, entity_id: str) -> int:
+        """Distinct memory count for an entity (COUNT DISTINCT memory_id)."""
+        ...
+
+    # Relationship ops
+    async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
+        """Return a relationship by id."""
+        ...
+
+    async def get_active_relationship(
+        self,
+        source_id: str,
+        target_id: str,
+        rel_type: str,
+    ) -> Optional[StoredRelationship]:
+        """Return the active (valid_until IS NULL) relationship for the (source, target, type) triple."""
+        ...
+
+    async def list_relationships_for_entity(
+        self,
+        entity_id: str,
+        *,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[StoredRelationship]:
+        """List relationships incident to an entity (in either direction), optionally filtered by status."""
+        ...
+
+    async def save_relationship(self, rel: NewRelationship) -> StoredRelationship:
+        """Insert a new relationship row; returns the stored row with id and timestamps."""
+        ...
+
+    async def update_relationship_status(
+        self,
+        rel_id: str,
+        status: str,
+    ) -> StoredRelationship:
+        """Set the status column ('approved'/'rejected'/'pending'); returns the updated row."""
+        ...
+
+    async def update_relationship_weight(
+        self,
+        rel_id: str,
+        weight: float,
+    ) -> None:
+        """Set the weight column."""
+        ...
+
+    async def expire_relationship(self, rel_id: str) -> None:
+        """Mark a relationship expired by setting valid_until = now()."""
+        ...
+
+    async def list_pending_relationships(
+        self,
+        *,
+        rel_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[PendingRelationshipRow]:
+        """Pending relationships joined with source/target entities for review."""
+        ...
+
+    async def save_rejected_pattern(
+        self,
+        source_name: str,
+        target_name: str,
+        rel_type: str,
+        *,
+        source_memory_id: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Idempotent UPSERT into rejected_patterns by (source_name, target_name, rel_type)."""
+        ...
+
+    # Traversal / stats
+    async def query_relationships(
+        self,
+        entity_ids: Sequence[str],
+        *,
+        direction: str = "both",
+        active_only: bool = True,
+        at_time: Optional[datetime] = None,
+        rel_types: Optional[Sequence[str]] = None,
+    ) -> Sequence[StoredRelationship]:
+        """Hop query for graph traversal. direction in {'inbound','outbound','both'}."""
+        ...
+
+    async def get_graph_stats(
+        self,
+        *,
+        project: Optional[str] = None,
+    ) -> GraphStats:
+        """Aggregate graph statistics; optional project scope."""
+        ...
+
+    async def get_timeline_buckets(
+        self,
+        *,
+        trunc: str,
+        project: Optional[str] = None,
+    ) -> Sequence[TimelineBucketRow]:
+        """Memory creation buckets by date_trunc interval; trunc must be validated by caller."""
+        ...
+
+    async def get_memories_by_entities(
+        self,
+        entity_ids: Sequence[str],
+        *,
+        exclude_memory_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        """Memories that mention any of the given entity ids, ordered by created_at DESC."""
+        ...
+
+    async def search_memories_text(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        """Substring (ILIKE) match against memories.content for the UI search box."""
         ...
