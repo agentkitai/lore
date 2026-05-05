@@ -67,6 +67,17 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
     )
 
 
+def _row_to_mention(row: "asyncpg.Record") -> StoredMention:
+    return StoredMention(
+        id=row["id"],
+        entity_id=row["entity_id"],
+        memory_id=row["memory_id"],
+        mention_type=row["mention_type"],
+        confidence=float(row["confidence"]) if row["confidence"] is not None else 1.0,
+        created_at=row["created_at"],
+    )
+
+
 def _row_to_entity(row: "asyncpg.Record") -> StoredEntity:
     aliases = row["aliases"]
     if isinstance(aliases, str):
@@ -558,8 +569,34 @@ class PostgresStore:
         return result.endswith(" 1")
 
     # T6
+    async def save_mention(self, mention: NewMention) -> None:
+        mention_id = f"emen_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO entity_mentions (id, entity_id, memory_id, mention_type, confidence)
+                VALUES ($1, $2, $3, $4, $5)
+                ON CONFLICT (entity_id, memory_id) DO NOTHING
+                """,
+                mention_id,
+                mention.entity_id,
+                mention.memory_id,
+                mention.mention_type,
+                mention.confidence,
+            )
+
     async def get_mentions_for_memory(self, memory_id: str) -> Sequence[StoredMention]:
-        raise NotImplementedError("Phase 1B T6")
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, entity_id, memory_id, mention_type, confidence, created_at
+                FROM entity_mentions
+                WHERE memory_id = $1
+                ORDER BY created_at DESC
+                """,
+                memory_id,
+            )
+        return [_row_to_mention(r) for r in rows]
 
     async def get_mentions_for_entity(
         self,
@@ -567,13 +604,27 @@ class PostgresStore:
         *,
         limit: int = 100,
     ) -> Sequence[StoredMention]:
-        raise NotImplementedError("Phase 1B T6")
-
-    async def save_mention(self, mention: NewMention) -> None:
-        raise NotImplementedError("Phase 1B T6")
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, entity_id, memory_id, mention_type, confidence, created_at
+                FROM entity_mentions
+                WHERE entity_id = $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                entity_id,
+                limit,
+            )
+        return [_row_to_mention(r) for r in rows]
 
     async def count_memories_for_entity(self, entity_id: str) -> int:
-        raise NotImplementedError("Phase 1B T6")
+        async with self._acquire() as conn:
+            result = await conn.fetchval(
+                "SELECT COUNT(DISTINCT memory_id) FROM entity_mentions WHERE entity_id = $1",
+                entity_id,
+            )
+        return int(result or 0)
 
     # T7
     async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:

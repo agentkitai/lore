@@ -12,8 +12,11 @@ import pytest
 
 from lore.persistence import (
     NewEntity,
+    NewMemory,
+    NewMention,
     Store,
     StoredEntity,
+    StoredMention,
 )
 
 
@@ -208,3 +211,84 @@ async def test_delete_entity_returns_true_when_deleted(store: Store):
 @pytest.mark.asyncio
 async def test_delete_entity_returns_false_when_missing(store: Store):
     assert (await store.delete_entity("ent_missing")) is False
+
+
+# ── T6: Mention ops ────────────────────────────────────────────────────────
+
+
+async def _setup_entity_and_memory(store: Store, *, ent_name="topic", mem_content="content"):
+    e = await store.upsert_entity(NewEntity(name=ent_name, entity_type="topic"))
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content=mem_content, embedding=[0.0] * 384)
+    )
+    return e, m
+
+
+@pytest.mark.asyncio
+async def test_save_mention_round_trip(store: Store):
+    e, m = await _setup_entity_and_memory(store)
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
+    fetched = await store.get_mentions_for_memory(m.id)
+    assert len(fetched) == 1
+    assert fetched[0].entity_id == e.id
+    assert fetched[0].memory_id == m.id
+    assert fetched[0].mention_type == "explicit"
+    assert fetched[0].confidence == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_save_mention_is_idempotent(store: Store):
+    e, m = await _setup_entity_and_memory(store)
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
+    fetched = await store.get_mentions_for_memory(m.id)
+    assert len(fetched) == 1
+
+
+@pytest.mark.asyncio
+async def test_get_mentions_for_entity_filters_correctly(store: Store):
+    e1, m1 = await _setup_entity_and_memory(store, ent_name="alpha", mem_content="a")
+    e2 = await store.upsert_entity(NewEntity(name="beta", entity_type="topic"))
+    m2 = await store.insert_memory(
+        NewMemory(org_id="solo", content="b", embedding=[0.0] * 384)
+    )
+    await store.save_mention(NewMention(entity_id=e1.id, memory_id=m1.id))
+    await store.save_mention(NewMention(entity_id=e2.id, memory_id=m2.id))
+    only_e1 = await store.get_mentions_for_entity(e1.id)
+    assert {m.memory_id for m in only_e1} == {m1.id}
+
+
+@pytest.mark.asyncio
+async def test_get_mentions_for_entity_respects_limit(store: Store):
+    e = await store.upsert_entity(NewEntity(name="hot", entity_type="topic"))
+    for i in range(5):
+        m = await store.insert_memory(
+            NewMemory(org_id="solo", content=f"c{i}", embedding=[0.0] * 384)
+        )
+        await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
+    rows = await store.get_mentions_for_entity(e.id, limit=2)
+    assert len(rows) == 2
+
+
+@pytest.mark.asyncio
+async def test_count_memories_for_entity(store: Store):
+    e = await store.upsert_entity(NewEntity(name="counted", entity_type="topic"))
+    assert (await store.count_memories_for_entity(e.id)) == 0
+    for i in range(3):
+        m = await store.insert_memory(
+            NewMemory(org_id="solo", content=f"d{i}", embedding=[0.0] * 384)
+        )
+        await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
+    assert (await store.count_memories_for_entity(e.id)) == 3
+
+
+@pytest.mark.asyncio
+async def test_count_memories_distinct_per_memory(store: Store):
+    """save_mention dedupes by (entity, memory) so duplicate calls don't inflate the count."""
+    e = await store.upsert_entity(NewEntity(name="dedup", entity_type="topic"))
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="x", embedding=[0.0] * 384)
+    )
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
+    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
+    assert (await store.count_memories_for_entity(e.id)) == 1
