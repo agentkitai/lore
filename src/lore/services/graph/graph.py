@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Mapping, Optional, Sequence
+from typing import Mapping, Optional, Sequence
 
 from lore.persistence import (
     GraphStats,
@@ -223,14 +223,12 @@ async def get_graph_data(
 
     # 4. Build memory nodes.
     nodes: list[GraphNode] = []
-    memory_ids_in_subset = {m.id for m in memories}
 
     for m in memories:
         nodes.append(_memory_node(m))
 
     # 5. Build entity nodes.
     entity_ids = [e.id for e in entities]
-    entity_index = {e.id: e for e in entities}
 
     for e in entities:
         nodes.append(
