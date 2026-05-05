@@ -338,7 +338,21 @@ class PostgresStore:
             return 0
 
     async def bump_access_counts(self, memory_ids: Sequence[str]) -> None:
-        raise NotImplementedError("bump_access_counts: implemented in T12")
+        if not memory_ids:
+            return
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE memories
+                SET access_count = COALESCE(access_count, 0) + 1,
+                    last_accessed_at = now(),
+                    importance_score = COALESCE(confidence, 1.0)
+                        * GREATEST(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1)
+                        * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
+                WHERE id = ANY($1)
+                """,
+                list(memory_ids),
+            )
 
     async def vote_memory(self, org_id: str, memory_id: str, *, direction: str) -> StoredMemory:
         raise NotImplementedError("vote_memory: implemented in T13")

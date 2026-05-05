@@ -224,3 +224,16 @@ async def test_expire_memories_deletes_past_expiry(store: Store):
     assert n >= 1
     assert (await store.get_memory("solo", expired.id)) is None
     assert (await store.get_memory("solo", keep.id)) is not None
+
+
+@pytest.mark.asyncio
+async def test_bump_access_counts_increments(store: Store):
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="popular", embedding=_vec(40))
+    )
+    assert m.access_count == 0
+    await store.bump_access_counts([m.id])
+    after = await store.get_memory("solo", m.id)
+    assert after is not None
+    assert after.access_count == 1
+    assert after.last_accessed_at is not None
