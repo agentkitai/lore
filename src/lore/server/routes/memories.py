@@ -421,64 +421,37 @@ async def delete_memory(
 @router.get("", response_model=MemoryListResponse)
 async def list_memories(
     project: Optional[str] = Query(None),
-    query: Optional[str] = Query(None),
-    category: Optional[str] = Query(None),
-    min_reputation: Optional[int] = Query(None, alias="minReputation"),
-    limit: int = Query(50, ge=1, le=200),
+    type: Optional[str] = Query(None),
+    tier: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    include_expired: bool = Query(False),
     auth: AuthContext = Depends(get_auth_context),
 ) -> MemoryListResponse:
     """List memories with pagination."""
-    where_parts: list[str] = ["org_id = $1"]
-    params: list = [auth.org_id]
-
-    if auth.project is not None:
-        params.append(auth.project)
-        where_parts.append(f"project = ${len(params)}")
-    elif project is not None:
-        params.append(project)
-        where_parts.append(f"project = ${len(params)}")
-
-    if query:
-        params.append(f"%{query}%")
-        idx = len(params)
-        where_parts.append(f"(content ILIKE ${idx} OR context ILIKE ${idx})")
-
-    if category:
-        params.append(json.dumps([category]))
-        where_parts.append(f"tags @> ${len(params)}::jsonb")
-
-    if min_reputation is not None:
-        params.append(min_reputation)
-        where_parts.append(f"reputation_score >= ${len(params)}")
-
-    where_sql = " AND ".join(where_parts)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM memories WHERE {where_sql}",
-            *params,
-        )
-
-        params.append(limit)
-        limit_idx = len(params)
-        params.append(offset)
-        offset_idx = len(params)
-
-        rows = await conn.fetch(
-            f"""SELECT id, content, context, tags, confidence,
-                       source, project, created_at, updated_at, expires_at,
-                       upvotes, downvotes, meta, reputation_score, quality_signals
-                FROM memories WHERE {where_sql}
-                ORDER BY created_at DESC
-                LIMIT ${limit_idx} OFFSET ${offset_idx}""",
-            *params,
-        )
-
-    return MemoryListResponse(
-        memories=[_row_to_response(dict(r)) for r in rows],
-        total=total,
+    store = await get_store()
+    rows = await _list_memories(
+        store,
+        org_id=auth.org_id,
+        project=auth.project or project,
+        type=type,
+        tier=tier,
         limit=limit,
         offset=offset,
+        include_expired=include_expired,
+    )
+    return MemoryListResponse(
+        memories=[_stored_to_memory_response(m) for m in rows],
+        total=len(rows),
+        limit=limit,
+        offset=offset,
+    )
+
+
+def _stored_to_memory_response(m) -> MemoryResponse:
+    return MemoryResponse(
+        id=m.id, content=m.content, context=m.context, tags=list(m.tags),
+        confidence=m.confidence, source=m.source, project=m.project,
+        created_at=m.created_at, updated_at=m.updated_at, expires_at=m.expires_at,
+        upvotes=m.upvotes, downvotes=m.downvotes, meta=dict(m.meta),
     )
