@@ -237,3 +237,30 @@ async def test_bump_access_counts_increments(store: Store):
     assert after is not None
     assert after.access_count == 1
     assert after.last_accessed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_vote_memory_up_and_down(store: Store):
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="rate me", embedding=_vec(50))
+    )
+    after_up = await store.vote_memory("solo", m.id, direction="up")
+    assert after_up.upvotes == 1
+
+    after_down = await store.vote_memory("solo", m.id, direction="down")
+    assert after_down.downvotes == 1
+
+
+@pytest.mark.asyncio
+async def test_vote_memory_invalid_direction(store: Store):
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="x", embedding=_vec(51))
+    )
+    with pytest.raises(ValueError):
+        await store.vote_memory("solo", m.id, direction="sideways")
+
+
+@pytest.mark.asyncio
+async def test_vote_memory_raises_when_missing(store: Store):
+    with pytest.raises(StoreNotFound):
+        await store.vote_memory("solo", "mem_missing", direction="up")

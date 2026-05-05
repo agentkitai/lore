@@ -354,8 +354,38 @@ class PostgresStore:
                 list(memory_ids),
             )
 
-    async def vote_memory(self, org_id: str, memory_id: str, *, direction: str) -> StoredMemory:
-        raise NotImplementedError("vote_memory: implemented in T13")
+    async def vote_memory(
+        self,
+        org_id: str,
+        memory_id: str,
+        *,
+        direction: str,
+    ) -> StoredMemory:
+        if direction == "up":
+            column = "upvotes"
+        elif direction == "down":
+            column = "downvotes"
+        else:
+            raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
+
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                f"""
+                UPDATE memories
+                SET {column} = COALESCE({column}, 0) + 1,
+                    updated_at = now()
+                WHERE id = $1 AND org_id = $2
+                RETURNING id, org_id, content, context, tags, confidence, source,
+                          project, created_at, updated_at, expires_at, upvotes,
+                          downvotes, meta, importance_score, access_count,
+                          last_accessed_at
+                """,
+                memory_id,
+                org_id,
+            )
+        if row is None:
+            raise StoreNotFound("memories", memory_id)
+        return _row_to_stored(row)
 
 
 class _BoundConn:
