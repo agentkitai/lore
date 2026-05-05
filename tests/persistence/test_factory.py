@@ -25,10 +25,8 @@ def test_postgres_url_returns_postgres_store(monkeypatch):
 
     try:
         asyncio.run(_go())
-    except (OSError, ConnectionRefusedError, Exception) as e:
-        if "lore_test" in str(e) or "Connection refused" in str(e):
-            pytest.skip(f"Test DB not reachable: {e}")
-        raise
+    except (OSError, ConnectionRefusedError) as e:
+        pytest.skip(f"Test DB not reachable: {e}")
 
 
 @pytest.mark.asyncio
