@@ -184,79 +184,37 @@ async def search_memories(
     auth: AuthContext = Depends(get_auth_context),
 ) -> MemorySearchResponse:
     """Semantic search with multiplicative scoring."""
-    where_parts: list[str] = ["org_id = $1"]
-    params: list = [auth.org_id]
-
-    project = body.project
-    if auth.project is not None:
-        project = auth.project
-    if project is not None:
-        params.append(project)
-        where_parts.append(f"project = ${len(params)}")
-
-    if body.tags:
-        params.append(json.dumps(body.tags))
-        where_parts.append(f"tags @> ${len(params)}::jsonb")
-
-    where_parts.append("(expires_at IS NULL OR expires_at > now())")
-    where_parts.append("embedding IS NOT NULL")
-    where_sql = " AND ".join(where_parts)
-
-    params.append(json.dumps(body.embedding))
-    emb_idx = len(params)
-    params.append(body.limit)
-    limit_idx = len(params)
-
-    query = f"""
-        SELECT id, content, context, tags, confidence,
-               source, project, created_at, updated_at, expires_at,
-               upvotes, downvotes, meta,
-               importance_score, access_count, last_accessed_at,
-               (1 - (embedding <=> ${emb_idx}::vector)) *
-               COALESCE(importance_score, 1.0) *
-               power(0.5,
-                   LEAST(
-                       EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0,
-                       COALESCE(
-                           EXTRACT(EPOCH FROM (now() - last_accessed_at)) / 86400.0,
-                           EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0
-                       )
-                   )
-                   / (CASE meta->>'type'
-                       WHEN 'code' THEN 14
-                       WHEN 'note' THEN 21
-                       WHEN 'lesson' THEN 30
-                       WHEN 'convention' THEN 60
-                       ELSE {_HALF_LIFE_DEFAULT}
-                     END)
-               )
-               AS score
-        FROM memories
-        WHERE {where_sql}
-        ORDER BY score DESC
-        LIMIT ${limit_idx}
-    """
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(query, *params)
-
-    results = []
-    for r in rows:
-        rd = dict(r)
-        score = float(rd.pop("score", 0.0))
-        rd.pop("importance_score", None)
-        rd.pop("access_count", None)
-        rd.pop("last_accessed_at", None)
-        if score < body.min_confidence:
-            continue
-        mem_resp = _row_to_response(rd)
-        results.append(MemorySearchResult(
-            **mem_resp.model_dump(),
-            score=round(max(score, 0.0), 6),
-        ))
-
-    return MemorySearchResponse(memories=results)
+    store = await get_store()
+    # body.embedding is the pre-computed query vector (384-dim)
+    results = await _search_memories(
+        store,
+        org_id=auth.org_id,
+        query_vec=body.embedding,
+        limit=body.limit,
+        min_score=body.min_confidence,
+        project=auth.project or body.project,
+    )
+    return MemorySearchResponse(
+        memories=[
+            MemorySearchResult(
+                id=r.id,
+                content=r.content,
+                context=r.context,
+                tags=list(r.tags),
+                confidence=r.confidence,
+                source=r.source,
+                project=r.project,
+                created_at=r.created_at,
+                updated_at=r.updated_at,
+                expires_at=r.expires_at,
+                upvotes=r.upvotes,
+                downvotes=r.downvotes,
+                meta=dict(r.meta),
+                score=round(max(r.score, 0.0), 6),
+            )
+            for r in results
+        ]
+    )
 
 
 # ── Access tracking ────────────────────────────────────────────────
