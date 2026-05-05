@@ -156,6 +156,7 @@ class Store(Protocol):
         self,
         source_id: str,
         target_id: str,
+        *,
         rel_type: str,
     ) -> Optional[StoredRelationship]:
         """Return the active (valid_until IS NULL) relationship for the (source, target, type) triple."""
@@ -178,6 +179,7 @@ class Store(Protocol):
     async def update_relationship_status(
         self,
         rel_id: str,
+        *,
         status: str,
     ) -> StoredRelationship:
         """Set the status column ('approved'/'rejected'/'pending'); returns the updated row."""
@@ -186,6 +188,7 @@ class Store(Protocol):
     async def update_relationship_weight(
         self,
         rel_id: str,
+        *,
         weight: float,
     ) -> None:
         """Set the weight column."""
@@ -262,5 +265,5 @@ class Store(Protocol):
         *,
         limit: int = 20,
     ) -> Sequence[StoredMemory]:
-        """Substring (ILIKE) match against memories.content for the UI search box."""
+        """Case-insensitive substring match against memories.content for the UI search box."""
         ...
