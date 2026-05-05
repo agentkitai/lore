@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, patch
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +17,47 @@ except ImportError:
     HAS_FASTAPI = False
 
 pytestmark = pytest.mark.skipif(not HAS_FASTAPI, reason="fastapi not installed")
+
+
+def _make_stored_memory(memory_id: str = "mem-001", content: str = "Test content"):
+    """Build a StoredMemory for use in tests."""
+    from lore.persistence.types import StoredMemory
+    now = datetime.now(timezone.utc)
+    return StoredMemory(
+        id=memory_id,
+        org_id="org-001",
+        content=content,
+        context=None,
+        tags=(),
+        confidence=0.5,
+        source=None,
+        project=None,
+        created_at=now,
+        updated_at=now,
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+        importance_score=1.0,
+        access_count=0,
+        last_accessed_at=None,
+    )
+
+
+class FakeStore:
+    """Fake Store for testing route handlers (mirrors test_memories_server.py pattern)."""
+
+    def __init__(self):
+        self.insert_memory = AsyncMock(return_value=_make_stored_memory())
+        self.get_memory = AsyncMock(return_value=None)
+        self.update_memory = AsyncMock(return_value=_make_stored_memory())
+        self.delete_memory = AsyncMock(return_value=True)
+        self.list_memories = AsyncMock(return_value=[])
+        self.recall_by_embedding = AsyncMock(return_value=[])
+        self.vote_memory = AsyncMock(return_value=_make_stored_memory())
+
+    async def close(self):
+        pass
 
 
 class FakeConn:
@@ -46,6 +88,11 @@ def db_pool(db_conn):
 
 
 @pytest.fixture
+def fake_store():
+    return FakeStore()
+
+
+@pytest.fixture
 def mock_auth():
     from lore.server.auth import AuthContext
     return AuthContext(
@@ -58,7 +105,7 @@ def mock_auth():
 
 
 @pytest.fixture
-def client(db_pool, db_conn, mock_auth):
+def client(fake_store, db_pool, db_conn, mock_auth):
     from lore.server.auth import get_auth_context
     from lore.server.routes.memories import router
 
@@ -66,12 +113,21 @@ def client(db_pool, db_conn, mock_auth):
     app.include_router(router)
     app.dependency_overrides[get_auth_context] = lambda: mock_auth
 
+    async def fake_get_store():
+        return fake_store
+
     async def fake_get_pool():
         return db_pool
 
-    with patch("lore.server.routes.memories.get_pool", fake_get_pool):
-        with patch("lore.server.routes.memories.require_role", return_value=lambda: mock_auth):
-            yield TestClient(app), db_conn
+    # Mock the embedder so tests don't need ONNX models loaded
+    mock_embedder = MagicMock()
+    mock_embedder.embed.return_value = [0.0] * 384
+
+    with patch("lore.server.routes.memories.get_store", fake_get_store):
+        with patch("lore.server.routes.memories.get_pool", fake_get_pool):
+            with patch("lore.server.routes.memories.require_role", return_value=lambda: mock_auth):
+                with patch("lore.server.routes.retrieve._get_embedder", return_value=mock_embedder):
+                    yield TestClient(app), db_conn
 
 
 class TestEnrichmentTrigger:
@@ -89,6 +145,7 @@ class TestEnrichmentTrigger:
         """Explicit enrich=false should skip enrichment."""
         test_client, conn = client
         with patch("lore.server.routes.memories.asyncio") as mock_asyncio:
+            mock_asyncio.to_thread = AsyncMock(return_value=[0.0] * 384)
             resp = test_client.post("/v1/memories", json={
                 "content": "Test content",
                 "enrich": False,
@@ -101,6 +158,7 @@ class TestEnrichmentTrigger:
         """Explicit enrich=true should trigger enrichment."""
         test_client, conn = client
         with patch("lore.server.routes.memories.asyncio") as mock_asyncio:
+            mock_asyncio.to_thread = AsyncMock(return_value=[0.0] * 384)
             resp = test_client.post("/v1/memories", json={
                 "content": "Docker containers are process isolation",
                 "enrich": True,
@@ -114,6 +172,7 @@ class TestEnrichmentTrigger:
         test_client, conn = client
         with patch("lore.server.routes.memories.asyncio") as mock_asyncio, \
              patch.dict("os.environ", {"LORE_ENRICHMENT_ENABLED": "true"}):
+            mock_asyncio.to_thread = AsyncMock(return_value=[0.0] * 384)
             resp = test_client.post("/v1/memories", json={
                 "content": "Kubernetes uses etcd for state storage",
             })
@@ -125,6 +184,7 @@ class TestEnrichmentTrigger:
         test_client, conn = client
         # If enrichment blocked, this would hang or fail
         with patch("lore.server.routes.memories.asyncio") as mock_asyncio:
+            mock_asyncio.to_thread = AsyncMock(return_value=[0.0] * 384)
             resp = test_client.post("/v1/memories", json={
                 "content": "Redis supports pub/sub messaging",
                 "enrich": True,
