@@ -913,11 +913,13 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
     meta = row["meta"]
     if isinstance(meta, str):
         meta = json.loads(meta)
+    # Schema stores context as NOT NULL TEXT; surface "" as None at the API
+    raw_context = row["context"]
     return StoredMemory(
         id=row["id"],
         org_id=row["org_id"],
         content=row["content"],
-        context=row["context"],
+        context=raw_context if raw_context else None,
         tags=tuple(tags or ()),
         confidence=float(row["confidence"]) if row["confidence"] is not None else 0.5,
         source=row["source"],
@@ -990,7 +992,7 @@ class PostgresStore:
                 memory_id,
                 memory.org_id,
                 memory.content,
-                memory.context,
+                memory.context or "",  # context is NOT NULL in the schema; coerce None to ""
                 json.dumps(list(memory.tags)),
                 memory.confidence,
                 memory.source,
