@@ -202,6 +202,35 @@ def _row_to_workspace(row: "asyncpg.Record") -> StoredWorkspace:
     )
 
 
+def _row_to_recommendation_candidate(row: "asyncpg.Record") -> RecommendationCandidate:
+    meta = row["meta"]
+    if isinstance(meta, str):
+        meta = json.loads(meta) if meta else {}
+    elif meta is None:
+        meta = {}
+    embedding = row["embedding"]
+    # asyncpg returns pgvector as a string '[0.1,0.2,...]' unless a codec is registered.
+    # The recommendation engine accepts whatever shape is passed (the pre-1F route
+    # passed it through unmodified). If it's a string, parse it; if it's already a
+    # list, pass through.
+    if isinstance(embedding, str):
+        # pgvector text format: '[0.1,0.2,...]'
+        stripped = embedding.strip("[]")
+        if stripped:
+            embedding = [float(x) for x in stripped.split(",")]
+        else:
+            embedding = []
+    return RecommendationCandidate(
+        id=row["id"],
+        content=row["content"] or "",
+        embedding=embedding if embedding is not None else [],
+        metadata=dict(meta or {}),
+        created_at=row["created_at"],
+        access_count=row["access_count"] or 0,
+        last_accessed_at=row["last_accessed_at"],
+    )
+
+
 def _row_to_recommendation_config(row: "asyncpg.Record") -> StoredRecommendationConfig:
     return StoredRecommendationConfig(
         id=row["id"],
@@ -1826,7 +1855,19 @@ class PostgresStore:
         *,
         limit: int = 500,
     ) -> "Sequence[RecommendationCandidate]":
-        raise NotImplementedError("list_candidate_memories_for_recommendation implemented in T5")
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, content, embedding, meta, created_at, access_count, last_accessed_at
+                FROM memories
+                WHERE org_id = $1 AND embedding IS NOT NULL
+                ORDER BY importance_score DESC NULLS LAST
+                LIMIT $2
+                """,
+                org_id,
+                limit,
+            )
+        return tuple(_row_to_recommendation_candidate(r) for r in rows)
 
 
 class _BoundConn:
