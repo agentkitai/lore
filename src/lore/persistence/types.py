@@ -603,3 +603,72 @@ class StoredDrillResult:
     status: str
     error: Optional[str]
     created_at: datetime
+
+
+# ── SLO slice dataclasses ───
+
+
+@dataclass(frozen=True, slots=True)
+class NewSloDefinition:
+    org_id: str
+    name: str
+    metric: str
+    operator: str
+    threshold: float
+    window_minutes: int = 60
+    enabled: bool = True
+    alert_channels: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredSloDefinition:
+    id: str
+    org_id: str
+    name: str
+    metric: str
+    operator: str
+    threshold: float
+    window_minutes: int
+    enabled: bool
+    alert_channels: Sequence[Mapping[str, Any]]
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class SloDefinitionPatch:
+    name: Optional[str] = None
+    metric: Optional[str] = None
+    operator: Optional[str] = None
+    threshold: Optional[float] = None
+    window_minutes: Optional[int] = None
+    enabled: Optional[bool] = None
+    alert_channels: Optional[Sequence[Mapping[str, Any]]] = None
+
+
+@dataclass(frozen=True, slots=True)
+class NewSloAlert:
+    org_id: str
+    slo_id: str
+    metric_value: float
+    threshold: float
+    status: str
+    dispatched_to: Sequence[Mapping[str, Any]] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredSloAlert:
+    id: int
+    org_id: str
+    slo_id: str
+    metric_value: float
+    threshold: float
+    status: str
+    dispatched_to: Sequence[Mapping[str, Any]]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class TimeseriesPoint:
+    timestamp: datetime
+    value: Optional[float]
