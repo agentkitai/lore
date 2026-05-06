@@ -11,6 +11,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Service layer (`lore.services`) for memory ops and retrieve. Routes call services; services call Store. No HTTP behavior changes.
 - `Store` protocol grows the `GraphOps` slice (24 typed methods spanning entities, mentions, relationships, traversal, stats, and a UI-facing text search). `PostgresStore` implements all of them.
 - `lore.services.graph` package (`entities.py`, `graph.py`, `review.py`) wraps the GraphOps store layer. Includes the risk-score pure function lifted from the old `routes/review.py`.
+- `Store` protocol grows the `PolicyOps` slice (7 typed methods for retrieval-profile CRUD + key resolution). `PostgresStore` implements all of them.
+- `lore.services.profiles` wraps the PolicyOps store layer. Owns the 60-second resolution cache, `DEFAULT_PROFILES` built-in fallback, k/threshold/max_results/min_score alias logic, and preset-immutability checks. New typed exceptions: `IntegrityError` (unique-constraint), `ProfileImmutableError` (preset modify/delete attempt).
+- Migration `018_profile_extras.sql` adds `k`, `threshold`, `rerank`, `include_graph` columns to `retrieval_profiles` (the existing route code already referenced them; the original 013 migration omitted them).
 
 ### Internal
 - `routes/memories.py` and `routes/retrieve.py` no longer contain raw SQL. CI guard `scripts/check_routes_no_sql.py` enforces this for migrated routes.
@@ -18,6 +21,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New contract tests at `tests/persistence/test_contract_graph.py` (49 tests across 24 GraphOps methods).
 - New service tests at `tests/services/test_graph_{entities,graph,review}.py` (41 tests) and route tests at `tests/server/test_graph_routes.py` (21 tests with FakeStore mocks).
 - Phase 1B follow-up: cascade-delete contract test for `delete_entity` deferred to a future task (mentions/relationships rows when an entity is deleted).
+- All 8 profile route handlers (`routes/profiles.py`) refactored to call services exclusively. The cross-route `resolve_profile` import in `routes/retrieve.py` is also gone — retrieve.py now calls the service directly. Inline SQL, `DEFAULT_PROFILES`, the in-memory cache, and the legacy `_resolve_profile` helper removed from the route files. CI guard now covers 8 migrated route files.
+- New contract tests at `tests/persistence/test_contract_profiles.py` (21 tests across the 7 PolicyOps methods).
+- New service tests at `tests/services/test_profiles.py` (~22 tests) and route tests at `tests/server/test_profiles_routes.py` (14 tests with FakeStore mocks).
 
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 
