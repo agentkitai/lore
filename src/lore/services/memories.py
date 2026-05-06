@@ -6,6 +6,8 @@ Routes and AsyncLore both call into here.
 
 from __future__ import annotations
 
+import logging
+import os
 from datetime import datetime
 from typing import Any, Mapping, Optional, Sequence
 
@@ -18,6 +20,9 @@ from lore.persistence import (
     Store,
     StoredMemory,
 )
+from lore.persistence.exceptions import StoreNotFoundError
+
+logger = logging.getLogger(__name__)
 
 
 async def create_memory(
@@ -147,3 +152,48 @@ async def vote_memory(
     store: Store, *, org_id: str, memory_id: str, direction: str
 ) -> StoredMemory:
     return await store.vote_memory(org_id, memory_id, direction=direction)
+
+
+async def enrich_memory_async(
+    store: Store,
+    *,
+    memory_id: str,
+    content: str,
+    context: Optional[str],
+) -> None:
+    """Run the LLM enrichment pipeline on a memory and persist the result. Fire-and-forget.
+
+    Lifted from the pre-1E `_enrich_memory` helper in routes/memories.py.
+    Errors are logged and swallowed.
+    """
+    try:
+        from lore.enrichment.llm import LLMClient
+        from lore.enrichment.pipeline import EnrichmentPipeline
+
+        model = os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
+        client = LLMClient(model=model)
+        pipeline = EnrichmentPipeline(client)
+
+        result = pipeline.enrich(content, context=context)
+        if result is None:
+            return
+
+        await store.enrich_memory_meta(memory_id, result)
+    except Exception:
+        logger.warning("Failed to enrich memory %s", memory_id, exc_info=True)
+
+
+async def record_memory_access(
+    store: Store,
+    org_id: str,
+    memory_id: str,
+) -> StoredMemory:
+    """Record an access event on a memory and return the updated row.
+
+    Raises StoreNotFoundError if the memory doesn't exist or doesn't
+    belong to the requested org.
+    """
+    updated = await store.record_memory_access(org_id, memory_id)
+    if updated is None:
+        raise StoreNotFoundError("memories", memory_id)
+    return updated
