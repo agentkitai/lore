@@ -270,3 +270,67 @@ async def test_count_active_root_keys_other_org(store: Store):
 
     count = await store.count_active_root_keys("org_b2")
     assert count == 0
+
+
+# ── lookup_api_key_by_hash tests ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_lookup_api_key_by_hash_returns_row(store: Store):
+    key_id = await _insert_api_key(
+        store, org_id="org-lookup", name="lookup-key", key_hash="hash-lookup-1"
+    )
+    result = await store.lookup_api_key_by_hash("hash-lookup-1")
+
+    assert result is not None
+    assert result.id == key_id
+    assert result.org_id == "org-lookup"
+    assert result.key_hash == "hash-lookup-1"
+
+
+@pytest.mark.asyncio
+async def test_lookup_api_key_by_hash_returns_none_when_missing(store: Store):
+    result = await store.lookup_api_key_by_hash("hash-does-not-exist")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_lookup_api_key_by_hash_includes_role(store: Store):
+    # Insert a key with role explicitly set, ensuring StoredApiKey carries it through.
+    key_id = await _insert_api_key(
+        store, org_id="org-role", name="role-key", key_hash="hash-role-1"
+    )
+    await store._conn.execute(
+        "UPDATE api_keys SET role = $1 WHERE id = $2", "writer", key_id
+    )
+
+    result = await store.lookup_api_key_by_hash("hash-role-1")
+
+    assert result is not None
+    assert result.role == "writer"
+
+
+# ── touch_api_key_last_used tests ──────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_touch_api_key_last_used_sets_timestamp(store: Store):
+    key_id = await _insert_api_key(
+        store, org_id="org-touch", name="touch-key", key_hash="hash-touch-1"
+    )
+
+    before = await store.get_api_key(key_id)
+    assert before is not None and before.last_used_at is None
+
+    await store.touch_api_key_last_used(key_id)
+
+    after = await store.get_api_key(key_id)
+    assert after is not None
+    assert after.last_used_at is not None
+    assert isinstance(after.last_used_at, datetime)
+
+
+@pytest.mark.asyncio
+async def test_touch_api_key_last_used_missing_id_is_noop(store: Store):
+    # Should not raise even when the key id doesn't exist.
+    await store.touch_api_key_last_used("key_does_not_exist")

@@ -14,6 +14,7 @@ pytest.importorskip("httpx")
 
 from httpx import ASGITransport, AsyncClient
 
+from lore.persistence.types import StoredApiKey
 from lore.server.app import app
 from lore.server.auth import _key_cache, _last_used_updates
 from lore.server.middleware import RateLimiter, set_rate_limiter
@@ -78,17 +79,30 @@ def _scored_memory(
     )
 
 
-def _make_auth_pool(key_row=None):
-    """Create a mock pool used only for auth lookup."""
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=key_row if key_row is not None else KEY_ROW)
+def _row_to_stored_key(row: dict) -> StoredApiKey:
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row.get("name", "test-key"),
+        key_hash=row["key_hash"],
+        key_prefix=row.get("key_prefix", "lore_sk_xx"),
+        project=row.get("project"),
+        is_root=row.get("is_root", False),
+        workspace_id=row.get("workspace_id"),
+        revoked_at=row.get("revoked_at"),
+        created_at=row.get("created_at", datetime.now(timezone.utc)),
+        last_used_at=row.get("last_used_at"),
+        role=row.get("role"),
+    )
 
-    acm = AsyncMock()
-    acm.__aenter__ = AsyncMock(return_value=mock_conn)
-    acm.__aexit__ = AsyncMock(return_value=False)
-    mock_pool = AsyncMock()
-    mock_pool.acquire = MagicMock(return_value=acm)
-    return mock_pool
+
+def _make_auth_store(key_row=None):
+    """Create a mock store used only for auth lookups."""
+    store = AsyncMock()
+    row = key_row if key_row is not None else KEY_ROW
+    store.lookup_api_key_by_hash = AsyncMock(return_value=_row_to_stored_key(row))
+    store.touch_api_key_last_used = AsyncMock(return_value=None)
+    return store
 
 
 def _make_fake_store(scored_memories=None):
@@ -131,13 +145,13 @@ async def test_retrieve_basic(client):
         _scored_memory("mem-002", "User uses VS Code", 0.72),
     ]
     fake_store = _make_fake_store(scored)
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "user preferences"},
@@ -157,9 +171,9 @@ async def test_retrieve_basic(client):
 @pytest.mark.asyncio
 async def test_retrieve_missing_query(client):
     """Missing query parameter returns 422."""
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
-    with patch("lore.server.auth.get_pool", return_value=auth_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get("/v1/retrieve", headers=HEADERS)
 
     assert resp.status_code == 422
@@ -169,13 +183,13 @@ async def test_retrieve_missing_query(client):
 async def test_retrieve_empty_results(client):
     """No matching memories returns empty response."""
     fake_store = _make_fake_store([])
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "nothing relevant"},
@@ -194,13 +208,13 @@ async def test_retrieve_markdown_format(client):
     """Format=markdown returns markdown-formatted output."""
     scored = [_scored_memory("mem-001", "User prefers dark mode", 0.85)]
     fake_store = _make_fake_store(scored)
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "preferences", "format": "markdown"},
@@ -218,13 +232,13 @@ async def test_retrieve_raw_format(client):
     """Format=raw returns plain text."""
     scored = [_scored_memory("mem-001", "User prefers dark mode", 0.85)]
     fake_store = _make_fake_store(scored)
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "preferences", "format": "raw"},
@@ -239,14 +253,14 @@ async def test_retrieve_raw_format(client):
 @pytest.mark.asyncio
 async def test_retrieve_invalid_format(client):
     """Invalid format returns 422."""
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
     fake_store = _make_fake_store([])
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "test", "format": "chatml"},
@@ -272,13 +286,13 @@ async def test_retrieve_project_scoping(client):
 
     scored = [_scored_memory("mem-001", "backend memory", 0.9, project="backend")]
     fake_store = _make_fake_store(scored)
-    auth_pool = _make_auth_pool(key_row=project_key_row)
+    auth_store = _make_auth_store(key_row=project_key_row)
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "backend"},
@@ -295,13 +309,13 @@ async def test_retrieve_custom_limit(client):
     """Custom limit parameter is passed to query."""
     scored = [_scored_memory(f"mem-{i:03d}", f"Memory {i}", 0.9 - i * 0.1) for i in range(3)]
     fake_store = _make_fake_store(scored)
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "test", "limit": 2},
@@ -316,13 +330,13 @@ async def test_retrieve_tags_parsed(client):
     """Tags are properly returned from ScoredMemory."""
     scored = [_scored_memory("mem-001", "test", 0.85, tags=("a", "b"))]
     fake_store = _make_fake_store(scored)
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "test"},
@@ -338,13 +352,13 @@ async def test_retrieve_tags_parsed(client):
 async def test_retrieve_query_time_measured(client):
     """query_time_ms is a positive number."""
     fake_store = _make_fake_store([])
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "test"},
@@ -362,13 +376,13 @@ async def test_retrieve_xml_format_structure(client):
     """XML format has proper structure with query and memory elements."""
     scored = [_scored_memory("mem-001", "User prefers dark mode", 0.85)]
     fake_store = _make_fake_store(scored)
-    auth_pool = _make_auth_pool()
+    auth_store = _make_auth_store()
 
     async def _fake_get_store():
         return fake_store
 
     with patch("lore.server.routes.retrieve.get_store", _fake_get_store), \
-         patch("lore.server.auth.get_pool", return_value=auth_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
             params={"query": "preferences"},

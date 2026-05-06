@@ -82,6 +82,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New contract tests at `tests/persistence/test_contract_sharing.py` (23 tests across the 12 SharingOps methods).
 - New service tests at `tests/services/test_sharing.py` (13 tests).
 - New route tests at `tests/server/test_sharing_routes.py` (16 tests with FakeStore mocks).
+- `Store.AuthOps` slice grows two new methods: `lookup_api_key_by_hash(key_hash)` (called on every authenticated request after the in-process cache miss) and `touch_api_key_last_used(key_id)` (debounced last-used-at update). `StoredApiKey` gains an optional `role` field. The auth middleware (`lore/server/auth.py`) now goes through the Store instead of `get_pool()` — the in-process key cache and debounce timing are unchanged.
+- The CI guard `scripts/check_routes_no_sql.py` now covers `src/lore/server/auth.py` (22 files total). **Every component in the request-handling path is SQL-free**; SQL lives exclusively in Store implementations.
+- 5 new contract tests in `tests/persistence/test_contract_keys.py` covering `lookup_api_key_by_hash` (round-trip, missing, role passthrough) and `touch_api_key_last_used` (sets timestamp, no-op on missing id).
+- Existing `tests/server/test_auth.py`, `test_retrieve.py`, `test_rbac.py`, `test_jwt_auth.py`, `test_keys.py`, and `tests/integration/test_remote.py` updated to mock `lore.server.auth.get_store` instead of `get_pool`.
 
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 

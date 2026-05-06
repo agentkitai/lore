@@ -355,6 +355,7 @@ class StoredApiKey:
     revoked_at: Optional[datetime]
     created_at: datetime
     last_used_at: Optional[datetime]
+    role: Optional[str] = None
 
 
 # ── Retrieval analytics ───────────────────────────────────────────
