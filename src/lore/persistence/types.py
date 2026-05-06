@@ -371,3 +371,42 @@ class NewRetrievalEvent:
     query_time_ms: Optional[float]
     project: Optional[str] = None
     format: Optional[str] = None
+
+
+# ── Recommendations slice dataclasses ───
+
+
+@dataclass(frozen=True, slots=True)
+class RecommendationCandidate:
+    """Memory shape the recommendation engine expects: includes embedding."""
+
+    id: str
+    content: str
+    embedding: Sequence[float]
+    metadata: Mapping[str, Any]
+    created_at: datetime
+    access_count: int
+    last_accessed_at: Optional[datetime]
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRecommendationConfig:
+    id: str
+    workspace_id: Optional[str]
+    agent_id: Optional[str]
+    aggressiveness: float
+    enabled: bool
+    max_suggestions: int
+    cooldown_minutes: int
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class NewRecommendationFeedback:
+    org_id: str
+    memory_id: str
+    actor_id: str
+    feedback: str  # validated by service: "positive" or "negative"
+    workspace_id: Optional[str] = None
+    signal: str = "manual"
+    context_hash: Optional[str] = None
