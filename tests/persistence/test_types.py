@@ -16,6 +16,7 @@ from lore.persistence.types import (
     NewMention,
     NewProfile,
     NewRelationship,
+    NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
@@ -908,3 +909,84 @@ def test_stored_api_key_slots():
         last_used_at=None,
     )
     assert not hasattr(sak, "__dict__")
+
+
+# ── NewRetrievalEvent ─────────────────────────────────────────────
+
+
+def test_new_retrieval_event_defaults():
+    nre = NewRetrievalEvent(
+        org_id="org_1",
+        query="test query",
+        results_count=3,
+        scores=[0.9, 0.8, 0.7],
+        memory_ids=["m1", "m2", "m3"],
+        avg_score=None,
+        max_score=None,
+        min_score_threshold=None,
+        query_time_ms=None,
+    )
+    assert nre.org_id == "org_1"
+    assert nre.query == "test query"
+    assert nre.results_count == 3
+    assert nre.scores == [0.9, 0.8, 0.7]
+    assert nre.memory_ids == ["m1", "m2", "m3"]
+    assert nre.avg_score is None
+    assert nre.max_score is None
+    assert nre.min_score_threshold is None
+    assert nre.query_time_ms is None
+    assert nre.project is None
+    assert nre.format is None
+
+
+def test_new_retrieval_event_all_fields():
+    nre = NewRetrievalEvent(
+        org_id="org_2",
+        query="full query",
+        results_count=2,
+        scores=[0.95, 0.85],
+        memory_ids=["ma", "mb"],
+        avg_score=0.9,
+        max_score=0.95,
+        min_score_threshold=0.5,
+        query_time_ms=42.5,
+        project="proj_a",
+        format="json",
+    )
+    assert nre.avg_score == 0.9
+    assert nre.max_score == 0.95
+    assert nre.min_score_threshold == 0.5
+    assert nre.query_time_ms == 42.5
+    assert nre.project == "proj_a"
+    assert nre.format == "json"
+
+
+def test_new_retrieval_event_frozen():
+    nre = NewRetrievalEvent(
+        org_id="org_1",
+        query="q",
+        results_count=0,
+        scores=[],
+        memory_ids=[],
+        avg_score=None,
+        max_score=None,
+        min_score_threshold=None,
+        query_time_ms=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        nre.query = "mutated"  # type: ignore[misc]
+
+
+def test_new_retrieval_event_slots():
+    nre = NewRetrievalEvent(
+        org_id="org_1",
+        query="q",
+        results_count=0,
+        scores=[],
+        memory_ids=[],
+        avg_score=None,
+        max_score=None,
+        min_score_threshold=None,
+        query_time_ms=None,
+    )
+    assert not hasattr(nre, "__dict__")
