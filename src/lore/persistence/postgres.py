@@ -25,6 +25,7 @@ from lore.persistence.types import (
     MemoryPatch,
     NewApiKey,
     NewConversationJob,
+    NewDrillResult,
     NewEntity,
     NewMember,
     NewMemory,
@@ -32,17 +33,20 @@ from lore.persistence.types import (
     NewProfile,
     NewRecommendationFeedback,
     NewRelationship,
+    NewRetentionPolicy,
     NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
     RecommendationCandidate,
+    RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoredMemory,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
+    StoredDrillResult,
     StoredEntity,
     StoredMember,
     StoredMemory,
@@ -50,6 +54,8 @@ from lore.persistence.types import (
     StoredProfile,
     StoredRecommendationConfig,
     StoredRelationship,
+    StoredRetentionPolicy,
+    StoredSnapshotMetadata,
     StoredWorkspace,
     TimelineBucketRow,
     WorkspacePatch,
@@ -325,6 +331,24 @@ def _row_to_audit_entry(row: "asyncpg.Record") -> StoredAuditEntry:
         metadata=dict(metadata or {}),
         ip_address=str(row["ip_address"]) if row["ip_address"] else None,
         created_at=row["created_at"],
+    )
+
+
+def _row_to_retention_policy(row: "asyncpg.Record") -> StoredRetentionPolicy:
+    rw = row["retention_window"]
+    if isinstance(rw, str):
+        rw = json.loads(rw) if rw else {}
+    return StoredRetentionPolicy(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        retention_window=dict(rw or {}),
+        snapshot_schedule=row["snapshot_schedule"],
+        encryption_required=bool(row["encryption_required"]),
+        max_snapshots=int(row["max_snapshots"]),
+        is_active=bool(row["is_active"]),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
@@ -2479,6 +2503,147 @@ class PostgresStore:
             total_memories=total_memories,
             daily_stats=daily_stats,
         )
+
+    # ── RetentionOps ────────────────────────────────────────────────
+
+    async def list_retention_policies(self, org_id: str) -> "Sequence[StoredRetentionPolicy]":
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, name, retention_window, snapshot_schedule,
+                       encryption_required, max_snapshots, is_active, created_at, updated_at
+                FROM retention_policies
+                WHERE org_id = $1
+                ORDER BY name
+                """,
+                org_id,
+            )
+        return tuple(_row_to_retention_policy(r) for r in rows)
+
+    async def get_retention_policy(
+        self, policy_id: str, org_id: str
+    ) -> "Optional[StoredRetentionPolicy]":
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, retention_window, snapshot_schedule,
+                       encryption_required, max_snapshots, is_active, created_at, updated_at
+                FROM retention_policies
+                WHERE id = $1 AND org_id = $2
+                """,
+                policy_id,
+                org_id,
+            )
+        return _row_to_retention_policy(row) if row else None
+
+    async def create_retention_policy(
+        self, policy: "NewRetentionPolicy"
+    ) -> "StoredRetentionPolicy":
+        policy_id = f"retpol_{ULID()}"
+        try:
+            async with self._acquire() as conn:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO retention_policies
+                        (id, org_id, name, retention_window, snapshot_schedule,
+                         encryption_required, max_snapshots, is_active)
+                    VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+                    RETURNING id, org_id, name, retention_window, snapshot_schedule,
+                              encryption_required, max_snapshots, is_active,
+                              created_at, updated_at
+                    """,
+                    policy_id,
+                    policy.org_id,
+                    policy.name,
+                    json.dumps(dict(policy.retention_window)),
+                    policy.snapshot_schedule,
+                    policy.encryption_required,
+                    policy.max_snapshots,
+                    policy.is_active,
+                )
+        except Exception as e:
+            if asyncpg is not None and isinstance(e, asyncpg.UniqueViolationError):
+                raise IntegrityError(
+                    f"Retention policy {policy.name!r} already exists for org_id={policy.org_id!r}"
+                ) from e
+            raise
+        return _row_to_retention_policy(row)
+
+    async def update_retention_policy(
+        self,
+        policy_id: str,
+        org_id: str,
+        patch: "RetentionPolicyPatch",
+    ) -> "Optional[StoredRetentionPolicy]":
+        fields: list[str] = []
+        params: list[Any] = []
+
+        if patch.name is not None:
+            params.append(patch.name)
+            fields.append(f"name = ${len(params)}")
+        if patch.retention_window is not None:
+            params.append(json.dumps(dict(patch.retention_window)))
+            fields.append(f"retention_window = ${len(params)}::jsonb")
+        if patch.snapshot_schedule is not None:
+            params.append(patch.snapshot_schedule)
+            fields.append(f"snapshot_schedule = ${len(params)}")
+        if patch.encryption_required is not None:
+            params.append(patch.encryption_required)
+            fields.append(f"encryption_required = ${len(params)}")
+        if patch.max_snapshots is not None:
+            params.append(patch.max_snapshots)
+            fields.append(f"max_snapshots = ${len(params)}")
+        if patch.is_active is not None:
+            params.append(patch.is_active)
+            fields.append(f"is_active = ${len(params)}")
+
+        if not fields:
+            raise ValueError("update_retention_policy called with empty patch")
+
+        fields.append("updated_at = now()")
+        params.append(policy_id)
+        id_idx = len(params)
+        params.append(org_id)
+        org_idx = len(params)
+
+        sql = (
+            "UPDATE retention_policies "
+            f"SET {', '.join(fields)} "
+            f"WHERE id = ${id_idx} AND org_id = ${org_idx} "
+            "RETURNING id, org_id, name, retention_window, snapshot_schedule, "
+            "encryption_required, max_snapshots, is_active, created_at, updated_at"
+        )
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+        return _row_to_retention_policy(row) if row else None
+
+    async def delete_retention_policy(self, policy_id: str, org_id: str) -> bool:
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM retention_policies WHERE id = $1 AND org_id = $2",
+                policy_id,
+                org_id,
+            )
+        return result.endswith(" 1")
+
+    async def get_latest_snapshot_for_policy(
+        self, policy_id: str, org_id: str
+    ) -> "Optional[StoredSnapshotMetadata]":
+        raise NotImplementedError("get_latest_snapshot_for_policy implemented in T3")
+
+    async def count_snapshots_for_policy(self, policy_id: str) -> int:
+        raise NotImplementedError("count_snapshots_for_policy implemented in T3")
+
+    async def record_drill_result(self, drill: "NewDrillResult") -> "StoredDrillResult":
+        raise NotImplementedError("record_drill_result implemented in T3")
+
+    async def list_drill_results_for_policy(
+        self, policy_id: str, org_id: str, *, limit: int = 20
+    ) -> "Sequence[StoredDrillResult]":
+        raise NotImplementedError("list_drill_results_for_policy implemented in T3")
+
+    async def get_latest_drill_result(self, org_id: str) -> "Optional[StoredDrillResult]":
+        raise NotImplementedError("get_latest_drill_result implemented in T3")
 
 
 class _BoundConn:
