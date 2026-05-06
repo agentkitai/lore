@@ -15,37 +15,39 @@ class TestRetrievalAnalyticsEndpoint:
         """Analytics endpoint should return zeros when no events exist."""
         from lore.server.routes.analytics import retrieval_analytics
 
-        # Mock DB pool that returns empty results
-        mock_conn = AsyncMock()
-        mock_conn.fetchrow = AsyncMock(side_effect=[
-            # summary query
-            {"total_queries": 0, "queries_with_results": 0, "queries_empty": 0,
-             "avg_results": None, "avg_score": None, "avg_max_score": None,
-             "avg_latency_ms": None},
-            # p95 query
-            {"p95": None},
-            # unique memories
-            {"unique_count": 0},
-            # total memories
-            {"total": 100},
-        ])
-        mock_conn.fetch = AsyncMock(side_effect=[
-            [],  # score distribution
-            [],  # top queries
-            [],  # daily stats
-        ])
-        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn.__aexit__ = AsyncMock(return_value=False)
-
-        mock_pool = AsyncMock()
-        mock_pool.acquire = MagicMock(return_value=mock_conn)
-
+        mock_store = MagicMock()
         mock_auth = MagicMock()
         mock_auth.org_id = "test-org"
         mock_auth.project = None
 
-        with patch("lore.server.routes.analytics.get_pool", return_value=mock_pool):
-            result = await retrieval_analytics(days=7, project=None, auth=mock_auth)
+        # Service returns a ready-shaped dict
+        service_result = {
+            "total_queries": 0,
+            "queries_with_results": 0,
+            "queries_empty": 0,
+            "hit_rate": 0.0,
+            "avg_results_per_query": 0.0,
+            "avg_score": None,
+            "avg_max_score": None,
+            "avg_latency_ms": None,
+            "p95_latency_ms": None,
+            "score_distribution": [
+                {"bucket": b, "count": 0, "percentage": 0.0}
+                for b in ["0.0-0.3", "0.3-0.5", "0.5-0.7", "0.7-0.9", "0.9-1.0"]
+            ],
+            "top_queries": [],
+            "memory_utilization": None,
+            "unique_memories_retrieved": 0,
+            "total_memories": 100,
+            "daily_stats": [],
+            "lookback_days": 7,
+        }
+
+        with patch(
+            "lore.server.routes.analytics.analytics_service.get_retrieval_analytics",
+            new=AsyncMock(return_value=service_result),
+        ):
+            result = await retrieval_analytics(days=7, project=None, auth=mock_auth, store=mock_store)
 
         assert result.total_queries == 0
         assert result.queries_with_results == 0
@@ -53,7 +55,7 @@ class TestRetrievalAnalyticsEndpoint:
         assert result.hit_rate == 0.0
         assert result.avg_results_per_query == 0.0
         assert result.avg_score is None
-        assert result.memory_utilization == 0.0
+        assert result.memory_utilization is None
         assert result.total_memories == 100
         assert result.unique_memories_retrieved == 0
         assert len(result.score_distribution) == 5
@@ -65,32 +67,41 @@ class TestRetrievalAnalyticsEndpoint:
         """Score distribution should have exactly 5 buckets."""
         from lore.server.routes.analytics import retrieval_analytics
 
-        mock_conn = AsyncMock()
-        mock_conn.fetchrow = AsyncMock(side_effect=[
-            {"total_queries": 10, "queries_with_results": 8, "queries_empty": 2,
-             "avg_results": 3.5, "avg_score": 0.55, "avg_max_score": 0.72,
-             "avg_latency_ms": 15.5},
-            {"p95": 25.3},
-            {"unique_count": 15},
-            {"total": 100},
-        ])
-        mock_conn.fetch = AsyncMock(side_effect=[
-            [{"bucket": "0.3-0.5", "cnt": 20}, {"bucket": "0.5-0.7", "cnt": 10}],
-            [{"query": "test query", "cnt": 5, "avg_s": 0.6}],
-            [{"day": "2026-03-09", "queries": 10, "avg_s": 0.55, "hit_rate": 0.8}],
-        ])
-        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn.__aexit__ = AsyncMock(return_value=False)
-
-        mock_pool = AsyncMock()
-        mock_pool.acquire = MagicMock(return_value=mock_conn)
-
+        mock_store = MagicMock()
         mock_auth = MagicMock()
         mock_auth.org_id = "test-org"
         mock_auth.project = None
 
-        with patch("lore.server.routes.analytics.get_pool", return_value=mock_pool):
-            result = await retrieval_analytics(days=7, project=None, auth=mock_auth)
+        service_result = {
+            "total_queries": 10,
+            "queries_with_results": 8,
+            "queries_empty": 2,
+            "hit_rate": 0.8,
+            "avg_results_per_query": 3.5,
+            "avg_score": 0.55,
+            "avg_max_score": 0.72,
+            "avg_latency_ms": 15.5,
+            "p95_latency_ms": 25.3,
+            "score_distribution": [
+                {"bucket": "0.0-0.3", "count": 0, "percentage": 0.0},
+                {"bucket": "0.3-0.5", "count": 20, "percentage": 66.7},
+                {"bucket": "0.5-0.7", "count": 10, "percentage": 33.3},
+                {"bucket": "0.7-0.9", "count": 0, "percentage": 0.0},
+                {"bucket": "0.9-1.0", "count": 0, "percentage": 0.0},
+            ],
+            "top_queries": [{"query": "test query", "count": 5, "avg_score": 0.6}],
+            "memory_utilization": 15.0,
+            "unique_memories_retrieved": 15,
+            "total_memories": 100,
+            "daily_stats": [{"date": "2026-03-09", "queries": 10, "avg_score": 0.55, "hit_rate": 0.8}],
+            "lookback_days": 7,
+        }
+
+        with patch(
+            "lore.server.routes.analytics.analytics_service.get_retrieval_analytics",
+            new=AsyncMock(return_value=service_result),
+        ):
+            result = await retrieval_analytics(days=7, project=None, auth=mock_auth, store=mock_store)
 
         assert result.total_queries == 10
         assert result.hit_rate == 0.8

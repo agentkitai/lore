@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import List, Optional
 
 try:
@@ -15,8 +14,10 @@ except ImportError:
 
 from pydantic import BaseModel
 
+from lore.persistence import Store, StoredMemory
 from lore.server.auth import AuthContext, get_auth_context
-from lore.server.db import get_pool
+from lore.server.db import get_store
+from lore.services import recent as recent_service
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,19 @@ class RecentActivityResponse(BaseModel):
     query_time_ms: float
 
 
+def _to_item(m: StoredMemory) -> RecentMemoryItem:
+    created_at = m.created_at.isoformat() if m.created_at else ""
+    return RecentMemoryItem(
+        id=m.id,
+        content=m.content or "",
+        type=(m.meta or {}).get("type", "general"),
+        tier=(m.meta or {}).get("tier", "long"),
+        created_at=created_at,
+        tags=list(m.tags),
+        importance_score=m.importance_score or 1.0,
+    )
+
+
 # ── Endpoint ──────────────────────────────────────────────────────
 
 
@@ -65,6 +79,7 @@ async def recent_activity(
     format: str = Query("brief", description="Output format: brief, detailed, structured"),
     max_memories: int = Query(50, ge=1, le=200, description="Max memories to return"),
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> RecentActivityResponse:
     """Get recent memory activity grouped by project."""
     start = time.monotonic()
@@ -75,61 +90,22 @@ async def recent_activity(
             detail=f"Invalid format '{format}'. Must be one of: {', '.join(sorted(VALID_FORMATS))}",
         )
 
-    # Compute cutoff
-    cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+    # Resolve project scoping — auth.project takes precedence
+    effective_project = auth.project if auth.project is not None else project
 
-    # Resolve project scoping
-    effective_project = project
-    if auth.project is not None:
-        effective_project = auth.project
-
-    where_parts = ["org_id = $1", "created_at >= $2", "(expires_at IS NULL OR expires_at > now())"]
-    params: list = [auth.org_id, cutoff]
-
-    if effective_project is not None:
-        params.append(effective_project)
-        where_parts.append(f"project = ${len(params)}")
-
-    params.append(max_memories)
-    limit_idx = len(params)
-
-    sql = f"""
-        SELECT id, content,
-               COALESCE(meta->>'type', 'general') AS type,
-               COALESCE(meta->>'tier', 'long') AS tier,
-               source, project, tags, created_at, importance_score
-        FROM memories
-        WHERE {' AND '.join(where_parts)}
-        ORDER BY created_at DESC
-        LIMIT ${limit_idx}
-    """
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(sql, *params)
+    memories = await recent_service.get_recent_activity(
+        store,
+        org_id=auth.org_id,
+        project=effective_project,
+        hours=hours,
+        max_memories=max_memories,
+    )
 
     # Group by project
-    groups_dict: dict[str, list] = {}
-    for r in rows:
-        rd = dict(r)
-        proj = rd.get("project") or "default"
-        tags = rd.get("tags") or []
-        if isinstance(tags, str):
-            tags = json.loads(tags)
-        created_at = rd.get("created_at")
-        if hasattr(created_at, "isoformat"):
-            created_at = created_at.isoformat()
-
-        item = RecentMemoryItem(
-            id=rd["id"],
-            content=rd["content"],
-            type=rd.get("type", "general"),
-            tier=rd.get("tier", "long"),
-            created_at=str(created_at or ""),
-            tags=tags,
-            importance_score=rd.get("importance_score", 1.0) or 1.0,
-        )
-        groups_dict.setdefault(proj, []).append(item)
+    groups_dict: dict[str, list[RecentMemoryItem]] = {}
+    for m in memories:
+        proj = m.project or "default"
+        groups_dict.setdefault(proj, []).append(_to_item(m))
 
     groups = [
         RecentProjectGroup(project=p, memories=mems, count=len(mems))
