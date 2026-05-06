@@ -318,13 +318,15 @@ Lore's server-side persistence is defined by the `Store` protocol in
 - **AuditOps** (Phase 1I): 1 typed method (`query_audit_log`) for filtered audit log queries. Used by the `/v1/audit` dashboard endpoint.
 - **AnalyticsOps extension for dashboards** (Phase 1I): 1 more method on AnalyticsOps — `compute_retrieval_analytics` collapses 7 separate SQL queries against `retrieval_events` into a single Store call returning a populated `RetrievalAnalyticsResult` dataclass. Used by `/v1/analytics/retrieval`.
 - **RetentionOps** (Phase 1J): 10 typed methods spanning 3 tables (`retention_policies`, `snapshot_metadata`, `restore_drill_results`) — policy CRUD (5), latest snapshot lookup, snapshot count, drill recording, drill listing (joining policy → snapshots), and latest-drill-for-org. Used by `/v1/policies` (8 handlers including drill execution and cross-policy compliance reports).
+- **SloOps** (Phase 1K): 7 typed methods on `slo_definitions` + `slo_alerts` — definition CRUD (5), alert listing, alert insertion. Used by `/v1/slo` (8 handlers).
+- **AnalyticsOps extension for SLO** (Phase 1K): 2 more methods on AnalyticsOps — `compute_metric_value` (point-in-time SLO metric over a window) and `compute_metric_timeseries` (bucketed timeseries for charts). Both run against `retrieval_events` and own the metric→SQL mapping (lifted from the pre-1K `_metric_sql` helper).
 
 Implementations:
 
-- `PostgresStore` — asyncpg + pgvector. Production default. Implements MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps, RecommendationOps, ConversationOps, AuditOps, and RetentionOps.
+- `PostgresStore` — asyncpg + pgvector. Production default. Implements MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps, RecommendationOps, ConversationOps, AuditOps, RetentionOps, and SloOps.
 - (Coming in Phase 3) `SqliteStore` — aiosqlite + sqlite-vec. For solo / embedded use.
 
-The protocol is grown slice-by-slice. Phase 1A shipped `MemoryOps`; Phase 1B `GraphOps`; Phase 1C `PolicyOps`; Phase 1D `WorkspaceOps` + `AuthOps`; Phase 1E `AnalyticsOps`; Phase 1F `RecommendationOps`; Phase 1G `ConversationOps`; Phase 1H extended MemoryOps with lessons methods; Phase 1I added `AuditOps` and another AnalyticsOps extension for the dashboard bundle; Phase 1J added `RetentionOps`. The remaining unmigrated route files are: `sharing.py`, `slo.py` — plus the `lore/server/auth.py` middleware. Each will get its own future phase.
+The protocol is grown slice-by-slice. Phase 1A shipped `MemoryOps`; Phase 1B `GraphOps`; Phase 1C `PolicyOps`; Phase 1D `WorkspaceOps` + `AuthOps`; Phase 1E `AnalyticsOps`; Phase 1F `RecommendationOps`; Phase 1G `ConversationOps`; Phase 1H extended MemoryOps with lessons methods; Phase 1I added `AuditOps` and another AnalyticsOps extension for the dashboard bundle; Phase 1J added `RetentionOps`; Phase 1K added `SloOps` and another AnalyticsOps extension for SLO metric computation. The remaining unmigrated route file is `sharing.py` — plus the `lore/server/auth.py` middleware. Each will get its own future phase.
 
 Routes call services; services call the Store. Contract test suite at `tests/persistence/test_contract_*.py` validates every Store implementation against the shared protocol.
 
@@ -333,4 +335,4 @@ Routes call services; services call the Store. Contract test suite at `tests/per
 2. The Service layer is the only place business logic exists once. The HTTP front-end and the embedded API both call into services.
 3. Backend chosen by `database_url` URL scheme. `LORE_BACKEND` env var is just a shortcut.
 
-These invariants are guarded by `scripts/check_routes_no_sql.py` for the 19 migrated route files. Phase 1J added `policies.py` (retention slice). The remaining unmigrated route files are `sharing.py` and `slo.py` (plus the `auth.py` middleware). The guard rejects reintroduction of inline SQL or `get_pool()` in any migrated file.
+These invariants are guarded by `scripts/check_routes_no_sql.py` for the 20 migrated route files. Phase 1K added `slo.py`. The remaining unmigrated route file is `sharing.py` (plus the `auth.py` middleware). The guard rejects reintroduction of inline SQL or `get_pool()` in any migrated file.
