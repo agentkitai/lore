@@ -38,3 +38,7 @@ class ConfigError(LoreError):
 
 class BackendUnavailableError(ConfigError):
     """The selected backend's runtime is not available (driver, extension)."""
+
+
+class ProfileImmutableError(LoreError):
+    """Raised when caller attempts to modify or delete a preset profile."""
