@@ -505,7 +505,17 @@ class PostgresStore:
         memory_id: str,
         enrichment_data: "Mapping[str, Any]",
     ) -> None:
-        raise NotImplementedError("enrich_memory_meta implemented in T5")
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE memories SET
+                    meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{enrichment}', $2::jsonb),
+                    updated_at = now()
+                WHERE id = $1
+                """,
+                memory_id,
+                json.dumps(dict(enrichment_data)),
+            )
 
     async def vote_memory(
         self,

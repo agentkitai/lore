@@ -342,3 +342,54 @@ async def test_list_recent_session_snapshots_skips_non_snapshot_memories(store: 
 
     assert len(results) == 1
     assert results[0].content == "the snapshot"
+
+
+# ── enrich_memory_meta tests ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_enrich_memory_meta_sets_enrichment_key(store: Store):
+    memory_id = await _insert_memory(store, org_id="org-enrich1")
+
+    await store.enrich_memory_meta(memory_id, {"summary": "x"})
+
+    result = await store.get_memory("org-enrich1", memory_id)
+    assert result is not None
+    assert result.meta["enrichment"] == {"summary": "x"}
+
+
+@pytest.mark.asyncio
+async def test_enrich_memory_meta_overwrites_existing_enrichment(store: Store):
+    memory_id = await _insert_memory(store, org_id="org-enrich2")
+
+    await store.enrich_memory_meta(memory_id, {"summary": "first"})
+    await store.enrich_memory_meta(memory_id, {"summary": "second"})
+
+    result = await store.get_memory("org-enrich2", memory_id)
+    assert result is not None
+    assert result.meta["enrichment"] == {"summary": "second"}
+
+
+@pytest.mark.asyncio
+async def test_enrich_memory_meta_preserves_other_meta_keys(store: Store):
+    await _ensure_org(store, "org-enrich3")
+    memory = await store.insert_memory(
+        NewMemory(
+            org_id="org-enrich3",
+            content="test with meta",
+            embedding=_vec(1),
+            meta={"foo": "bar"},
+        )
+    )
+
+    await store.enrich_memory_meta(memory.id, {"key": "value"})
+
+    result = await store.get_memory("org-enrich3", memory.id)
+    assert result is not None
+    assert result.meta == {"foo": "bar", "enrichment": {"key": "value"}}
+
+
+@pytest.mark.asyncio
+async def test_enrich_memory_meta_silent_on_missing_id(store: Store):
+    # Should not raise even when the memory_id doesn't exist
+    await store.enrich_memory_meta("mem_nonexistent_id", {"summary": "x"})
