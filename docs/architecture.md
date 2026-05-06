@@ -304,11 +304,13 @@ Consolidation can run in dry-run mode (preview only) or execute mode (applies ch
 ## Persistence layer
 
 Lore's server-side persistence is defined by the `Store` protocol in
-`lore.persistence.protocol`. The protocol defines four slices:
+`lore.persistence.protocol`. The protocol defines six slices:
 
 - **MemoryOps** (Phase 1A): insert, get, update, delete, list, recall, expire, bump, vote operations on memories.
 - **GraphOps** (Phase 1B): 24 typed methods spanning entity/mention/relationship management, graph traversal, stats, and a UI-facing text search.
 - **PolicyOps** (Phase 1C): 7 typed methods for retrieval-profile CRUD + key-based resolution.
+- **WorkspaceOps** (Phase 1D): 9 typed methods for workspace + workspace_member CRUD.
+- **AuthOps** (Phase 1D): 5 typed methods for API key creation, listing, revocation, and root-key counting.
 - **AnalyticsOps** (Phase 1E): 3 typed methods for retrieval-event recording, single-memory access tracking, and recent session-snapshot retrieval. Plus two extensions to MemoryOps: `bump_access_counts` (multi-row access bump) and `enrich_memory_meta` (jsonb_set for LLM enrichment data).
 
 Implementations:
