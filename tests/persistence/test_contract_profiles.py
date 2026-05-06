@@ -427,3 +427,65 @@ async def test_delete_profile_org_isolation(store: Store):
     fetched = await store.get_profile(created.id)
     assert fetched is not None
     assert fetched.org_id == "org_a"
+
+
+# ── resolve_profile_for_key tests ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_for_key_finds_org_owned(store: Store):
+    await _insert_profile(
+        store,
+        org_id="solo",
+        name="test-resolve",
+        semantic_weight=0.7,
+        graph_weight=0.3,
+        recency_bias=14.0,
+    )
+
+    result = await store.resolve_profile_for_key("solo", "test-resolve")
+
+    assert result is not None
+    assert isinstance(result, StoredProfile)
+    assert result.org_id == "solo"
+    assert result.name == "test-resolve"
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_for_key_finds_global_preset(store: Store):
+    # "coding" is a migration-013 preset with org_id='__global__'
+    result = await store.resolve_profile_for_key("solo", "coding")
+
+    assert result is not None
+    assert isinstance(result, StoredProfile)
+    assert result.org_id == "__global__"
+    assert result.name == "coding"
+    assert result.is_preset is True
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_for_key_org_owned_shadows_global(store: Store):
+    # Insert an org-owned profile with the same name as the global "coding" preset
+    await _insert_profile(
+        store,
+        org_id="solo",
+        name="coding",
+        semantic_weight=0.5,
+        graph_weight=0.5,
+        recency_bias=7.0,
+        is_preset=False,
+    )
+
+    result = await store.resolve_profile_for_key("solo", "coding")
+
+    assert result is not None
+    assert isinstance(result, StoredProfile)
+    # Must be the org-owned row, NOT the global preset
+    assert result.org_id == "solo"
+    assert result.is_preset is False
+
+
+@pytest.mark.asyncio
+async def test_resolve_profile_for_key_returns_none_when_missing(store: Store):
+    result = await store.resolve_profile_for_key("solo", "does-not-exist")
+    assert result is None

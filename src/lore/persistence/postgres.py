@@ -1313,7 +1313,21 @@ class PostgresStore:
     async def resolve_profile_for_key(
         self, org_id: str, name: str
     ) -> Optional[StoredProfile]:
-        raise NotImplementedError("resolve_profile_for_key implemented in T7")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset, k, threshold,
+                       rerank, include_graph, created_at, updated_at
+                FROM retrieval_profiles
+                WHERE name = $1 AND (org_id = $2 OR org_id = '__global__')
+                ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
+                LIMIT 1
+                """,
+                name,
+                org_id,
+            )
+        return _row_to_profile(row) if row else None
 
 
 class _BoundConn:
