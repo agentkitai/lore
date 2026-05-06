@@ -12,8 +12,10 @@ except ImportError:
 
 from pydantic import BaseModel
 
+from lore.persistence import Store, StoredAuditEntry
 from lore.server.auth import AuthContext, get_auth_context
-from lore.server.db import get_pool
+from lore.server.db import get_store
+from lore.services import audit as audit_service
 
 logger = logging.getLogger(__name__)
 
@@ -34,13 +36,20 @@ class AuditEntry(BaseModel):
     created_at: Optional[str] = None
 
 
-def _ts(val) -> Optional[str]:
-    if val is None:
-        return None
-    from datetime import datetime
-    if isinstance(val, datetime):
-        return val.isoformat()
-    return str(val)
+def _to_audit_entry(e: StoredAuditEntry) -> AuditEntry:
+    return AuditEntry(
+        id=e.id,
+        org_id=e.org_id,
+        workspace_id=e.workspace_id,
+        actor_id=e.actor_id,
+        actor_type=e.actor_type,
+        action=e.action,
+        resource_type=e.resource_type,
+        resource_id=e.resource_id,
+        metadata=dict(e.metadata) if e.metadata else {},
+        ip_address=str(e.ip_address) if e.ip_address else None,
+        created_at=e.created_at.isoformat() if e.created_at else None,
+    )
 
 
 @router.get("", response_model=List[AuditEntry])
@@ -51,48 +60,16 @@ async def query_audit_log(
     since: Optional[str] = Query(None, description="ISO 8601 datetime"),
     limit: int = Query(50, ge=1, le=500),
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> List[AuditEntry]:
     """Query the audit log with filters."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        params: list = [auth.org_id]
-        where_parts = ["org_id = $1"]
-
-        if workspace_id:
-            params.append(workspace_id)
-            where_parts.append(f"workspace_id = ${len(params)}")
-        if action:
-            params.append(action)
-            where_parts.append(f"action = ${len(params)}")
-        if actor_id:
-            params.append(actor_id)
-            where_parts.append(f"actor_id = ${len(params)}")
-        if since:
-            params.append(since)
-            where_parts.append(f"created_at >= ${len(params)}::timestamptz")
-
-        params.append(limit)
-        where_sql = " AND ".join(where_parts)
-
-        rows = await conn.fetch(
-            f"""SELECT * FROM audit_log
-                WHERE {where_sql}
-                ORDER BY created_at DESC
-                LIMIT ${len(params)}""",
-            *params,
-        )
-
-    return [
-        AuditEntry(
-            id=r["id"], org_id=r["org_id"],
-            workspace_id=r["workspace_id"],
-            actor_id=r["actor_id"], actor_type=r["actor_type"],
-            action=r["action"],
-            resource_type=r["resource_type"],
-            resource_id=r["resource_id"],
-            metadata=r["metadata"] or {},
-            ip_address=str(r["ip_address"]) if r["ip_address"] else None,
-            created_at=_ts(r["created_at"]),
-        )
-        for r in rows
-    ]
+    entries = await audit_service.query_audit_log(
+        store,
+        org_id=auth.org_id,
+        workspace_id=workspace_id,
+        action=action,
+        actor_id=actor_id,
+        since=since,
+        limit=limit,
+    )
+    return [_to_audit_entry(e) for e in entries]

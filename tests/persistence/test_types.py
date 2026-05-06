@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from lore.persistence.types import (
+    DailyStatRow,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
@@ -26,8 +27,11 @@ from lore.persistence.types import (
     RecallParams,
     RecommendationCandidate,
     ResolvedProfile,
+    RetrievalAnalyticsResult,
+    ScoreDistributionBucket,
     ScoredMemory,
     StoredApiKey,
+    StoredAuditEntry,
     StoredConversationJob,
     StoredEntity,
     StoredMember,
@@ -38,6 +42,7 @@ from lore.persistence.types import (
     StoredRelationship,
     StoredWorkspace,
     TimelineBucketRow,
+    TopQueryRow,
     WorkspacePatch,
 )
 
@@ -1511,3 +1516,271 @@ def test_memory_filter_with_text_query_and_min_reputation():
     assert f.limit == 20
     assert f.offset == 5
     assert f.include_expired is True
+
+
+# ── Dashboard slice dataclasses ───────────────────────────────────
+
+
+# StoredAuditEntry
+
+
+def test_stored_audit_entry_all_fields():
+    now = datetime.now(timezone.utc)
+    ae = StoredAuditEntry(
+        id=1,
+        org_id="org_1",
+        workspace_id="ws_01",
+        actor_id="usr_01",
+        actor_type="user",
+        action="memory.create",
+        resource_type="memory",
+        resource_id="mem_01",
+        metadata={"key": "value"},
+        ip_address="127.0.0.1",
+        created_at=now,
+    )
+    assert ae.id == 1
+    assert ae.org_id == "org_1"
+    assert ae.workspace_id == "ws_01"
+    assert ae.actor_id == "usr_01"
+    assert ae.actor_type == "user"
+    assert ae.action == "memory.create"
+    assert ae.resource_type == "memory"
+    assert ae.resource_id == "mem_01"
+    assert ae.metadata == {"key": "value"}
+    assert ae.ip_address == "127.0.0.1"
+    assert ae.created_at == now
+
+
+def test_stored_audit_entry_optional_nulls():
+    now = datetime.now(timezone.utc)
+    ae = StoredAuditEntry(
+        id=2,
+        org_id="org_1",
+        workspace_id=None,
+        actor_id="svc_01",
+        actor_type="service",
+        action="memory.expire",
+        resource_type=None,
+        resource_id=None,
+        metadata={},
+        ip_address=None,
+        created_at=now,
+    )
+    assert ae.workspace_id is None
+    assert ae.resource_type is None
+    assert ae.resource_id is None
+    assert ae.ip_address is None
+    assert ae.metadata == {}
+
+
+def test_stored_audit_entry_frozen():
+    now = datetime.now(timezone.utc)
+    ae = StoredAuditEntry(
+        id=3,
+        org_id="org_1",
+        workspace_id=None,
+        actor_id="usr_01",
+        actor_type="user",
+        action="memory.delete",
+        resource_type=None,
+        resource_id=None,
+        metadata={},
+        ip_address=None,
+        created_at=now,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ae.action = "mutated"  # type: ignore[misc]
+
+
+def test_stored_audit_entry_slots():
+    now = datetime.now(timezone.utc)
+    ae = StoredAuditEntry(
+        id=4,
+        org_id="org_1",
+        workspace_id=None,
+        actor_id="usr_01",
+        actor_type="user",
+        action="memory.read",
+        resource_type=None,
+        resource_id=None,
+        metadata={},
+        ip_address=None,
+        created_at=now,
+    )
+    assert not hasattr(ae, "__dict__")
+
+
+# ScoreDistributionBucket
+
+
+def test_score_distribution_bucket_construction():
+    b = ScoreDistributionBucket(bucket="0.7-0.8", count=12)
+    assert b.bucket == "0.7-0.8"
+    assert b.count == 12
+
+
+def test_score_distribution_bucket_frozen():
+    b = ScoreDistributionBucket(bucket="0.9-1.0", count=5)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        b.count = 99  # type: ignore[misc]
+
+
+def test_score_distribution_bucket_slots():
+    b = ScoreDistributionBucket(bucket="0.5-0.6", count=3)
+    assert not hasattr(b, "__dict__")
+
+
+# TopQueryRow
+
+
+def test_top_query_row_all_fields():
+    tqr = TopQueryRow(query="recall python async", count=42, avg_score=0.87)
+    assert tqr.query == "recall python async"
+    assert tqr.count == 42
+    assert tqr.avg_score == 0.87
+
+
+def test_top_query_row_optional_avg_score():
+    tqr = TopQueryRow(query="no results query", count=1, avg_score=None)
+    assert tqr.avg_score is None
+
+
+def test_top_query_row_frozen():
+    tqr = TopQueryRow(query="test", count=1, avg_score=None)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        tqr.count = 99  # type: ignore[misc]
+
+
+def test_top_query_row_slots():
+    tqr = TopQueryRow(query="test", count=1, avg_score=None)
+    assert not hasattr(tqr, "__dict__")
+
+
+# DailyStatRow
+
+
+def test_daily_stat_row_all_fields():
+    dsr = DailyStatRow(date="2026-05-01", queries=100, avg_score=0.75, hit_rate=0.9)
+    assert dsr.date == "2026-05-01"
+    assert dsr.queries == 100
+    assert dsr.avg_score == 0.75
+    assert dsr.hit_rate == 0.9
+
+
+def test_daily_stat_row_optional_avg_score():
+    dsr = DailyStatRow(date="2026-05-02", queries=0, avg_score=None, hit_rate=0.0)
+    assert dsr.avg_score is None
+    assert dsr.hit_rate == 0.0
+
+
+def test_daily_stat_row_frozen():
+    dsr = DailyStatRow(date="2026-05-03", queries=5, avg_score=None, hit_rate=1.0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        dsr.queries = 99  # type: ignore[misc]
+
+
+def test_daily_stat_row_slots():
+    dsr = DailyStatRow(date="2026-05-04", queries=5, avg_score=None, hit_rate=1.0)
+    assert not hasattr(dsr, "__dict__")
+
+
+# RetrievalAnalyticsResult
+
+
+def test_retrieval_analytics_result_all_fields():
+    buckets = [ScoreDistributionBucket(bucket="0.8-0.9", count=10)]
+    top_queries = [TopQueryRow(query="foo", count=5, avg_score=0.9)]
+    daily = [DailyStatRow(date="2026-05-01", queries=50, avg_score=0.8, hit_rate=0.95)]
+    rar = RetrievalAnalyticsResult(
+        total_queries=200,
+        queries_with_results=180,
+        queries_empty=20,
+        avg_results_per_query=3.5,
+        avg_score=0.78,
+        avg_max_score=0.92,
+        avg_latency_ms=45.0,
+        p95_latency_ms=120.0,
+        score_distribution=buckets,
+        top_queries=top_queries,
+        unique_memories_retrieved=55,
+        total_memories=500,
+        daily_stats=daily,
+    )
+    assert rar.total_queries == 200
+    assert rar.queries_with_results == 180
+    assert rar.queries_empty == 20
+    assert rar.avg_results_per_query == 3.5
+    assert rar.avg_score == 0.78
+    assert rar.avg_max_score == 0.92
+    assert rar.avg_latency_ms == 45.0
+    assert rar.p95_latency_ms == 120.0
+    assert list(rar.score_distribution) == buckets
+    assert list(rar.top_queries) == top_queries
+    assert rar.unique_memories_retrieved == 55
+    assert rar.total_memories == 500
+    assert list(rar.daily_stats) == daily
+
+
+def test_retrieval_analytics_result_optional_nulls():
+    rar = RetrievalAnalyticsResult(
+        total_queries=0,
+        queries_with_results=0,
+        queries_empty=0,
+        avg_results_per_query=0.0,
+        avg_score=None,
+        avg_max_score=None,
+        avg_latency_ms=None,
+        p95_latency_ms=None,
+        score_distribution=[],
+        top_queries=[],
+        unique_memories_retrieved=0,
+        total_memories=0,
+        daily_stats=[],
+    )
+    assert rar.avg_score is None
+    assert rar.avg_max_score is None
+    assert rar.avg_latency_ms is None
+    assert rar.p95_latency_ms is None
+    assert list(rar.score_distribution) == []
+    assert list(rar.top_queries) == []
+    assert list(rar.daily_stats) == []
+
+
+def test_retrieval_analytics_result_frozen():
+    rar = RetrievalAnalyticsResult(
+        total_queries=1,
+        queries_with_results=1,
+        queries_empty=0,
+        avg_results_per_query=1.0,
+        avg_score=None,
+        avg_max_score=None,
+        avg_latency_ms=None,
+        p95_latency_ms=None,
+        score_distribution=[],
+        top_queries=[],
+        unique_memories_retrieved=1,
+        total_memories=10,
+        daily_stats=[],
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rar.total_queries = 99  # type: ignore[misc]
+
+
+def test_retrieval_analytics_result_slots():
+    rar = RetrievalAnalyticsResult(
+        total_queries=1,
+        queries_with_results=1,
+        queries_empty=0,
+        avg_results_per_query=1.0,
+        avg_score=None,
+        avg_max_score=None,
+        avg_latency_ms=None,
+        p95_latency_ms=None,
+        score_distribution=[],
+        top_queries=[],
+        unique_memories_retrieved=1,
+        total_memories=10,
+        daily_stats=[],
+    )
+    assert not hasattr(rar, "__dict__")

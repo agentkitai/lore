@@ -468,3 +468,59 @@ class ExportedMemory:
     upvotes: int
     downvotes: int
     meta: Mapping[str, Any]
+
+
+# ── Dashboard slice dataclasses ───────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class StoredAuditEntry:
+    id: int
+    org_id: str
+    workspace_id: Optional[str]
+    actor_id: str
+    actor_type: str
+    action: str
+    resource_type: Optional[str]
+    resource_id: Optional[str]
+    metadata: Mapping[str, Any]
+    ip_address: Optional[str]
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreDistributionBucket:
+    bucket: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class TopQueryRow:
+    query: str
+    count: int
+    avg_score: Optional[float]
+
+
+@dataclass(frozen=True, slots=True)
+class DailyStatRow:
+    date: str
+    queries: int
+    avg_score: Optional[float]
+    hit_rate: float
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalAnalyticsResult:
+    total_queries: int
+    queries_with_results: int
+    queries_empty: int
+    avg_results_per_query: float
+    avg_score: Optional[float]
+    avg_max_score: Optional[float]
+    avg_latency_ms: Optional[float]
+    p95_latency_ms: Optional[float]
+    score_distribution: Sequence[ScoreDistributionBucket]
+    top_queries: Sequence[TopQueryRow]
+    unique_memories_retrieved: int
+    total_memories: int
+    daily_stats: Sequence[DailyStatRow]
