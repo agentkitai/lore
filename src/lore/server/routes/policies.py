@@ -148,6 +148,16 @@ async def create_policy(
     return _to_policy_response(p)
 
 
+@router.get("/compliance", response_model=List[ComplianceResponse])
+async def check_compliance(
+    auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
+) -> List[ComplianceResponse]:
+    """Cross-policy compliance summary."""
+    results = await policies_service.check_compliance(store, org_id=auth.org_id)
+    return [_to_compliance_response(r) for r in results]
+
+
 @router.get("/{policy_id}", response_model=PolicyResponse)
 async def get_policy(
     policy_id: str,
@@ -231,13 +241,3 @@ async def list_drills(
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Policy not found")
     return [_to_drill_response(d) for d in drills]
-
-
-@router.get("/compliance", response_model=List[ComplianceResponse])
-async def check_compliance(
-    auth: AuthContext = Depends(get_auth_context),
-    store: Store = Depends(get_store),
-) -> List[ComplianceResponse]:
-    """Cross-policy compliance summary."""
-    results = await policies_service.check_compliance(store, org_id=auth.org_id)
-    return [_to_compliance_response(r) for r in results]
