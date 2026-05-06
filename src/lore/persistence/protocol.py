@@ -31,8 +31,10 @@ from lore.persistence.types import (
     ProfilePatch,
     RecallParams,
     RecommendationCandidate,
+    RetrievalAnalyticsResult,
     ScoredMemory,
     StoredApiKey,
+    StoredAuditEntry,
     StoredConversationJob,
     StoredEntity,
     StoredMember,
@@ -447,6 +449,16 @@ class Store(Protocol):
         """List the most recent session-snapshot memories for an org, optionally scoped to a project."""
         ...
 
+    async def compute_retrieval_analytics(
+        self,
+        *,
+        org_id: str,
+        days: int,
+        project: Optional[str] = None,
+    ) -> RetrievalAnalyticsResult:
+        """Compute aggregated retrieval analytics for an org over the given number of days."""
+        ...
+
     # ── RecommendationOps ────────────────────────────────────────────
 
     async def get_recommendation_config(
@@ -521,4 +533,19 @@ class Store(Protocol):
         processing_time_ms: int,
     ) -> None:
         """Mark a job failed and record the error message."""
+        ...
+
+    # ── AuditOps ─────────────────────────────────────────────────────
+
+    async def query_audit_log(
+        self,
+        *,
+        org_id: str,
+        workspace_id: Optional[str] = None,
+        action: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: int = 50,
+    ) -> Sequence[StoredAuditEntry]:
+        """Query the audit log for an org with optional filters; returns entries newest-first."""
         ...

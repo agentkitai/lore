@@ -15,6 +15,7 @@ from lore.persistence.exceptions import (
 from lore.persistence.factory import make_store
 from lore.persistence.protocol import Store
 from lore.persistence.types import (
+    DailyStatRow,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
@@ -35,8 +36,11 @@ from lore.persistence.types import (
     RecallParams,
     RecommendationCandidate,
     ResolvedProfile,
+    RetrievalAnalyticsResult,
+    ScoreDistributionBucket,
     ScoredMemory,
     StoredApiKey,
+    StoredAuditEntry,
     StoredConversationJob,
     StoredEntity,
     StoredMember,
@@ -47,12 +51,14 @@ from lore.persistence.types import (
     StoredRelationship,
     StoredWorkspace,
     TimelineBucketRow,
+    TopQueryRow,
     WorkspacePatch,
 )
 
 __all__ = [
     "BackendUnavailableError",
     "ConfigError",
+    "DailyStatRow",
     "ExportedMemory",
     "GraphStats",
     "IntegrityError",
@@ -77,13 +83,16 @@ __all__ = [
     "RecallParams",
     "RecommendationCandidate",
     "ResolvedProfile",
+    "RetrievalAnalyticsResult",
     "ScoredMemory",
+    "ScoreDistributionBucket",
     "Store",
     "StoreBusyError",
     "StoreError",
     "StoreNotFoundError",
     "StoreSchemaMismatchError",
     "StoredApiKey",
+    "StoredAuditEntry",
     "StoredConversationJob",
     "StoredEntity",
     "StoredMember",
@@ -94,6 +103,7 @@ __all__ = [
     "StoredRelationship",
     "StoredWorkspace",
     "TimelineBucketRow",
+    "TopQueryRow",
     "WorkspacePatch",
     "make_store",
 ]
