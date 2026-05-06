@@ -324,4 +324,4 @@ Routes call services; services call the Store. Contract test suite at `tests/per
 2. The Service layer is the only place business logic exists once. The HTTP front-end and the embedded API both call into services.
 3. Backend chosen by `database_url` URL scheme. `LORE_BACKEND` env var is just a shortcut.
 
-These invariants are guarded by `scripts/check_routes_no_sql.py` for the migrated slices; coverage grows as more routes migrate. Currently covers 8 migrated route files (2 from MemoryOps, 8 from GraphOps, 8 from PolicyOps).
+These invariants are guarded by `scripts/check_routes_no_sql.py` for the migrated slices; coverage grows as more routes migrate. Currently covers 8 migrated route files: 2 in the MemoryOps slice (`memories.py`, `retrieve.py`), 5 in the GraphOps slice (the four `graph/*.py` files plus `review.py`), and 1 in the PolicyOps slice (`profiles.py`).
