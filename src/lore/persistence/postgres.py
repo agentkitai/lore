@@ -1179,7 +1179,7 @@ class PostgresStore:
             )
         return _row_to_profile(row) if row else None
 
-    # ── PolicyOps stubs (T6–T7) ───────────────────────────────────────
+    # ── PolicyOps: list, create, update, delete, resolve ──────────────
 
     async def list_profiles(self, org_id: str) -> Sequence[StoredProfile]:
         async with self._acquire() as conn:
