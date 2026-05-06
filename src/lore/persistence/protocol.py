@@ -18,6 +18,7 @@ from lore.persistence.types import (
     MemoryPatch,
     NewApiKey,
     NewConversationJob,
+    NewDrillResult,
     NewEntity,
     NewMember,
     NewMemory,
@@ -25,17 +26,20 @@ from lore.persistence.types import (
     NewProfile,
     NewRecommendationFeedback,
     NewRelationship,
+    NewRetentionPolicy,
     NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
     RecommendationCandidate,
+    RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoredMemory,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
+    StoredDrillResult,
     StoredEntity,
     StoredMember,
     StoredMemory,
@@ -43,6 +47,8 @@ from lore.persistence.types import (
     StoredProfile,
     StoredRecommendationConfig,
     StoredRelationship,
+    StoredRetentionPolicy,
+    StoredSnapshotMetadata,
     StoredWorkspace,
     TimelineBucketRow,
     WorkspacePatch,
@@ -549,3 +555,31 @@ class Store(Protocol):
     ) -> Sequence[StoredAuditEntry]:
         """Query the audit log for an org with optional filters; returns entries newest-first."""
         ...
+
+    # ── RetentionOps ────────────────────────────────────────────────
+
+    async def list_retention_policies(self, org_id: str) -> Sequence[StoredRetentionPolicy]: ...
+
+    async def get_retention_policy(self, policy_id: str, org_id: str) -> Optional[StoredRetentionPolicy]: ...
+
+    async def create_retention_policy(self, policy: NewRetentionPolicy) -> StoredRetentionPolicy: ...
+
+    async def update_retention_policy(
+        self, policy_id: str, org_id: str, patch: RetentionPolicyPatch,
+    ) -> Optional[StoredRetentionPolicy]: ...
+
+    async def delete_retention_policy(self, policy_id: str, org_id: str) -> bool: ...
+
+    async def get_latest_snapshot_for_policy(
+        self, policy_id: str, org_id: str,
+    ) -> Optional[StoredSnapshotMetadata]: ...
+
+    async def count_snapshots_for_policy(self, policy_id: str) -> int: ...
+
+    async def record_drill_result(self, drill: NewDrillResult) -> StoredDrillResult: ...
+
+    async def list_drill_results_for_policy(
+        self, policy_id: str, org_id: str, *, limit: int = 20,
+    ) -> Sequence[StoredDrillResult]: ...
+
+    async def get_latest_drill_result(self, org_id: str) -> Optional[StoredDrillResult]: ...

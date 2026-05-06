@@ -524,3 +524,82 @@ class RetrievalAnalyticsResult:
     unique_memories_retrieved: int
     total_memories: int
     daily_stats: Sequence[DailyStatRow]
+
+
+# ── Retention slice dataclasses ───
+
+
+@dataclass(frozen=True, slots=True)
+class NewRetentionPolicy:
+    org_id: str
+    name: str
+    retention_window: Mapping[str, Any] = field(default_factory=lambda: {"working": 3600, "short": 604800, "long": None})
+    snapshot_schedule: Optional[str] = None
+    encryption_required: bool = False
+    max_snapshots: int = 50
+    is_active: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRetentionPolicy:
+    id: str
+    org_id: str
+    name: str
+    retention_window: Mapping[str, Any]
+    snapshot_schedule: Optional[str]
+    encryption_required: bool
+    max_snapshots: int
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RetentionPolicyPatch:
+    name: Optional[str] = None
+    retention_window: Optional[Mapping[str, Any]] = None
+    snapshot_schedule: Optional[str] = None
+    encryption_required: Optional[bool] = None
+    max_snapshots: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredSnapshotMetadata:
+    id: str
+    org_id: str
+    policy_id: Optional[str]
+    name: str
+    path: str
+    size_bytes: Optional[int]
+    memory_count: Optional[int]
+    encrypted: bool
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class NewDrillResult:
+    org_id: str
+    snapshot_id: Optional[str]
+    snapshot_name: str
+    started_at: datetime
+    completed_at: Optional[datetime]
+    recovery_time_ms: Optional[int]
+    memories_restored: Optional[int]
+    status: str
+    error: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredDrillResult:
+    id: str
+    org_id: str
+    snapshot_id: Optional[str]
+    snapshot_name: str
+    started_at: datetime
+    completed_at: Optional[datetime]
+    recovery_time_ms: Optional[int]
+    memories_restored: Optional[int]
+    status: str
+    error: Optional[str]
+    created_at: datetime
