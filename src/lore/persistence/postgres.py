@@ -352,6 +352,36 @@ def _row_to_retention_policy(row: "asyncpg.Record") -> StoredRetentionPolicy:
     )
 
 
+def _row_to_snapshot_metadata(row: "asyncpg.Record") -> StoredSnapshotMetadata:
+    return StoredSnapshotMetadata(
+        id=row["id"],
+        org_id=row["org_id"],
+        policy_id=row["policy_id"],
+        name=row["name"],
+        path=row["path"],
+        size_bytes=row["size_bytes"],
+        memory_count=row["memory_count"],
+        encrypted=bool(row["encrypted"]),
+        created_at=row["created_at"],
+    )
+
+
+def _row_to_drill_result(row: "asyncpg.Record") -> StoredDrillResult:
+    return StoredDrillResult(
+        id=row["id"],
+        org_id=row["org_id"],
+        snapshot_id=row["snapshot_id"],
+        snapshot_name=row["snapshot_name"],
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        recovery_time_ms=row["recovery_time_ms"],
+        memories_restored=row["memories_restored"],
+        status=row["status"],
+        error=row["error"],
+        created_at=row["created_at"],
+    )
+
+
 _VALID_TRUNCS = frozenset({"hour", "day", "week", "month"})
 
 
@@ -2629,21 +2659,73 @@ class PostgresStore:
     async def get_latest_snapshot_for_policy(
         self, policy_id: str, org_id: str
     ) -> "Optional[StoredSnapshotMetadata]":
-        raise NotImplementedError("get_latest_snapshot_for_policy implemented in T3")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT id, org_id, policy_id, name, path, size_bytes, memory_count, encrypted, created_at "
+                "FROM snapshot_metadata "
+                "WHERE policy_id = $1 AND org_id = $2 "
+                "ORDER BY created_at DESC "
+                "LIMIT 1",
+                policy_id,
+                org_id,
+            )
+        return _row_to_snapshot_metadata(row) if row else None
 
     async def count_snapshots_for_policy(self, policy_id: str) -> int:
-        raise NotImplementedError("count_snapshots_for_policy implemented in T3")
+        async with self._acquire() as conn:
+            return await conn.fetchval(
+                "SELECT COUNT(*)::int FROM snapshot_metadata WHERE policy_id = $1",
+                policy_id,
+            )
 
     async def record_drill_result(self, drill: "NewDrillResult") -> "StoredDrillResult":
-        raise NotImplementedError("record_drill_result implemented in T3")
+        drill_id = f"drill_{ULID()}"
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                "INSERT INTO restore_drill_results "
+                "(id, org_id, snapshot_id, snapshot_name, started_at, completed_at, "
+                "recovery_time_ms, memories_restored, status, error) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) "
+                "RETURNING *",
+                drill_id,
+                drill.org_id,
+                drill.snapshot_id,
+                drill.snapshot_name,
+                drill.started_at,
+                drill.completed_at,
+                drill.recovery_time_ms,
+                drill.memories_restored,
+                drill.status,
+                drill.error,
+            )
+        return _row_to_drill_result(row)
 
     async def list_drill_results_for_policy(
         self, policy_id: str, org_id: str, *, limit: int = 20
     ) -> "Sequence[StoredDrillResult]":
-        raise NotImplementedError("list_drill_results_for_policy implemented in T3")
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT r.id, r.org_id, r.snapshot_id, r.snapshot_name, r.started_at, "
+                "r.completed_at, r.recovery_time_ms, r.memories_restored, "
+                "r.status, r.error, r.created_at "
+                "FROM restore_drill_results r "
+                "JOIN snapshot_metadata s ON s.id = r.snapshot_id "
+                "WHERE s.policy_id = $1 AND r.org_id = $2 "
+                "ORDER BY r.created_at DESC "
+                "LIMIT $3",
+                policy_id,
+                org_id,
+                limit,
+            )
+        return tuple(_row_to_drill_result(r) for r in rows)
 
     async def get_latest_drill_result(self, org_id: str) -> "Optional[StoredDrillResult]":
-        raise NotImplementedError("get_latest_drill_result implemented in T3")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT * FROM restore_drill_results WHERE org_id = $1 ORDER BY created_at DESC LIMIT 1",
+                org_id,
+            )
+        return _row_to_drill_result(row) if row else None
 
 
 class _BoundConn:
