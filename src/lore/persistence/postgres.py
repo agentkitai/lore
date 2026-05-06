@@ -25,13 +25,17 @@ from lore.persistence.types import (
     NewEntity,
     NewMemory,
     NewMention,
+    NewProfile,
     NewRelationship,
     PendingRelationshipRow,
+    ProfilePatch,
     RecallParams,
+    ResolvedProfile,
     ScoredMemory,
     StoredEntity,
     StoredMemory,
     StoredMention,
+    StoredProfile,
     StoredRelationship,
     TimelineBucketRow,
 )
@@ -116,6 +120,31 @@ def _row_to_entity(row: "asyncpg.Record") -> StoredEntity:
         mention_count=row["mention_count"] or 0,
         first_seen_at=row["first_seen_at"],
         last_seen_at=row["last_seen_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_profile(row: "asyncpg.Record") -> StoredProfile:
+    tier_filters = row["tier_filters"]
+    # asyncpg returns Postgres TEXT[] as list[str] | None
+    tf: Optional[tuple] = tuple(tier_filters) if tier_filters is not None else None
+    return StoredProfile(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        semantic_weight=float(row["semantic_weight"]),
+        graph_weight=float(row["graph_weight"]),
+        recency_bias=float(row["recency_bias"]),
+        tier_filters=tf,
+        min_score=float(row["min_score"]),
+        max_results=int(row["max_results"]),
+        is_preset=bool(row["is_preset"]),
+        k=row["k"],
+        threshold=float(row["threshold"]) if row["threshold"] is not None else None,
+        # DB-level defaults ensure these are never NULL; coerce for safety
+        rerank=bool(row["rerank"]) if row["rerank"] is not None else False,
+        include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -1112,6 +1141,64 @@ class PostgresStore:
                 limit,
             )
         return [_row_to_stored(r) for r in rows]
+
+    # ── PolicyOps ─────────────────────────────────────────────────────
+
+    async def get_profile(self, profile_id: str) -> Optional[StoredProfile]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name,
+                       semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset,
+                       k, threshold, rerank, include_graph,
+                       created_at, updated_at
+                FROM retrieval_profiles
+                WHERE id = $1
+                """,
+                profile_id,
+            )
+        return _row_to_profile(row) if row else None
+
+    async def get_profile_by_name(
+        self, org_id: str, name: str
+    ) -> Optional[StoredProfile]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name,
+                       semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset,
+                       k, threshold, rerank, include_graph,
+                       created_at, updated_at
+                FROM retrieval_profiles
+                WHERE name = $1 AND org_id = $2
+                """,
+                name,
+                org_id,
+            )
+        return _row_to_profile(row) if row else None
+
+    # ── PolicyOps stubs (T5–T7) ───────────────────────────────────────
+
+    async def list_profiles(self, org_id: str):  # type: ignore[override]
+        raise NotImplementedError("list_profiles implemented in T5")
+
+    async def create_profile(self, profile: NewProfile) -> StoredProfile:
+        raise NotImplementedError("create_profile implemented in T5")
+
+    async def update_profile(
+        self, profile_id: str, patch: ProfilePatch
+    ) -> Optional[StoredProfile]:
+        raise NotImplementedError("update_profile implemented in T6")
+
+    async def delete_profile(self, profile_id: str, org_id: str) -> bool:
+        raise NotImplementedError("delete_profile implemented in T6")
+
+    async def resolve_profile_for_key(
+        self, org_id: str, name: str
+    ) -> Optional[StoredProfile]:
+        raise NotImplementedError("resolve_profile_for_key implemented in T7")
 
 
 class _BoundConn:
