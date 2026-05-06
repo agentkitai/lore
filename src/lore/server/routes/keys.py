@@ -2,25 +2,21 @@
 
 from __future__ import annotations
 
-import hashlib
 import logging
-import secrets
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import List, Optional
 
 try:
-    from fastapi import APIRouter, Depends, HTTPException
+    from fastapi import APIRouter, Depends, HTTPException, Response
     from pydantic import BaseModel
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
-try:
-    from ulid import ULID
-except ImportError:
-    raise ImportError("python-ulid is required. Install with: pip install python-ulid")
-
-from lore.server.auth import AuthContext, _key_cache, get_auth_context
-from lore.server.db import get_pool
+from lore.persistence import Store, StoredApiKey
+from lore.persistence.exceptions import LastRootKeyError, StoreNotFoundError
+from lore.server.auth import AuthContext, get_auth_context
+from lore.server.db import get_store
+from lore.services import keys as keys_service
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +65,20 @@ def _require_root(auth: AuthContext) -> None:
         raise HTTPException(status_code=403, detail="Root key required")
 
 
+def _to_key_info(k: StoredApiKey) -> KeyInfo:
+    return KeyInfo(
+        id=k.id,
+        name=k.name,
+        key_prefix=k.key_prefix,
+        project=k.project,
+        is_root=k.is_root,
+        created_at=k.created_at,
+        last_used_at=k.last_used_at,
+        revoked=k.revoked_at is not None,
+        workspace_id=k.workspace_id,
+    )
+
+
 # ── Create ─────────────────────────────────────────────────────────
 
 
@@ -76,43 +86,24 @@ def _require_root(auth: AuthContext) -> None:
 async def create_key(
     body: KeyCreateRequest,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> KeyCreateResponse:
     """Create a new API key. Root key required."""
     _require_root(auth)
-
-    raw_key = "lore_sk_" + secrets.token_hex(32)
-    key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
-    key_prefix = raw_key[:12]
-    key_id = str(ULID())
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # Check if workspace_id column exists to stay backward-compatible
-        has_ws_col = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.columns "
-            "WHERE table_name='api_keys' AND column_name='workspace_id')"
-        )
-        if has_ws_col and body.workspace_id:
-            await conn.execute(
-                """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
-                key_id, auth.org_id, body.name, key_hash, key_prefix,
-                body.project, body.is_root, body.workspace_id,
-            )
-        else:
-            await conn.execute(
-                """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, project, is_root)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                key_id, auth.org_id, body.name, key_hash, key_prefix,
-                body.project, body.is_root,
-            )
-
-    return KeyCreateResponse(
-        id=key_id,
-        key=raw_key,
+    stored, raw_key = await keys_service.create_api_key(
+        store,
+        org_id=auth.org_id,
         name=body.name,
         project=body.project,
+        is_root=body.is_root,
         workspace_id=body.workspace_id,
+    )
+    return KeyCreateResponse(
+        id=stored.id,
+        key=raw_key,
+        name=stored.name,
+        project=stored.project,
+        workspace_id=stored.workspace_id,
     )
 
 
@@ -122,40 +113,12 @@ async def create_key(
 @router.get("", response_model=KeyListResponse)
 async def list_keys(
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> KeyListResponse:
     """List all API keys for the org. Root key required."""
     _require_root(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        has_ws_col = await conn.fetchval(
-            "SELECT EXISTS(SELECT 1 FROM information_schema.columns "
-            "WHERE table_name='api_keys' AND column_name='workspace_id')"
-        )
-        cols = "id, name, key_prefix, project, is_root, created_at, last_used_at, revoked_at"
-        if has_ws_col:
-            cols += ", workspace_id"
-        rows = await conn.fetch(
-            f"SELECT {cols} FROM api_keys WHERE org_id = $1 ORDER BY created_at",
-            auth.org_id,
-        )
-
-    keys = [
-        KeyInfo(
-            id=r["id"],
-            name=r["name"],
-            key_prefix=r["key_prefix"],
-            project=r["project"],
-            is_root=r["is_root"],
-            created_at=r["created_at"],
-            last_used_at=r["last_used_at"],
-            revoked=r["revoked_at"] is not None,
-            workspace_id=r.get("workspace_id"),
-        )
-        for r in rows
-    ]
-
-    return KeyListResponse(keys=keys)
+    keys = await keys_service.list_api_keys(store, auth.org_id)
+    return KeyListResponse(keys=[_to_key_info(k) for k in keys])
 
 
 # ── Revoke ─────────────────────────────────────────────────────────
@@ -165,43 +128,14 @@ async def list_keys(
 async def revoke_key(
     key_id: str,
     auth: AuthContext = Depends(get_auth_context),
-) -> None:
+    store: Store = Depends(get_store),
+) -> Response:
     """Revoke an API key. Root key required. Cannot revoke last root key."""
     _require_root(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            # Lock the target row to prevent race conditions
-            target = await conn.fetchrow(
-                "SELECT id, is_root, key_hash, revoked_at FROM api_keys "
-                "WHERE id = $1 AND org_id = $2 FOR UPDATE",
-                key_id,
-                auth.org_id,
-            )
-
-            if target is None:
-                raise HTTPException(status_code=404, detail="Key not found")
-
-            if target["revoked_at"] is not None:
-                raise HTTPException(status_code=400, detail="Key already revoked")
-
-            # Protect last root key
-            if target["is_root"]:
-                active_root_count = await conn.fetchval(
-                    "SELECT COUNT(*) FROM api_keys WHERE org_id = $1 AND is_root = TRUE AND revoked_at IS NULL",
-                    auth.org_id,
-                )
-                if active_root_count <= 1:
-                    raise HTTPException(status_code=400, detail="Cannot revoke the last root key")
-
-            # Revoke
-            await conn.execute(
-                "UPDATE api_keys SET revoked_at = $1 WHERE id = $2",
-                datetime.now(timezone.utc),
-                key_id,
-            )
-
-    # Invalidate auth cache for this key's hash
-    target_hash = target["key_hash"]
-    _key_cache.pop(target_hash, None)
+    try:
+        await keys_service.revoke_api_key(store, key_id, auth.org_id)
+    except StoreNotFoundError:
+        raise HTTPException(status_code=404, detail="Key not found")
+    except LastRootKeyError:
+        raise HTTPException(status_code=400, detail="Cannot revoke the last root key")
+    return Response(status_code=204)
