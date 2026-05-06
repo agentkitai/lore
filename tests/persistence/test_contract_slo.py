@@ -1,4 +1,4 @@
-"""Contract tests for the SloOps slice of Store — SLO definition CRUD.
+"""Contract tests for the SloOps slice of Store — SLO definition CRUD + alerts + metrics.
 
 These tests run against every Store implementation (Phase 1K: Postgres only).
 """
@@ -11,11 +11,14 @@ from datetime import datetime
 import pytest
 
 from lore.persistence import (
+    NewSloAlert,
     NewSloDefinition,
     SloDefinitionPatch,
     Store,
+    StoredSloAlert,
     StoredSloDefinition,
 )
+from lore.persistence.types import NewRetrievalEvent
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -210,3 +213,247 @@ async def test_delete_returns_true_when_existed(store: Store):
 async def test_delete_returns_false_when_missing(store: Store):
     result = await store.delete_slo_definition("slo_ghost", "org-ghost")
     assert result is False
+
+
+# ── SLO alerts helpers ─────────────────────────────────────────────────────────
+
+
+async def _insert_alert(
+    store,
+    *,
+    org_id: str = "test-org",
+    slo_id: str = "slo_test",
+    metric_value: float = 250.0,
+    threshold: float = 200.0,
+    status: str = "firing",
+    dispatched_to: list | None = None,
+) -> int:
+    """Insert a slo_alerts row via raw SQL and return its id."""
+    dt = dispatched_to or []
+    row = await store._conn.fetchrow(
+        """
+        INSERT INTO slo_alerts
+            (org_id, slo_id, metric_value, threshold, status, dispatched_to)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        RETURNING id
+        """,
+        org_id,
+        slo_id,
+        metric_value,
+        threshold,
+        status,
+        json.dumps(dt),
+    )
+    return int(row["id"])
+
+
+# ── list_slo_alerts ────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_slo_alerts_returns_all_when_no_filter(store: Store):
+    slo_id_a = await _insert_slo(store, org_id="org-al1", name="slo-al-a")
+    slo_id_b = await _insert_slo(store, org_id="org-al1", name="slo-al-b")
+    await _insert_alert(store, org_id="org-al1", slo_id=slo_id_a)
+    await _insert_alert(store, org_id="org-al1", slo_id=slo_id_b)
+
+    results = await store.list_slo_alerts()
+
+    # No filter — must include both alerts (may include rows from other tests,
+    # but our two must be present within the transaction)
+    returned_slo_ids = {r.slo_id for r in results}
+    assert slo_id_a in returned_slo_ids
+    assert slo_id_b in returned_slo_ids
+
+
+@pytest.mark.asyncio
+async def test_list_slo_alerts_filters_by_slo_id(store: Store):
+    slo_id_a = await _insert_slo(store, org_id="org-al2", name="slo-flt-a")
+    slo_id_b = await _insert_slo(store, org_id="org-al2", name="slo-flt-b")
+    await _insert_alert(store, org_id="org-al2", slo_id=slo_id_a)
+    await _insert_alert(store, org_id="org-al2", slo_id=slo_id_b)
+
+    results = await store.list_slo_alerts(slo_id=slo_id_a)
+
+    assert len(results) == 1
+    assert results[0].slo_id == slo_id_a
+    assert isinstance(results[0], StoredSloAlert)
+
+
+@pytest.mark.asyncio
+async def test_list_slo_alerts_respects_limit(store: Store):
+    slo_id = await _insert_slo(store, org_id="org-al3", name="slo-limit")
+    for i in range(5):
+        await _insert_alert(
+            store, org_id="org-al3", slo_id=slo_id, metric_value=float(200 + i)
+        )
+
+    results = await store.list_slo_alerts(slo_id=slo_id, limit=3)
+
+    assert len(results) == 3
+
+
+# ── record_slo_alert ───────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_slo_alert_round_trip(store: Store):
+    slo_id = await _insert_slo(store, org_id="org-ra1", name="slo-ra")
+    channels = [{"type": "email", "address": "ops@example.com"}]
+    alert = NewSloAlert(
+        org_id="org-ra1",
+        slo_id=slo_id,
+        metric_value=300.0,
+        threshold=200.0,
+        status="firing",
+        dispatched_to=channels,
+    )
+
+    stored = await store.record_slo_alert(alert)
+
+    assert isinstance(stored, StoredSloAlert)
+    assert stored.id > 0
+    assert stored.org_id == "org-ra1"
+    assert stored.slo_id == slo_id
+    assert stored.metric_value == 300.0
+    assert stored.threshold == 200.0
+    assert stored.status == "firing"
+    # JSONB roundtrip on dispatched_to
+    assert len(stored.dispatched_to) == 1
+    assert stored.dispatched_to[0]["type"] == "email"
+    assert stored.dispatched_to[0]["address"] == "ops@example.com"
+    assert isinstance(stored.created_at, datetime)
+
+
+# ── compute_metric_value ───────────────────────────────────────────────────────
+
+
+async def _seed_retrieval_events(store, *, org_id: str, latencies: list[float]) -> None:
+    """Seed retrieval_events rows with given query_time_ms values."""
+    for ms in latencies:
+        await store.record_retrieval_event(
+            NewRetrievalEvent(
+                org_id=org_id,
+                query="seed query",
+                results_count=1 if ms > 0 else 0,
+                scores=[0.9] if ms > 0 else [],
+                memory_ids=["m1"] if ms > 0 else [],
+                avg_score=0.9 if ms > 0 else None,
+                max_score=0.9 if ms > 0 else None,
+                min_score_threshold=0.3,
+                query_time_ms=ms,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_compute_metric_value_returns_none_when_no_events(store: Store):
+    result = await store.compute_metric_value(
+        org_id="org-mv-empty",
+        metric="p95_latency",
+        window_minutes=60,
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_compute_metric_value_p95_latency(store: Store):
+    # 20 events: latencies 10..200ms (step 10).  p95 of sorted [10,20,...,200] ≈ 190.
+    latencies = [float(i * 10) for i in range(1, 21)]
+    await _seed_retrieval_events(store, org_id="org-mv-p95", latencies=latencies)
+
+    result = await store.compute_metric_value(
+        org_id="org-mv-p95",
+        metric="p95_latency",
+        window_minutes=60,
+    )
+
+    assert result is not None
+    # PostgreSQL percentile_cont(0.95) on 20 values [10..200] = 191.5 (interpolated)
+    assert 180.0 <= result <= 200.0
+
+
+@pytest.mark.asyncio
+async def test_compute_metric_value_hit_rate(store: Store):
+    # Insert 8 events with results, 2 without → hit_rate = 0.8
+    for _ in range(8):
+        await store.record_retrieval_event(
+            NewRetrievalEvent(
+                org_id="org-mv-hr",
+                query="hit",
+                results_count=3,
+                scores=[0.9, 0.8, 0.7],
+                memory_ids=["m1", "m2", "m3"],
+                avg_score=0.8,
+                max_score=0.9,
+                min_score_threshold=0.3,
+                query_time_ms=50.0,
+            )
+        )
+    for _ in range(2):
+        await store.record_retrieval_event(
+            NewRetrievalEvent(
+                org_id="org-mv-hr",
+                query="miss",
+                results_count=0,
+                scores=[],
+                memory_ids=[],
+                avg_score=None,
+                max_score=None,
+                min_score_threshold=0.3,
+                query_time_ms=20.0,
+            )
+        )
+
+    result = await store.compute_metric_value(
+        org_id="org-mv-hr",
+        metric="hit_rate",
+        window_minutes=60,
+    )
+
+    assert result is not None
+    assert abs(result - 0.8) < 0.05
+
+
+@pytest.mark.asyncio
+async def test_compute_metric_value_unknown_metric_raises_value_error(store: Store):
+    with pytest.raises(ValueError, match="Unknown metric"):
+        await store.compute_metric_value(
+            org_id="org-mv-bad",
+            metric="nonexistent_metric",
+            window_minutes=60,
+        )
+
+
+# ── compute_metric_timeseries ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_compute_metric_timeseries_returns_buckets(store: Store):
+    latencies = [100.0, 150.0, 200.0]
+    await _seed_retrieval_events(store, org_id="org-ts1", latencies=latencies)
+
+    results = await store.compute_metric_timeseries(
+        org_id="org-ts1",
+        metric="p95_latency",
+        window_hours=1,
+        bucket_minutes=60,
+    )
+
+    assert len(results) >= 1
+    first = results[0]
+    assert hasattr(first, "timestamp")
+    assert hasattr(first, "value")
+    assert first.value is not None
+    assert isinstance(first.value, float)
+
+
+@pytest.mark.asyncio
+async def test_compute_metric_timeseries_unknown_metric_raises(store: Store):
+    with pytest.raises(ValueError, match="Unknown metric"):
+        await store.compute_metric_timeseries(
+            org_id="org-ts-bad",
+            metric="bad_metric",
+            window_hours=1,
+            bucket_minutes=15,
+        )

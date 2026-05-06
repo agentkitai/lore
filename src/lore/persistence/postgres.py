@@ -63,6 +63,7 @@ from lore.persistence.types import (
     StoredSnapshotMetadata,
     StoredWorkspace,
     TimelineBucketRow,
+    TimeseriesPoint,
     WorkspacePatch,
 )
 
@@ -403,7 +404,33 @@ def _row_to_slo_definition(row: "asyncpg.Record") -> StoredSloDefinition:
     )
 
 
+def _row_to_slo_alert(row: "asyncpg.Record") -> StoredSloAlert:
+    dt = row["dispatched_to"]
+    if isinstance(dt, str):
+        dt = json.loads(dt) if dt else []
+    return StoredSloAlert(
+        id=int(row["id"]),
+        org_id=row["org_id"],
+        slo_id=row["slo_id"],
+        metric_value=float(row["metric_value"]),
+        threshold=float(row["threshold"]),
+        status=row["status"],
+        dispatched_to=tuple(dt or ()),
+        created_at=row["created_at"],
+    )
+
+
 _VALID_TRUNCS = frozenset({"hour", "day", "week", "month"})
+
+_METRIC_SQL = {
+    "p50_latency": "percentile_cont(0.50) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+    "p95_latency": "percentile_cont(0.95) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+    "p99_latency": "percentile_cont(0.99) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+    "hit_rate": "(COUNT(*) FILTER (WHERE results_count > 0))::float / GREATEST(COUNT(*), 1) AS value",
+    "retrieval_latency_p95": "percentile_cont(0.95) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+    "retrieval_recall": "(COUNT(*) FILTER (WHERE results_count > 0))::float / GREATEST(COUNT(*), 1) AS value",
+    "uptime_pct": "(COUNT(*) FILTER (WHERE query_time_ms IS NOT NULL))::float / GREATEST(COUNT(*), 1) * 100.0 AS value",
+}
 
 
 class PostgresStore:
@@ -2884,16 +2911,106 @@ class PostgresStore:
         slo_id: "Optional[str]" = None,
         limit: int = 50,
     ) -> "Sequence[StoredSloAlert]":
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            if slo_id is not None:
+                rows = await conn.fetch(
+                    """
+                    SELECT a.id, a.org_id, a.slo_id, a.metric_value, a.threshold,
+                           a.status, a.dispatched_to, a.created_at
+                    FROM slo_alerts a
+                    WHERE a.slo_id = $1
+                    ORDER BY a.created_at DESC
+                    LIMIT $2
+                    """,
+                    slo_id,
+                    limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT a.id, a.org_id, a.slo_id, a.metric_value, a.threshold,
+                           a.status, a.dispatched_to, a.created_at
+                    FROM slo_alerts a
+                    ORDER BY a.created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+        return tuple(_row_to_slo_alert(r) for r in rows)
 
     async def record_slo_alert(self, alert: "NewSloAlert") -> "StoredSloAlert":
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO slo_alerts
+                    (org_id, slo_id, metric_value, threshold, status, dispatched_to)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                RETURNING id, org_id, slo_id, metric_value, threshold, status, dispatched_to, created_at
+                """,
+                alert.org_id,
+                alert.slo_id,
+                alert.metric_value,
+                alert.threshold,
+                alert.status,
+                json.dumps(list(alert.dispatched_to)),
+            )
+        return _row_to_slo_alert(row)
 
-    async def compute_metric_value(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
+    async def compute_metric_value(
+        self,
+        *,
+        org_id: str,
+        metric: str,
+        window_minutes: int,
+    ) -> "Optional[float]":
+        if metric not in _METRIC_SQL:
+            raise ValueError(f"Unknown metric: {metric}")
+        metric_sql = _METRIC_SQL[metric]
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {metric_sql} FROM retrieval_events "
+                f"WHERE org_id = $1 AND created_at >= now() - make_interval(mins => $2)",
+                org_id,
+                window_minutes,
+            )
+        if row and row["value"] is not None:
+            return round(float(row["value"]), 4)
+        return None
 
-    async def compute_metric_timeseries(self, *args: Any, **kwargs: Any) -> Any:
-        raise NotImplementedError
+    async def compute_metric_timeseries(
+        self,
+        *,
+        org_id: str,
+        metric: str,
+        window_hours: int,
+        bucket_minutes: int,
+    ) -> "Sequence[TimeseriesPoint]":
+        if metric not in _METRIC_SQL:
+            raise ValueError(f"Unknown metric: {metric}")
+        metric_sql = _METRIC_SQL[metric]
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT
+                        date_trunc('hour', created_at) +
+                        (EXTRACT(minute FROM created_at)::int / $3 * $3) * interval '1 minute'
+                        AS bucket,
+                        {metric_sql}
+                    FROM retrieval_events
+                    WHERE org_id = $1
+                      AND created_at >= now() - make_interval(hours => $2)
+                    GROUP BY bucket
+                    ORDER BY bucket""",
+                org_id,
+                window_hours,
+                bucket_minutes,
+            )
+        return tuple(
+            TimeseriesPoint(
+                timestamp=r["bucket"],
+                value=round(float(r["value"]), 4) if r["value"] is not None else None,
+            )
+            for r in rows
+        )
 
 
 class _BoundConn:
