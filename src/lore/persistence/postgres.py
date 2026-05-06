@@ -634,8 +634,60 @@ class PostgresStore:
         downvotes: int,
         meta: Mapping[str, Any],
     ) -> bool:
-        """Not yet implemented — see T5."""
-        raise NotImplementedError("upsert_memory_with_embedding implemented in T4/T5")
+        """INSERT … ON CONFLICT (id) DO UPDATE … RETURNING (xmax = 0) AS inserted.
+
+        Returns True if a new row was inserted, False if an existing row was
+        updated or if no change occurred (e.g. org_id mismatch silently drops
+        the update — caller treats None as False).
+        """
+        encoded_tags = json.dumps(list(tags))
+        encoded_meta = json.dumps(dict(meta))
+        encoded_embedding = json.dumps(list(embedding)) if embedding is not None else None
+        safe_context = context if context is not None else ""
+
+        query = """
+            INSERT INTO memories
+                (id, org_id, content, context, tags, confidence, source, project,
+                 embedding, created_at, updated_at, expires_at,
+                 upvotes, downvotes, meta)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, now(), now(),
+                    $10, $11, $12, $13::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+                content = EXCLUDED.content,
+                context = EXCLUDED.context,
+                tags = EXCLUDED.tags,
+                confidence = EXCLUDED.confidence,
+                source = EXCLUDED.source,
+                project = EXCLUDED.project,
+                embedding = EXCLUDED.embedding,
+                updated_at = EXCLUDED.updated_at,
+                expires_at = EXCLUDED.expires_at,
+                upvotes = EXCLUDED.upvotes,
+                downvotes = EXCLUDED.downvotes,
+                meta = EXCLUDED.meta
+            WHERE memories.org_id = EXCLUDED.org_id
+            RETURNING (xmax = 0) AS inserted
+        """
+
+        async with self._acquire() as conn:
+            result = await conn.fetchval(
+                query,
+                memory_id,
+                org_id,
+                content,
+                safe_context,
+                encoded_tags,
+                confidence,
+                source,
+                project,
+                encoded_embedding,
+                expires_at,
+                upvotes,
+                downvotes,
+                encoded_meta,
+            )
+
+        return result is True
 
     async def recall_by_embedding(
         self, params: "RecallParams"

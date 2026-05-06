@@ -319,3 +319,212 @@ async def test_list_with_embeddings_project_filter(store: Store) -> None:
 
     assert len(rows) == 1
     assert rows[0].id == m1.id
+
+
+# ---------------------------------------------------------------------------
+# T5-1: upsert fresh id → True + row visible
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_inserts_new_id_returns_true(store: Store) -> None:
+    """Upserting a brand-new memory_id returns True and row is retrievable."""
+    result = await store.upsert_memory_with_embedding(
+        memory_id="upsert-new-001",
+        org_id="solo",
+        content="fresh content",
+        context=None,
+        tags=["t1"],
+        confidence=0.9,
+        source="test",
+        project=None,
+        embedding=_vec(1),
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+
+    assert result is True
+
+    row = await store.get_memory("solo", "upsert-new-001")
+    assert row is not None
+    assert row.content == "fresh content"
+
+
+# ---------------------------------------------------------------------------
+# T5-2: upsert same id → False + content updated
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_updates_existing_returns_false(store: Store) -> None:
+    """Second upsert with same memory_id returns False and content is updated."""
+    kwargs = dict(
+        memory_id="upsert-dup-001",
+        org_id="solo",
+        context=None,
+        tags=[],
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=_vec(2),
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+
+    first = await store.upsert_memory_with_embedding(content="original", **kwargs)  # type: ignore[arg-type]
+    second = await store.upsert_memory_with_embedding(content="updated", **kwargs)  # type: ignore[arg-type]
+
+    assert first is True
+    assert second is False
+
+    row = await store.get_memory("solo", "upsert-dup-001")
+    assert row is not None
+    assert row.content == "updated"
+
+
+# ---------------------------------------------------------------------------
+# T5-3: org mismatch → silent no-op, original row unchanged
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_with_org_mismatch_is_silent_noop(store: Store) -> None:
+    """Upserting with wrong org_id is a silent no-op; original row untouched."""
+    memory_id = "upsert-mismatch-001"
+
+    await store.upsert_memory_with_embedding(
+        memory_id=memory_id,
+        org_id="solo",
+        content="original solo content",
+        context=None,
+        tags=[],
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=_vec(3),
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+
+    # Attempt upsert with different org — should be silent no-op
+    result = await store.upsert_memory_with_embedding(
+        memory_id=memory_id,
+        org_id="org-b",
+        content="malicious overwrite",
+        context=None,
+        tags=[],
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=_vec(3),
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+
+    assert result is False  # treated as "no new insert"
+
+    # Original row must be unchanged
+    row = await store.get_memory("solo", memory_id)
+    assert row is not None
+    assert row.content == "original solo content"
+
+
+# ---------------------------------------------------------------------------
+# T5-4: null embedding → row inserts with NULL embedding column
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_with_null_embedding(store: Store) -> None:
+    """Passing embedding=None results in a NULL embedding column."""
+    result = await store.upsert_memory_with_embedding(
+        memory_id="upsert-nullemb-001",
+        org_id="solo",
+        content="no embedding here",
+        context=None,
+        tags=[],
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=None,
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+
+    assert result is True
+
+    rows = await store.list_memories_with_embeddings(MemoryFilter(org_id="solo"))
+    match = next((r for r in rows if r.id == "upsert-nullemb-001"), None)
+    assert match is not None
+    assert match.embedding is None
+
+
+# ---------------------------------------------------------------------------
+# T5-5: exact id preservation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_preserves_id_exactly(store: Store) -> None:
+    """The inserted row has exactly the memory_id that was passed in."""
+    custom_id = "custom_id_xyz"
+
+    await store.upsert_memory_with_embedding(
+        memory_id=custom_id,
+        org_id="solo",
+        content="id test",
+        context=None,
+        tags=[],
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=_vec(5),
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+
+    row = await store.get_memory("solo", custom_id)
+    assert row is not None
+    assert row.id == custom_id
+
+
+# ---------------------------------------------------------------------------
+# T5-6: JSONB round-trip for tags and meta
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_upsert_jsonb_roundtrip_for_tags_meta(store: Store) -> None:
+    """tags and meta survive a JSONB round-trip through Postgres."""
+    await store.upsert_memory_with_embedding(
+        memory_id="upsert-jsonb-001",
+        org_id="solo",
+        content="jsonb test",
+        context=None,
+        tags=["a", "b"],
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=_vec(6),
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={"x": 1},
+    )
+
+    row = await store.get_memory("solo", "upsert-jsonb-001")
+    assert row is not None
+    assert set(row.tags) == {"a", "b"}
+    assert row.meta == {"x": 1}
