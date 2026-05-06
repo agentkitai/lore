@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 try:
@@ -13,13 +12,18 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
-try:
-    from ulid import ULID
-except ImportError:
-    raise ImportError("python-ulid is required. Install with: pip install python-ulid")
-
+from lore.persistence import (
+    AgentSharingConfigData,
+    AuditEventData,
+    DenyListRuleData,
+    SharingConfigData,
+    SharingConfigPatch,
+    SharingStatsData,
+    Store,
+)
 from lore.server.auth import AuthContext, get_auth_context
-from lore.server.db import get_pool
+from lore.server.db import get_store
+from lore.services import sharing as sharing_service
 
 logger = logging.getLogger(__name__)
 
@@ -101,29 +105,55 @@ class PurgeRequest(BaseModel):
     confirmation: str
 
 
-# ── Helpers ────────────────────────────────────────────────────────
+# ── Translation helpers ────────────────────────────────────────────
 
 
-async def _record_audit(
-    org_id: str,
-    event_type: str,
-    initiated_by: str,
-    lesson_id: Optional[str] = None,
-    query_text: Optional[str] = None,
-) -> None:
-    """Insert an audit event."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO sharing_audit (id, org_id, event_type, lesson_id, query_text, initiated_by)
-               VALUES ($1, $2, $3, $4, $5, $6)""",
-            str(ULID()),
-            org_id,
-            event_type,
-            lesson_id,
-            query_text,
-            initiated_by,
-        )
+def _to_config(d: SharingConfigData) -> SharingConfig:
+    return SharingConfig(
+        enabled=d.enabled,
+        human_review_enabled=d.human_review_enabled,
+        rate_limit_per_hour=d.rate_limit_per_hour,
+        volume_alert_threshold=d.volume_alert_threshold,
+        updated_at=d.updated_at,
+    )
+
+
+def _to_agent_config(d: AgentSharingConfigData) -> AgentSharingConfig:
+    return AgentSharingConfig(
+        agent_id=d.agent_id,
+        enabled=d.enabled,
+        categories=list(d.categories),
+        updated_at=d.updated_at,
+    )
+
+
+def _to_deny_rule(d: DenyListRuleData) -> DenyListRule:
+    return DenyListRule(
+        id=d.id,
+        pattern=d.pattern,
+        is_regex=d.is_regex,
+        reason=d.reason,
+        created_at=d.created_at,
+    )
+
+
+def _to_audit_event(d: AuditEventData) -> AuditEvent:
+    return AuditEvent(
+        id=d.id,
+        event_type=d.event_type,
+        lesson_id=d.lesson_id,
+        query_text=d.query_text,
+        initiated_by=d.initiated_by,
+        created_at=d.created_at,
+    )
+
+
+def _to_stats(d: SharingStatsData) -> SharingStats:
+    return SharingStats(
+        countShared=d.count_shared,
+        lastShared=d.last_shared,
+        auditSummary=dict(d.audit_summary),
+    )
 
 
 # ── Config ─────────────────────────────────────────────────────────
@@ -132,54 +162,26 @@ async def _record_audit(
 @router.get("/config", response_model=SharingConfig)
 async def get_sharing_config(
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> SharingConfig:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT enabled, human_review_enabled, rate_limit_per_hour, volume_alert_threshold, updated_at FROM sharing_config WHERE org_id = $1",
-            auth.org_id,
-        )
-        if row is None:
-            # Create default
-            cfg_id = str(ULID())
-            await conn.execute(
-                "INSERT INTO sharing_config (id, org_id) VALUES ($1, $2) ON CONFLICT (org_id) DO NOTHING",
-                cfg_id,
-                auth.org_id,
-            )
-            return SharingConfig()
-    return SharingConfig(**dict(row))
+    cfg = await sharing_service.get_or_init_config(store, org_id=auth.org_id)
+    return _to_config(cfg)
 
 
 @router.put("/config", response_model=SharingConfig)
 async def update_sharing_config(
     body: SharingConfigUpdate,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> SharingConfig:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        # Ensure row exists
-        existing = await conn.fetchval("SELECT id FROM sharing_config WHERE org_id = $1", auth.org_id)
-        if existing is None:
-            await conn.execute(
-                "INSERT INTO sharing_config (id, org_id) VALUES ($1, $2)",
-                str(ULID()),
-                auth.org_id,
-            )
-
-        set_parts = ["updated_at = now()"]
-        params: list = [auth.org_id]
-        for field in ("enabled", "human_review_enabled", "rate_limit_per_hour", "volume_alert_threshold"):
-            val = getattr(body, field)
-            if val is not None:
-                params.append(val)
-                set_parts.append(f"{field} = ${len(params)}")
-
-        row = await conn.fetchrow(
-            f"UPDATE sharing_config SET {', '.join(set_parts)} WHERE org_id = $1 RETURNING enabled, human_review_enabled, rate_limit_per_hour, volume_alert_threshold, updated_at",
-            *params,
-        )
-    return SharingConfig(**dict(row))
+    patch = SharingConfigPatch(
+        enabled=body.enabled,
+        human_review_enabled=body.human_review_enabled,
+        rate_limit_per_hour=body.rate_limit_per_hour,
+        volume_alert_threshold=body.volume_alert_threshold,
+    )
+    cfg = await sharing_service.update_config(store, org_id=auth.org_id, patch=patch)
+    return _to_config(cfg)
 
 
 # ── Agent Configs ──────────────────────────────────────────────────
@@ -188,21 +190,10 @@ async def update_sharing_config(
 @router.get("/agents", response_model=List[AgentSharingConfig])
 async def list_agent_configs(
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> List[AgentSharingConfig]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT agent_id, enabled, categories, updated_at FROM agent_sharing_config WHERE org_id = $1 ORDER BY agent_id",
-            auth.org_id,
-        )
-    results = []
-    for r in rows:
-        rd = dict(r)
-        cats = rd.get("categories") or []
-        if isinstance(cats, str):
-            cats = json.loads(cats)
-        results.append(AgentSharingConfig(agent_id=rd["agent_id"], enabled=rd["enabled"], categories=cats, updated_at=rd["updated_at"]))
-    return results
+    rows = await sharing_service.list_agent_configs(store, org_id=auth.org_id)
+    return [_to_agent_config(r) for r in rows]
 
 
 @router.put("/agents/{agent_id}", response_model=AgentSharingConfig)
@@ -210,33 +201,16 @@ async def upsert_agent_config(
     agent_id: str,
     body: AgentSharingConfigUpdate,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> AgentSharingConfig:
-    pool = await get_pool()
-    now = datetime.now(timezone.utc)
-    enabled = body.enabled if body.enabled is not None else False
-    categories = json.dumps(body.categories) if body.categories is not None else "[]"
-
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """INSERT INTO agent_sharing_config (id, org_id, agent_id, enabled, categories, updated_at)
-               VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-               ON CONFLICT (org_id, agent_id) DO UPDATE SET
-                   enabled = COALESCE($4, agent_sharing_config.enabled),
-                   categories = COALESCE($5::jsonb, agent_sharing_config.categories),
-                   updated_at = $6
-               RETURNING agent_id, enabled, categories, updated_at""",
-            str(ULID()),
-            auth.org_id,
-            agent_id,
-            enabled,
-            categories,
-            now,
-        )
-    rd = dict(row)
-    cats = rd.get("categories") or []
-    if isinstance(cats, str):
-        cats = json.loads(cats)
-    return AgentSharingConfig(agent_id=rd["agent_id"], enabled=rd["enabled"], categories=cats, updated_at=rd["updated_at"])
+    cfg = await sharing_service.upsert_agent_config(
+        store,
+        org_id=auth.org_id,
+        agent_id=agent_id,
+        enabled=body.enabled,
+        categories=body.categories,
+    )
+    return _to_agent_config(cfg)
 
 
 # ── Deny List ──────────────────────────────────────────────────────
@@ -245,50 +219,39 @@ async def upsert_agent_config(
 @router.get("/deny-list", response_model=List[DenyListRule])
 async def list_deny_rules(
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> List[DenyListRule]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT id, pattern, is_regex, reason, created_at FROM deny_list_rules WHERE org_id = $1 ORDER BY created_at",
-            auth.org_id,
-        )
-    return [DenyListRule(**dict(r)) for r in rows]
+    rows = await sharing_service.list_deny_rules(store, org_id=auth.org_id)
+    return [_to_deny_rule(r) for r in rows]
 
 
 @router.post("/deny-list", response_model=DenyListRule, status_code=201)
 async def create_deny_rule(
     body: DenyListRuleCreate,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> DenyListRule:
-    rule_id = str(ULID())
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """INSERT INTO deny_list_rules (id, org_id, pattern, is_regex, reason)
-               VALUES ($1, $2, $3, $4, $5)
-               RETURNING id, pattern, is_regex, reason, created_at""",
-            rule_id,
-            auth.org_id,
-            body.pattern,
-            body.is_regex,
-            body.reason,
-        )
-    return DenyListRule(**dict(row))
+    rule = await sharing_service.create_deny_rule(
+        store,
+        org_id=auth.org_id,
+        pattern=body.pattern,
+        is_regex=body.is_regex,
+        reason=body.reason,
+    )
+    return _to_deny_rule(rule)
 
 
 @router.delete("/deny-list/{rule_id}", status_code=204)
 async def delete_deny_rule(
     rule_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            "DELETE FROM deny_list_rules WHERE id = $1 AND org_id = $2",
-            rule_id,
-            auth.org_id,
-        )
-    if result == "DELETE 0":
+    """Remove a deny rule scoped to the caller's org."""
+    deleted = await sharing_service.delete_deny_rule(
+        store, rule_id=rule_id, org_id=auth.org_id,
+    )
+    if not deleted:
         raise HTTPException(status_code=404, detail="Rule not found")
 
 
@@ -302,30 +265,17 @@ async def list_audit_events(
     to_date: Optional[datetime] = Query(None, alias="to"),
     limit: int = Query(50, ge=1, le=500),
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> List[AuditEvent]:
-    where = ["org_id = $1"]
-    params: list = [auth.org_id]
-
-    if event_type:
-        params.append(event_type)
-        where.append(f"event_type = ${len(params)}")
-    if from_date:
-        params.append(from_date)
-        where.append(f"created_at >= ${len(params)}")
-    if to_date:
-        params.append(to_date)
-        where.append(f"created_at <= ${len(params)}")
-
-    params.append(limit)
-    limit_idx = len(params)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"SELECT id, event_type, lesson_id, query_text, initiated_by, created_at FROM sharing_audit WHERE {' AND '.join(where)} ORDER BY created_at DESC LIMIT ${limit_idx}",
-            *params,
-        )
-    return [AuditEvent(**dict(r)) for r in rows]
+    rows = await sharing_service.list_audit_events(
+        store,
+        org_id=auth.org_id,
+        event_type=event_type,
+        from_date=from_date,
+        to_date=to_date,
+        limit=limit,
+    )
+    return [_to_audit_event(r) for r in rows]
 
 
 # ── Stats ──────────────────────────────────────────────────────────
@@ -334,17 +284,10 @@ async def list_audit_events(
 @router.get("/stats", response_model=SharingStats)
 async def get_stats(
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> SharingStats:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        count = await conn.fetchval("SELECT COUNT(*) FROM lessons WHERE org_id = $1", auth.org_id)
-        last = await conn.fetchval("SELECT MAX(created_at) FROM lessons WHERE org_id = $1", auth.org_id)
-        summary_rows = await conn.fetch(
-            "SELECT event_type, COUNT(*)::int as cnt FROM sharing_audit WHERE org_id = $1 GROUP BY event_type",
-            auth.org_id,
-        )
-    summary = {r["event_type"]: r["cnt"] for r in summary_rows}
-    return SharingStats(countShared=count or 0, lastShared=last, auditSummary=summary)
+    stats = await sharing_service.get_stats(store, org_id=auth.org_id)
+    return _to_stats(stats)
 
 
 # ── Purge ──────────────────────────────────────────────────────────
@@ -354,21 +297,17 @@ async def get_stats(
 async def purge_sharing(
     body: PurgeRequest,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> dict:
-    if body.confirmation != "PURGE":
-        raise HTTPException(status_code=400, detail="Confirmation must be 'PURGE'")
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            deleted_lessons = await conn.fetchval("SELECT COUNT(*) FROM lessons WHERE org_id = $1", auth.org_id)
-            await conn.execute("DELETE FROM lessons WHERE org_id = $1", auth.org_id)
-            await conn.execute("DELETE FROM sharing_audit WHERE org_id = $1", auth.org_id)
-            await conn.execute("DELETE FROM deny_list_rules WHERE org_id = $1", auth.org_id)
-            await conn.execute("DELETE FROM agent_sharing_config WHERE org_id = $1", auth.org_id)
-            await conn.execute("DELETE FROM sharing_config WHERE org_id = $1", auth.org_id)
-
-    await _record_audit(auth.org_id, "purge", auth.key_id)
+    try:
+        deleted_lessons = await sharing_service.purge(
+            store,
+            org_id=auth.org_id,
+            confirmation=body.confirmation,
+            initiated_by=auth.key_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return {"deleted_lessons": deleted_lessons, "status": "purged"}
 
 
@@ -382,25 +321,18 @@ async def rate_lesson(
     lesson_id: str,
     body: RateRequest,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> RateResponse:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            row = await conn.fetchrow(
-                "UPDATE lessons SET reputation_score = reputation_score + $1, updated_at = now() WHERE id = $2 AND org_id = $3 RETURNING reputation_score",
-                body.delta,
-                lesson_id,
-                auth.org_id,
-            )
-            if row is None:
-                raise HTTPException(status_code=404, detail="Lesson not found")
-            await conn.execute(
-                """INSERT INTO sharing_audit (id, org_id, event_type, lesson_id, initiated_by)
-                   VALUES ($1, $2, $3, $4, $5)""",
-                str(ULID()),
-                auth.org_id,
-                "rate",
-                lesson_id,
-                auth.key_id,
-            )
-    return RateResponse(reputation_score=row["reputation_score"])
+    try:
+        score = await sharing_service.rate_lesson(
+            store,
+            lesson_id=lesson_id,
+            org_id=auth.org_id,
+            delta=body.delta,
+            initiated_by=auth.key_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if score is None:
+        raise HTTPException(status_code=404, detail="Lesson not found")
+    return RateResponse(reputation_score=score)
