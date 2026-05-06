@@ -9,69 +9,69 @@ import pytest
 
 class TestThresholdEvaluation:
     def test_lt_passing(self):
-        from lore.server.routes.slo import _check_threshold
+        from lore.services.slo import _check_threshold
         assert _check_threshold(45.0, "lt", 50.0) is True
 
     def test_lt_failing(self):
-        from lore.server.routes.slo import _check_threshold
+        from lore.services.slo import _check_threshold
         assert _check_threshold(55.0, "lt", 50.0) is False
 
     def test_gt_passing(self):
-        from lore.server.routes.slo import _check_threshold
+        from lore.services.slo import _check_threshold
         assert _check_threshold(0.95, "gt", 0.90) is True
 
     def test_gt_failing(self):
-        from lore.server.routes.slo import _check_threshold
+        from lore.services.slo import _check_threshold
         assert _check_threshold(0.85, "gt", 0.90) is False
 
     def test_none_value_passes(self):
-        from lore.server.routes.slo import _check_threshold
+        from lore.services.slo import _check_threshold
         assert _check_threshold(None, "lt", 50.0) is True
 
     def test_equal_value_lt(self):
-        from lore.server.routes.slo import _check_threshold
+        from lore.services.slo import _check_threshold
         # Equal is NOT less than, so it should fail
         assert _check_threshold(50.0, "lt", 50.0) is False
 
     def test_equal_value_gt(self):
-        from lore.server.routes.slo import _check_threshold
+        from lore.services.slo import _check_threshold
         # Equal is NOT greater than, so it should fail
         assert _check_threshold(50.0, "gt", 50.0) is False
 
 
 class TestMetricSql:
     def test_p50_latency(self):
-        from lore.server.routes.slo import _metric_sql
-        sql = _metric_sql("p50_latency")
+        from lore.persistence.postgres import _METRIC_SQL
+        sql = _METRIC_SQL["p50_latency"]
         assert "percentile_cont(0.50)" in sql
         assert "AS value" in sql
 
     def test_p99_latency(self):
-        from lore.server.routes.slo import _metric_sql
-        sql = _metric_sql("p99_latency")
+        from lore.persistence.postgres import _METRIC_SQL
+        sql = _METRIC_SQL["p99_latency"]
         assert "percentile_cont(0.99)" in sql
 
     def test_hit_rate(self):
-        from lore.server.routes.slo import _metric_sql
-        sql = _metric_sql("hit_rate")
+        from lore.persistence.postgres import _METRIC_SQL
+        sql = _METRIC_SQL["hit_rate"]
         assert "results_count > 0" in sql
 
     def test_invalid_metric_raises(self):
-        from lore.server.routes.slo import _metric_sql
+        from lore.persistence.postgres import _METRIC_SQL
         with pytest.raises(KeyError):
-            _metric_sql("invalid_metric")
+            _METRIC_SQL["invalid_metric"]
 
 
 class TestValidMetrics:
     def test_valid_metrics(self):
-        from lore.server.routes.slo import VALID_METRICS
+        from lore.services.slo import VALID_METRICS
         assert "p50_latency" in VALID_METRICS
         assert "p95_latency" in VALID_METRICS
         assert "p99_latency" in VALID_METRICS
         assert "hit_rate" in VALID_METRICS
 
     def test_valid_operators(self):
-        from lore.server.routes.slo import VALID_OPERATORS
+        from lore.services.slo import VALID_OPERATORS
         assert "lt" in VALID_OPERATORS
         assert "gt" in VALID_OPERATORS
 
