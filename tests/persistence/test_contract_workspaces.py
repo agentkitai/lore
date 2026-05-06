@@ -5,11 +5,13 @@ These tests run against every Store implementation (Phase 1D: Postgres only).
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from lore.persistence import Store
 from lore.persistence.exceptions import IntegrityError
-from lore.persistence.types import NewWorkspace, StoredWorkspace, WorkspacePatch
+from lore.persistence.types import NewMember, NewWorkspace, StoredMember, StoredWorkspace, WorkspacePatch
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -262,3 +264,101 @@ async def test_archive_workspace_org_isolation(store: Store):
     fetched = await store.get_workspace(ws_id, "org-arch-iso")
     assert fetched is not None
     assert fetched.archived_at is None
+
+
+# ── workspace member tests ─────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_add_member_round_trip(store: Store):
+    ws_id = await _insert_workspace(store, org_id="org-mem-rt", name="Member RT WS", slug="mem-rt-ws")
+    member = NewMember(workspace_id=ws_id, user_id="user_001", role="writer")
+    result = await store.add_workspace_member(member)
+    assert isinstance(result, StoredMember)
+    assert result.id.startswith("wsm_")
+    assert result.workspace_id == ws_id
+    assert result.user_id == "user_001"
+    assert result.role == "writer"
+    assert result.invited_at is not None
+    assert result.accepted_at is None
+
+
+@pytest.mark.asyncio
+async def test_add_member_with_invalid_workspace_id_raises_integrity(store: Store):
+    member = NewMember(workspace_id="ws_nonexistent_999", user_id="user_x", role="writer")
+    with pytest.raises(IntegrityError, match="ws_nonexistent_999"):
+        await store.add_workspace_member(member)
+
+
+@pytest.mark.asyncio
+async def test_list_members_returns_only_targeted_workspace(store: Store):
+    ws_a = await _insert_workspace(store, org_id="org-mem-list", name="WS A", slug="mem-list-a")
+    ws_b = await _insert_workspace(store, org_id="org-mem-list", name="WS B", slug="mem-list-b")
+    await store.add_workspace_member(NewMember(workspace_id=ws_a, user_id="user_a1", role="writer"))
+    await store.add_workspace_member(NewMember(workspace_id=ws_a, user_id="user_a2", role="reader"))
+    await store.add_workspace_member(NewMember(workspace_id=ws_b, user_id="user_b1", role="admin"))
+
+    result = await store.list_workspace_members(ws_a)
+    user_ids = [m.user_id for m in result]
+    assert "user_a1" in user_ids
+    assert "user_a2" in user_ids
+    assert "user_b1" not in user_ids
+    assert all(m.workspace_id == ws_a for m in result)
+
+
+@pytest.mark.asyncio
+async def test_list_members_ordered_by_invited_at(store: Store):
+    ws_id = await _insert_workspace(store, org_id="org-mem-order", name="Order WS", slug="mem-order-ws")
+    # Insert members with slight delay to ensure ordering
+    m1 = await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_first", role="writer"))
+    await asyncio.sleep(0.01)
+    m2 = await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_second", role="reader"))
+    await asyncio.sleep(0.01)
+    m3 = await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_third", role="admin"))
+
+    result = await store.list_workspace_members(ws_id)
+    assert len(result) == 3
+    # Should be ordered by invited_at ascending
+    assert result[0].user_id == "user_first"
+    assert result[1].user_id == "user_second"
+    assert result[2].user_id == "user_third"
+
+
+@pytest.mark.asyncio
+async def test_update_member_role_changes_role(store: Store):
+    ws_id = await _insert_workspace(store, org_id="org-mem-upd", name="Update Role WS", slug="mem-upd-ws")
+    await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_upd", role="writer"))
+
+    result = await store.update_workspace_member_role(ws_id, "user_upd", "admin")
+    assert result is not None
+    assert isinstance(result, StoredMember)
+    assert result.workspace_id == ws_id
+    assert result.user_id == "user_upd"
+    assert result.role == "admin"
+
+
+@pytest.mark.asyncio
+async def test_update_member_role_returns_none_when_missing(store: Store):
+    ws_id = await _insert_workspace(store, org_id="org-mem-upd-m", name="Missing Role WS", slug="mem-upd-missing-ws")
+    result = await store.update_workspace_member_role(ws_id, "nonexistent_user", "admin")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_remove_member_returns_true_when_existed(store: Store):
+    ws_id = await _insert_workspace(store, org_id="org-mem-del", name="Delete Member WS", slug="mem-del-ws")
+    await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_to_del", role="writer"))
+
+    result = await store.remove_workspace_member(ws_id, "user_to_del")
+    assert result is True
+
+    # Verify gone
+    remaining = await store.list_workspace_members(ws_id)
+    assert all(m.user_id != "user_to_del" for m in remaining)
+
+
+@pytest.mark.asyncio
+async def test_remove_member_returns_false_when_missing(store: Store):
+    ws_id = await _insert_workspace(store, org_id="org-mem-del-m", name="Delete Missing WS", slug="mem-del-missing-ws")
+    result = await store.remove_workspace_member(ws_id, "nonexistent_user")
+    assert result is False

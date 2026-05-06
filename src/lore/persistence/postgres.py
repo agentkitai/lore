@@ -156,6 +156,17 @@ def _row_to_profile(row: "asyncpg.Record") -> StoredProfile:
     )
 
 
+def _row_to_member(row: "asyncpg.Record") -> StoredMember:
+    return StoredMember(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        user_id=row["user_id"],
+        role=row["role"],
+        invited_at=row["invited_at"],
+        accepted_at=row["accepted_at"],
+    )
+
+
 def _row_to_workspace(row: "asyncpg.Record") -> StoredWorkspace:
     settings = row["settings"]
     if isinstance(settings, str):
@@ -1443,22 +1454,68 @@ class PostgresStore:
         return result.endswith(" 1")
 
     async def add_workspace_member(self, member: NewMember) -> StoredMember:
-        raise NotImplementedError("add_workspace_member implemented in T6")
+        member_id = f"wsm_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO workspace_members (id, workspace_id, user_id, role)
+                    VALUES ($1, $2, $3, $4)
+                    RETURNING id, workspace_id, user_id, role, invited_at, accepted_at
+                    """,
+                    member_id,
+                    member.workspace_id,
+                    member.user_id,
+                    member.role,
+                )
+            except asyncpg.ForeignKeyViolationError as e:
+                raise IntegrityError(
+                    f"workspace_id {member.workspace_id!r} does not exist"
+                ) from e
+        return _row_to_member(row)
 
     async def list_workspace_members(
         self, workspace_id: str
     ) -> Sequence[StoredMember]:
-        raise NotImplementedError("list_workspace_members implemented in T6")
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, workspace_id, user_id, role, invited_at, accepted_at
+                FROM workspace_members
+                WHERE workspace_id = $1
+                ORDER BY invited_at
+                """,
+                workspace_id,
+            )
+        return tuple(_row_to_member(r) for r in rows)
 
     async def update_workspace_member_role(
         self, workspace_id: str, user_id: str, role: str
     ) -> Optional[StoredMember]:
-        raise NotImplementedError("update_workspace_member_role implemented in T6")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE workspace_members
+                SET role = $1
+                WHERE workspace_id = $2 AND user_id = $3
+                RETURNING id, workspace_id, user_id, role, invited_at, accepted_at
+                """,
+                role,
+                workspace_id,
+                user_id,
+            )
+        return _row_to_member(row) if row else None
 
     async def remove_workspace_member(
         self, workspace_id: str, user_id: str
     ) -> bool:
-        raise NotImplementedError("remove_workspace_member implemented in T6")
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2",
+                workspace_id,
+                user_id,
+            )
+        return result.endswith(" 1")
 
     # ── AuthOps ───────────────────────────────────────────────────────
 
