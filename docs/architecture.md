@@ -304,7 +304,7 @@ Consolidation can run in dry-run mode (preview only) or execute mode (applies ch
 ## Persistence layer
 
 Lore's server-side persistence is defined by the `Store` protocol in
-`lore.persistence.protocol`. The protocol defines seven slices:
+`lore.persistence.protocol`. The protocol defines eight slices:
 
 - **MemoryOps** (Phase 1A): insert, get, update, delete, list, recall, expire, bump, vote operations on memories.
 - **GraphOps** (Phase 1B): 24 typed methods spanning entity/mention/relationship management, graph traversal, stats, and a UI-facing text search.
@@ -313,13 +313,14 @@ Lore's server-side persistence is defined by the `Store` protocol in
 - **AuthOps** (Phase 1D): 5 typed methods for API key creation, listing, revocation, and root-key counting.
 - **AnalyticsOps** (Phase 1E): 3 typed methods for retrieval-event recording, single-memory access tracking, and recent session-snapshot retrieval. Plus two extensions to MemoryOps: `bump_access_counts` (multi-row access bump) and `enrich_memory_meta` (jsonb_set for LLM enrichment data).
 - **RecommendationOps** (Phase 1F): 4 typed methods for recommendation config get/upsert (NULL-safe via `IS NOT DISTINCT FROM`), feedback insert, and the candidate-memory query (top-N memories with embeddings, ordered by importance_score).
+- **ConversationOps** (Phase 1G): 5 typed methods for the async conversation-extraction job lifecycle (create, get, mark processing, complete, fail). Plus one extension to MemoryOps: `import_extracted_memory` (idempotent INSERT … ON CONFLICT (id) DO NOTHING used by the conversation extraction flow).
 
 Implementations:
 
-- `PostgresStore` — asyncpg + pgvector. Production default. Implements MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps, and RecommendationOps.
+- `PostgresStore` — asyncpg + pgvector. Production default. Implements MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps, RecommendationOps, and ConversationOps.
 - (Coming in Phase 3) `SqliteStore` — aiosqlite + sqlite-vec. For solo / embedded use.
 
-The protocol is grown slice-by-slice. Phase 1A shipped the `MemoryOps` slice; Phase 1B completed the `GraphOps` slice; Phase 1C added `PolicyOps`; Phase 1D added `WorkspaceOps` + `AuthOps`; Phase 1E added `AnalyticsOps`; Phase 1F added `RecommendationOps`; Phase 1G will migrate the remaining `routes/conversations.py` slice. Until a slice is migrated, those routes still call `asyncpg` directly via `get_pool()`.
+The protocol is grown slice-by-slice. Phase 1A shipped the `MemoryOps` slice; Phase 1B completed the `GraphOps` slice; Phase 1C added `PolicyOps`; Phase 1D added `WorkspaceOps` + `AuthOps`; Phase 1E added `AnalyticsOps`; Phase 1F added `RecommendationOps`; Phase 1G added `ConversationOps`. **The `routes/` migration is now complete** — every handler in every route file calls services exclusively. The only remaining inline-SQL site is the `lore/server/auth.py` middleware (key lookup + last_used_at update), reserved for a future "auth middleware" slice.
 
 Routes call services; services call the Store. Contract test suite at `tests/persistence/test_contract_*.py` validates every Store implementation against the shared protocol.
 
@@ -328,4 +329,4 @@ Routes call services; services call the Store. Contract test suite at `tests/per
 2. The Service layer is the only place business logic exists once. The HTTP front-end and the embedded API both call into services.
 3. Backend chosen by `database_url` URL scheme. `LORE_BACKEND` env var is just a shortcut.
 
-These invariants are guarded by `scripts/check_routes_no_sql.py` for the migrated slices; coverage grows as more routes migrate. Currently covers 12 migrated route files: 2 in MemoryOps (`memories.py`, `retrieve.py`), 5 in GraphOps (the four `graph/*.py` files plus `review.py`), 1 in PolicyOps (`profiles.py`), 2 in the identity slice (`workspaces.py`, `keys.py`), 1 in the analytics+snapshots slice (`snapshots.py`), and 1 in the recommendations slice (`recommendations.py`).
+These invariants are guarded by `scripts/check_routes_no_sql.py` for all 13 migrated route files: 2 in MemoryOps (`memories.py`, `retrieve.py`), 5 in GraphOps (the four `graph/*.py` files plus `review.py`), 1 in PolicyOps (`profiles.py`), 2 in the identity slice (`workspaces.py`, `keys.py`), 1 in the analytics+snapshots slice (`snapshots.py`), 1 in the recommendations slice (`recommendations.py`), and 1 in the conversations slice (`conversations.py`). With Phase 1G the route migration is complete; the guard rejects any reintroduction of inline SQL or `get_pool()` calls in any route file.
