@@ -38,8 +38,10 @@ from lore.persistence.types import (
     ProfilePatch,
     RecallParams,
     RecommendationCandidate,
+    RetrievalAnalyticsResult,
     ScoredMemory,
     StoredApiKey,
+    StoredAuditEntry,
     StoredConversationJob,
     StoredEntity,
     StoredMember,
@@ -304,6 +306,25 @@ def _row_to_exported_memory(row: "asyncpg.Record") -> ExportedMemory:
         upvotes=row["upvotes"] or 0,
         downvotes=row["downvotes"] or 0,
         meta=dict(meta or {}),
+    )
+
+
+def _row_to_audit_entry(row: "asyncpg.Record") -> StoredAuditEntry:
+    metadata = row["metadata"]
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata) if metadata else {}
+    return StoredAuditEntry(
+        id=row["id"],
+        org_id=row["org_id"],
+        workspace_id=row["workspace_id"],
+        actor_id=row["actor_id"],
+        actor_type=row["actor_type"],
+        action=row["action"],
+        resource_type=row["resource_type"],
+        resource_id=row["resource_id"],
+        metadata=dict(metadata or {}),
+        ip_address=str(row["ip_address"]) if row["ip_address"] else None,
+        created_at=row["created_at"],
     )
 
 
@@ -2253,6 +2274,66 @@ class PostgresStore:
                 error,
                 processing_time_ms,
             )
+
+    # ── AuditOps ─────────────────────────────────────────────────────
+
+    async def query_audit_log(
+        self,
+        *,
+        org_id: str,
+        workspace_id: Optional[str] = None,
+        action: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: int = 50,
+    ) -> "Sequence[StoredAuditEntry]":
+        where: list[str] = ["org_id = $1"]
+        params: list[Any] = [org_id]
+
+        if workspace_id is not None:
+            params.append(workspace_id)
+            where.append(f"workspace_id = ${len(params)}")
+        if action is not None:
+            params.append(action)
+            where.append(f"action = ${len(params)}")
+        if actor_id is not None:
+            params.append(actor_id)
+            where.append(f"actor_id = ${len(params)}")
+        if since is not None:
+            # Accept both ISO-string and datetime; asyncpg needs a datetime object.
+            if isinstance(since, str):
+                from datetime import timezone as _tz
+                since_dt = datetime.fromisoformat(since)
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=_tz.utc)
+            else:
+                since_dt = since
+            params.append(since_dt)
+            where.append(f"created_at >= ${len(params)}")
+
+        params.append(limit)
+        limit_idx = len(params)
+
+        sql = (
+            "SELECT id, org_id, workspace_id, actor_id, actor_type, action, "
+            "resource_type, resource_id, metadata, ip_address, created_at "
+            "FROM audit_log "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY created_at DESC "
+            f"LIMIT ${limit_idx}"
+        )
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return tuple(_row_to_audit_entry(r) for r in rows)
+
+    async def compute_retrieval_analytics(
+        self,
+        *,
+        org_id: str,
+        days: int,
+        project: Optional[str] = None,
+    ) -> "RetrievalAnalyticsResult":
+        raise NotImplementedError("compute_retrieval_analytics implemented in T3")
 
 
 class _BoundConn:
