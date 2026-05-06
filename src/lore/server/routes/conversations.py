@@ -3,10 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
-from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 try:
@@ -15,13 +12,11 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
-try:
-    from ulid import ULID
-except ImportError:
-    raise ImportError("python-ulid is required. Install with: pip install python-ulid")
-
+from lore.persistence import Store
+from lore.persistence.exceptions import StoreNotFoundError
 from lore.server.auth import AuthContext, get_auth_context, require_role
-from lore.server.db import get_pool
+from lore.server.db import get_store
+from lore.services import conversations as conversations_service
 
 logger = logging.getLogger(__name__)
 
@@ -62,36 +57,29 @@ class ConversationStatusResponse(BaseModel):
 async def create_conversation_job(
     body: ConversationRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
+    store: Store = Depends(get_store),
 ) -> ConversationAcceptedResponse:
     """Accept conversation for async extraction."""
-    if not body.messages:
-        raise HTTPException(400, "messages must be non-empty")
-    for msg in body.messages:
-        if "role" not in msg or "content" not in msg:
-            raise HTTPException(400, "Each message must have 'role' and 'content'")
-
-    job_id = str(ULID())
-    now = datetime.now(timezone.utc)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO conversation_jobs
-               (id, org_id, status, message_count, messages_json,
-                user_id, session_id, project, created_at)
-               VALUES ($1, $2, 'accepted', $3, $4, $5, $6, $7, $8)""",
-            job_id, auth.org_id, len(body.messages),
-            json.dumps(body.messages),
-            body.user_id, body.session_id,
-            body.project or auth.project, now,
+    try:
+        job = await conversations_service.create_job(
+            store,
+            org_id=auth.org_id,
+            messages=body.messages,
+            user_id=body.user_id,
+            session_id=body.session_id,
+            project=body.project or auth.project,
         )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
-    asyncio.create_task(_process_job(job_id, auth.org_id))
+    asyncio.create_task(
+        conversations_service.process_job_async(store, job.id, auth.org_id)
+    )
 
     return ConversationAcceptedResponse(
-        job_id=job_id,
-        status="accepted",
-        message_count=len(body.messages),
+        job_id=job.id,
+        status=job.status,
+        message_count=job.message_count,
     )
 
 
@@ -99,130 +87,21 @@ async def create_conversation_job(
 async def get_conversation_status(
     job_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> ConversationStatusResponse:
     """Check status of a conversation extraction job."""
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """SELECT id, status, message_count, memory_ids,
-                      memories_extracted, duplicates_skipped,
-                      processing_time_ms, error
-               FROM conversation_jobs
-               WHERE id = $1 AND org_id = $2""",
-            job_id, auth.org_id,
-        )
-    if row is None:
-        raise HTTPException(404, "Job not found")
-    return ConversationStatusResponse(
-        job_id=row["id"],
-        status=row["status"],
-        message_count=row["message_count"],
-        memories_extracted=row["memories_extracted"] or 0,
-        memory_ids=json.loads(row["memory_ids"] or "[]"),
-        duplicates_skipped=row["duplicates_skipped"] or 0,
-        processing_time_ms=row["processing_time_ms"] or 0,
-        error=row["error"],
-    )
-
-
-# -- Background Worker --------------------------------------------------------
-
-
-async def _process_job(job_id: str, org_id: str) -> None:
-    """Background task: run extraction pipeline and update job record."""
-    pool = await get_pool()
-
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "UPDATE conversation_jobs SET status = 'processing' "
-            "WHERE id = $1 RETURNING messages_json, user_id, session_id, project",
-            job_id,
-        )
-
-    start = time.monotonic()
     try:
-        from lore.conversation import ConversationExtractor
-        from lore.types import ConversationMessage
+        job = await conversations_service.get_job_status(store, job_id, auth.org_id)
+    except StoreNotFoundError:
+        raise HTTPException(404, "Job not found")
 
-        messages = json.loads(row["messages_json"])
-        conv_messages = [
-            ConversationMessage(role=m["role"], content=m["content"])
-            for m in messages
-        ]
-
-        lore = _get_server_lore(org_id)
-        extractor = ConversationExtractor(lore)
-        result = extractor.extract(
-            conv_messages,
-            user_id=row["user_id"],
-            session_id=row["session_id"],
-            project=row["project"],
-        )
-
-        # Persist extracted memories from MemoryStore to Postgres
-        if result.memory_ids and hasattr(lore, '_store'):
-            async with pool.acquire() as conn:
-                for mid in result.memory_ids:
-                    mem = lore._store.get(mid)
-                    if mem:
-                        meta = mem.metadata or {}
-                        meta["type"] = mem.type or "fact"
-                        meta["source"] = mem.source or "conversation"
-                        await conn.execute(
-                            """INSERT INTO memories (id, org_id, content, context, tags, source, meta, confidence, created_at, updated_at)
-                               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), now())
-                               ON CONFLICT (id) DO NOTHING""",
-                            mem.id, org_id,
-                            mem.content,
-                            mem.content,
-                            json.dumps(mem.tags or []),
-                            mem.source or "conversation",
-                            json.dumps(meta),
-                            mem.confidence,
-                        )
-
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """UPDATE conversation_jobs SET
-                       status = 'completed',
-                       memories_extracted = $2,
-                       memory_ids = $3,
-                       duplicates_skipped = $4,
-                       processing_time_ms = $5,
-                       completed_at = now()
-                   WHERE id = $1""",
-                job_id, result.memories_extracted,
-                json.dumps(result.memory_ids),
-                result.duplicates_skipped, elapsed_ms,
-            )
-        lore.close()
-    except Exception as e:
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        logger.exception("Conversation job %s failed", job_id)
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """UPDATE conversation_jobs SET
-                       status = 'failed', error = $2,
-                       processing_time_ms = $3,
-                       completed_at = now()
-                   WHERE id = $1""",
-                job_id, str(e), elapsed_ms,
-            )
-
-
-def _get_server_lore(org_id: str):
-    """Create a Lore instance for server-side extraction using MemoryStore (in-process)."""
-    import os
-
-    from lore.lore import Lore
-    from lore.store.memory import MemoryStore
-
-    enrichment_model = os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
-
-    return Lore(
-        store=MemoryStore(),
-        enrichment=True,
-        enrichment_model=enrichment_model,
+    return ConversationStatusResponse(
+        job_id=job.id,
+        status=job.status,
+        message_count=job.message_count,
+        memories_extracted=job.memories_extracted,
+        memory_ids=list(job.memory_ids),
+        duplicates_skipped=job.duplicates_skipped,
+        processing_time_ms=job.processing_time_ms,
+        error=job.error,
     )
