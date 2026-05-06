@@ -3,6 +3,7 @@
 from lore.persistence.exceptions import (
     BackendUnavailableError,
     ConfigError,
+    IntegrityError,
     LoreError,
     StoreBusyError,
     StoreError,
@@ -37,6 +38,7 @@ __all__ = [
     "BackendUnavailableError",
     "ConfigError",
     "GraphStats",
+    "IntegrityError",
     "LoreError",
     "MemoryFilter",
     "MemoryPatch",

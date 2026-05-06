@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from lore.persistence import Store, StoredProfile
+from lore.persistence import IntegrityError, NewProfile, Store, StoredProfile
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -186,3 +186,125 @@ async def test_get_profile_by_name_org_isolation(store: Store):
     # Different org returns None
     not_found = await store.get_profile_by_name("org_b", "shared-name")
     assert not_found is None
+
+
+# ── create_profile tests ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_profile_round_trip(store: Store):
+    new_profile = NewProfile(
+        org_id="org-cp",
+        name="test-create-rt",
+        semantic_weight=0.7,
+        graph_weight=0.3,
+        recency_bias=10.0,
+        tier_filters=("episodic", "semantic"),
+        min_score=0.2,
+        max_results=12,
+        is_preset=False,
+        k=15,
+        threshold=0.55,
+        rerank=True,
+        include_graph=False,
+    )
+
+    created = await store.create_profile(new_profile)
+
+    assert isinstance(created, StoredProfile)
+    assert created.id.startswith("prof_")
+    assert created.org_id == "org-cp"
+    assert created.name == "test-create-rt"
+    assert created.semantic_weight == pytest.approx(0.7)
+    assert created.graph_weight == pytest.approx(0.3)
+    assert created.recency_bias == pytest.approx(10.0)
+    assert tuple(created.tier_filters) == ("episodic", "semantic")
+    assert created.min_score == pytest.approx(0.2)
+    assert created.max_results == 12
+    assert created.is_preset is False
+    assert created.k == 15
+    assert created.threshold == pytest.approx(0.55)
+    assert created.rerank is True
+    assert created.include_graph is False
+    assert isinstance(created.created_at, datetime)
+    assert isinstance(created.updated_at, datetime)
+
+    # Verify round-trip via get_profile
+    fetched = await store.get_profile(created.id)
+    assert fetched is not None
+    assert fetched.id == created.id
+    assert fetched.name == created.name
+
+
+@pytest.mark.asyncio
+async def test_create_profile_uniqueness_collision(store: Store):
+    new_profile = NewProfile(
+        org_id="org-collision",
+        name="duplicate-name",
+        semantic_weight=0.8,
+        graph_weight=0.5,
+        recency_bias=14.0,
+    )
+
+    await store.create_profile(new_profile)
+
+    with pytest.raises(IntegrityError):
+        await store.create_profile(new_profile)
+
+
+# ── list_profiles tests ────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_profiles_returns_org_and_globals(store: Store):
+    # Create one org-owned profile
+    unique_name = f"test-orgowned-{uuid.uuid4().hex[:8]}"
+    new_profile = NewProfile(
+        org_id="solo",
+        name=unique_name,
+        semantic_weight=0.6,
+        graph_weight=0.4,
+        recency_bias=7.0,
+    )
+    await store.create_profile(new_profile)
+
+    results = await store.list_profiles("solo")
+
+    # Should include the 3 migration-013 globals + our org-owned one = 4 total
+    assert len(results) == 4
+
+    names = [r.name for r in results]
+    assert unique_name in names
+    assert "coding" in names
+    assert "incident-response" in names
+    assert "research" in names
+
+    # Results are sorted by name
+    assert names == sorted(names)
+
+    # All org_ids are either "solo" or "__global__"
+    for r in results:
+        assert r.org_id in ("solo", "__global__")
+
+
+@pytest.mark.asyncio
+async def test_list_profiles_org_isolation(store: Store):
+    # Create a profile under org_a
+    unique_name = f"org-a-only-{uuid.uuid4().hex[:8]}"
+    new_profile = NewProfile(
+        org_id="org_a",
+        name=unique_name,
+        semantic_weight=0.5,
+        graph_weight=0.5,
+        recency_bias=14.0,
+    )
+    await store.create_profile(new_profile)
+
+    # List for org_b should only return globals (3 presets), not org_a's profile
+    results = await store.list_profiles("org_b")
+
+    assert len(results) == 3
+    names = [r.name for r in results]
+    assert unique_name not in names
+    for r in results:
+        assert r.org_id == "__global__"

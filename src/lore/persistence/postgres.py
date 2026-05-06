@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
 
 from ulid import ULID
 
-from lore.persistence.exceptions import BackendUnavailableError, StoreNotFoundError
+from lore.persistence.exceptions import BackendUnavailableError, IntegrityError, StoreNotFoundError
 from lore.persistence.types import (
     GraphStats,
     MemoryFilter,
@@ -1179,13 +1179,62 @@ class PostgresStore:
             )
         return _row_to_profile(row) if row else None
 
-    # ── PolicyOps stubs (T5–T7) ───────────────────────────────────────
+    # ── PolicyOps stubs (T6–T7) ───────────────────────────────────────
 
-    async def list_profiles(self, org_id: str):  # type: ignore[override]
-        raise NotImplementedError("list_profiles implemented in T5")
+    async def list_profiles(self, org_id: str) -> Sequence[StoredProfile]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, name,
+                       semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset,
+                       k, threshold, rerank, include_graph,
+                       created_at, updated_at
+                FROM retrieval_profiles
+                WHERE org_id = $1 OR org_id = '__global__'
+                ORDER BY name
+                """,
+                org_id,
+            )
+        return tuple(_row_to_profile(r) for r in rows)
 
     async def create_profile(self, profile: NewProfile) -> StoredProfile:
-        raise NotImplementedError("create_profile implemented in T5")
+        profile_id = f"prof_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO retrieval_profiles
+                      (id, org_id, name, semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset,
+                       k, threshold, rerank, include_graph)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    RETURNING id, org_id, name,
+                              semantic_weight, graph_weight, recency_bias,
+                              tier_filters, min_score, max_results, is_preset,
+                              k, threshold, rerank, include_graph,
+                              created_at, updated_at
+                    """,
+                    profile_id,
+                    profile.org_id,
+                    profile.name,
+                    profile.semantic_weight,
+                    profile.graph_weight,
+                    profile.recency_bias,
+                    list(profile.tier_filters) if profile.tier_filters is not None else None,
+                    profile.min_score,
+                    profile.max_results,
+                    profile.is_preset,
+                    profile.k,
+                    profile.threshold,
+                    profile.rerank,
+                    profile.include_graph,
+                )
+            except asyncpg.UniqueViolationError as e:
+                raise IntegrityError(
+                    f"Profile name {profile.name!r} already exists for org_id={profile.org_id!r}"
+                ) from e
+        return _row_to_profile(row)
 
     async def update_profile(
         self, profile_id: str, patch: ProfilePatch
