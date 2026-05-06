@@ -12,12 +12,17 @@ from datetime import datetime
 from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from lore.persistence.types import (
+    AgentSharingConfigData,
+    AuditEventData,
+    DenyListRuleData,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewAuditEvent,
     NewConversationJob,
+    NewDenyListRule,
     NewDrillResult,
     NewEntity,
     NewMember,
@@ -38,6 +43,9 @@ from lore.persistence.types import (
     RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoredMemory,
+    SharingConfigData,
+    SharingConfigPatch,
+    SharingStatsData,
     SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
@@ -617,3 +625,81 @@ class Store(Protocol):
     ) -> Sequence[StoredSloAlert]: ...
 
     async def record_slo_alert(self, alert: NewSloAlert) -> StoredSloAlert: ...
+
+    # ── SharingOps ────────────────────────────────────────────────────
+
+    async def get_or_init_sharing_config(self, org_id: str) -> SharingConfigData:
+        """Return the sharing config for an org, creating a default row if missing."""
+        ...
+
+    async def update_sharing_config(
+        self, org_id: str, patch: SharingConfigPatch,
+    ) -> SharingConfigData:
+        """Upsert + apply a patch to the sharing config; returns the updated row."""
+        ...
+
+    async def list_agent_sharing_configs(
+        self, org_id: str,
+    ) -> Sequence[AgentSharingConfigData]:
+        """List per-agent sharing configs for an org, ordered by agent_id."""
+        ...
+
+    async def upsert_agent_sharing_config(
+        self,
+        org_id: str,
+        agent_id: str,
+        *,
+        enabled: bool,
+        categories: Sequence[str],
+    ) -> AgentSharingConfigData:
+        """Insert or update the sharing config for a (org, agent) pair."""
+        ...
+
+    async def list_deny_rules(self, org_id: str) -> Sequence[DenyListRuleData]:
+        """List deny-list rules for an org, ordered by created_at."""
+        ...
+
+    async def create_deny_rule(self, rule: NewDenyListRule) -> DenyListRuleData:
+        """Insert a new deny-list rule; returns the stored row."""
+        ...
+
+    async def delete_deny_rule(self, rule_id: str, org_id: str) -> bool:
+        """Delete a deny-list rule scoped to an org; True if a row was removed."""
+        ...
+
+    async def list_audit_events(
+        self,
+        org_id: str,
+        *,
+        event_type: Optional[str] = None,
+        from_date: Optional[datetime] = None,
+        to_date: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> Sequence[AuditEventData]:
+        """List sharing audit events for an org with optional filters; newest first."""
+        ...
+
+    async def record_audit_event(self, event: NewAuditEvent) -> None:
+        """Persist a sharing audit event row."""
+        ...
+
+    async def get_sharing_stats(self, org_id: str) -> SharingStatsData:
+        """Compute aggregate sharing stats: lessons count, last shared, audit summary."""
+        ...
+
+    async def purge_sharing(self, org_id: str) -> int:
+        """Purge all sharing-related rows for an org in a single tx; returns deleted lessons count."""
+        ...
+
+    async def rate_lesson(
+        self,
+        lesson_id: str,
+        org_id: str,
+        delta: int,
+        initiated_by: str,
+    ) -> Optional[int]:
+        """Atomically adjust a lesson's reputation_score and write an audit event.
+
+        Returns the new reputation_score, or None if the lesson does not exist.
+        """
+        ...

@@ -19,12 +19,17 @@ from ulid import ULID
 
 from lore.persistence.exceptions import BackendUnavailableError, IntegrityError, StoreNotFoundError
 from lore.persistence.types import (
+    AgentSharingConfigData,
+    AuditEventData,
+    DenyListRuleData,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewAuditEvent,
     NewConversationJob,
+    NewDenyListRule,
     NewDrillResult,
     NewEntity,
     NewMember,
@@ -45,6 +50,9 @@ from lore.persistence.types import (
     RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoredMemory,
+    SharingConfigData,
+    SharingConfigPatch,
+    SharingStatsData,
     SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
@@ -3011,6 +3019,69 @@ class PostgresStore:
             )
             for r in rows
         )
+
+    # ── SharingOps ────────────────────────────────────────────────────────────
+
+    async def get_or_init_sharing_config(self, org_id: str) -> "SharingConfigData":
+        raise NotImplementedError
+
+    async def update_sharing_config(
+        self, org_id: str, patch: "SharingConfigPatch",
+    ) -> "SharingConfigData":
+        raise NotImplementedError
+
+    async def list_agent_sharing_configs(
+        self, org_id: str,
+    ) -> "Sequence[AgentSharingConfigData]":
+        raise NotImplementedError
+
+    async def upsert_agent_sharing_config(
+        self,
+        org_id: str,
+        agent_id: str,
+        *,
+        enabled: bool,
+        categories: "Sequence[str]",
+    ) -> "AgentSharingConfigData":
+        raise NotImplementedError
+
+    async def list_deny_rules(self, org_id: str) -> "Sequence[DenyListRuleData]":
+        raise NotImplementedError
+
+    async def create_deny_rule(self, rule: "NewDenyListRule") -> "DenyListRuleData":
+        raise NotImplementedError
+
+    async def delete_deny_rule(self, rule_id: str, org_id: str) -> bool:
+        raise NotImplementedError
+
+    async def list_audit_events(
+        self,
+        org_id: str,
+        *,
+        event_type: "Optional[str]" = None,
+        from_date: "Optional[datetime]" = None,
+        to_date: "Optional[datetime]" = None,
+        limit: int = 50,
+    ) -> "Sequence[AuditEventData]":
+        raise NotImplementedError
+
+    async def record_audit_event(self, event: "NewAuditEvent") -> None:
+        raise NotImplementedError
+
+    async def get_sharing_stats(self, org_id: str) -> "SharingStatsData":
+        raise NotImplementedError
+
+    async def purge_sharing(self, org_id: str) -> int:
+        raise NotImplementedError
+
+    async def rate_lesson(
+        self,
+        lesson_id: str,
+        org_id: str,
+        delta: int,
+        initiated_by: str,
+    ) -> "Optional[int]":
+        raise NotImplementedError
 
 
 class _BoundConn:

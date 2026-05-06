@@ -6,13 +6,18 @@ from datetime import datetime, timezone
 import pytest
 
 from lore.persistence.types import (
+    AgentSharingConfigData,
+    AuditEventData,
     DailyStatRow,
+    DenyListRuleData,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewAuditEvent,
     NewConversationJob,
+    NewDenyListRule,
     NewDrillResult,
     NewEntity,
     NewMember,
@@ -35,6 +40,9 @@ from lore.persistence.types import (
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
+    SharingConfigData,
+    SharingConfigPatch,
+    SharingStatsData,
     SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
@@ -2513,3 +2521,181 @@ def test_timeseries_point_slots():
     now = datetime.now(timezone.utc)
     tp = TimeseriesPoint(timestamp=now, value=0.0)
     assert not hasattr(tp, "__dict__")
+
+
+# ── Sharing slice ─────────────────────────────────────────────────────────────
+
+
+def test_sharing_config_data_round_trip():
+    now = datetime.now(timezone.utc)
+    cfg = SharingConfigData(
+        enabled=True,
+        human_review_enabled=False,
+        rate_limit_per_hour=200,
+        volume_alert_threshold=2000,
+        updated_at=now,
+    )
+    assert cfg.enabled is True
+    assert cfg.human_review_enabled is False
+    assert cfg.rate_limit_per_hour == 200
+    assert cfg.volume_alert_threshold == 2000
+    assert cfg.updated_at == now
+
+
+def test_sharing_config_data_frozen_and_slots():
+    cfg = SharingConfigData(
+        enabled=False,
+        human_review_enabled=False,
+        rate_limit_per_hour=100,
+        volume_alert_threshold=1000,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        cfg.enabled = True  # type: ignore[misc]
+    assert not hasattr(cfg, "__dict__")
+
+
+def test_sharing_config_patch_all_none():
+    p = SharingConfigPatch()
+    assert p.enabled is None
+    assert p.human_review_enabled is None
+    assert p.rate_limit_per_hour is None
+    assert p.volume_alert_threshold is None
+
+
+def test_sharing_config_patch_partial_and_frozen():
+    p = SharingConfigPatch(enabled=True, rate_limit_per_hour=42)
+    assert p.enabled is True
+    assert p.rate_limit_per_hour == 42
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        p.enabled = False  # type: ignore[misc]
+    assert not hasattr(p, "__dict__")
+
+
+def test_agent_sharing_config_data_round_trip():
+    now = datetime.now(timezone.utc)
+    a = AgentSharingConfigData(
+        agent_id="agent-1",
+        enabled=True,
+        categories=["lessons", "patterns"],
+        updated_at=now,
+    )
+    assert a.agent_id == "agent-1"
+    assert a.enabled is True
+    assert list(a.categories) == ["lessons", "patterns"]
+    assert a.updated_at == now
+
+
+def test_agent_sharing_config_data_frozen_and_slots():
+    a = AgentSharingConfigData(agent_id="x", enabled=False, categories=())
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        a.enabled = True  # type: ignore[misc]
+    assert not hasattr(a, "__dict__")
+
+
+def test_deny_list_rule_data_round_trip():
+    now = datetime.now(timezone.utc)
+    r = DenyListRuleData(
+        id="rule-1",
+        pattern="^secret",
+        is_regex=True,
+        reason="contains secrets",
+        created_at=now,
+    )
+    assert r.id == "rule-1"
+    assert r.pattern == "^secret"
+    assert r.is_regex is True
+    assert r.reason == "contains secrets"
+    assert r.created_at == now
+
+
+def test_deny_list_rule_data_frozen_and_slots():
+    r = DenyListRuleData(id="x", pattern="p", is_regex=False, reason=None, created_at=None)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        r.pattern = "q"  # type: ignore[misc]
+    assert not hasattr(r, "__dict__")
+
+
+def test_new_deny_list_rule_defaults():
+    n = NewDenyListRule(org_id="org-1", pattern="^foo$")
+    assert n.org_id == "org-1"
+    assert n.pattern == "^foo$"
+    assert n.is_regex is False
+    assert n.reason is None
+
+
+def test_new_deny_list_rule_frozen_and_slots():
+    n = NewDenyListRule(org_id="o", pattern="p", is_regex=True, reason="r")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        n.pattern = "q"  # type: ignore[misc]
+    assert not hasattr(n, "__dict__")
+
+
+def test_audit_event_data_round_trip():
+    now = datetime.now(timezone.utc)
+    e = AuditEventData(
+        id="ev-1",
+        event_type="rate",
+        lesson_id="lesson-1",
+        query_text=None,
+        initiated_by="key-001",
+        created_at=now,
+    )
+    assert e.id == "ev-1"
+    assert e.event_type == "rate"
+    assert e.lesson_id == "lesson-1"
+    assert e.query_text is None
+    assert e.initiated_by == "key-001"
+    assert e.created_at == now
+
+
+def test_audit_event_data_frozen_and_slots():
+    e = AuditEventData(
+        id="x", event_type="t", lesson_id=None, query_text=None,
+        initiated_by="k", created_at=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        e.event_type = "u"  # type: ignore[misc]
+    assert not hasattr(e, "__dict__")
+
+
+def test_new_audit_event_defaults():
+    n = NewAuditEvent(org_id="o", event_type="purge", initiated_by="k")
+    assert n.org_id == "o"
+    assert n.event_type == "purge"
+    assert n.initiated_by == "k"
+    assert n.lesson_id is None
+    assert n.query_text is None
+
+
+def test_new_audit_event_full_and_frozen():
+    n = NewAuditEvent(
+        org_id="o",
+        event_type="rate",
+        initiated_by="k",
+        lesson_id="lid",
+        query_text="q",
+    )
+    assert n.lesson_id == "lid"
+    assert n.query_text == "q"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        n.event_type = "x"  # type: ignore[misc]
+    assert not hasattr(n, "__dict__")
+
+
+def test_sharing_stats_data_round_trip():
+    now = datetime.now(timezone.utc)
+    s = SharingStatsData(
+        count_shared=42,
+        last_shared=now,
+        audit_summary={"share": 12, "rate": 8},
+    )
+    assert s.count_shared == 42
+    assert s.last_shared == now
+    assert dict(s.audit_summary) == {"share": 12, "rate": 8}
+
+
+def test_sharing_stats_data_frozen_and_slots():
+    s = SharingStatsData(count_shared=0, last_shared=None, audit_summary={})
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        s.count_shared = 1  # type: ignore[misc]
+    assert not hasattr(s, "__dict__")
