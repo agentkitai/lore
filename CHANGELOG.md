@@ -76,6 +76,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New contract tests at `tests/persistence/test_contract_slo.py` (20 tests across the 7 SloOps methods + 2 metric extensions).
 - New service tests at `tests/services/test_slo.py` (14 tests).
 - New route tests at `tests/server/test_slo_routes.py` (15 tests with FakeStore mocks).
+- `Store` protocol grows the `SharingOps` slice (12 methods spanning 4 sharing tables: `sharing_config`, `agent_sharing_config`, `deny_list_rules`, `sharing_audit` — config get-or-init/update, agent-config list/upsert, deny-rule list/create/delete, audit list/record, sharing stats, purge cascade, atomic `rate_lesson`). New typed dataclasses: `SharingConfigData`, `SharingConfigPatch`, `AgentSharingConfigData`, `DenyListRuleData`, `NewDenyListRule`, `AuditEventData`, `NewAuditEvent`, `SharingStatsData`.
+- `lore.services.sharing` (new) wraps SharingOps. Owns `delta ∈ {1, -1}` validation and `confirmation == "PURGE"` validation — service raises `ValueError`; route maps to 400. The `_record_audit` module helper at the top of routes/sharing.py is gone (now `record_audit_event` on the Store).
+- All 10 `routes/sharing.py` handlers + the 1 `rate_lesson` handler on the separately-mounted `rate_router` refactored to call services exclusively. The route file is now ~338 LOC (was 406). CI guard now covers 21 migrated route files — **all route files now migrated**; only `lore/server/auth.py` middleware remains outside the guard. **Bug fix**: pre-1L `rate_lesson` targeted the `lessons` view, but migration 009's `lessons_update` rule does not propagate `RETURNING reputation_score`. The Phase 1L Postgres impl targets the `memories` base table directly (matches the rest of the persistence layer). `purge_sharing` and `get_sharing_stats` similarly target `memories` rather than the `lessons` view.
+- New contract tests at `tests/persistence/test_contract_sharing.py` (23 tests across the 12 SharingOps methods).
+- New service tests at `tests/services/test_sharing.py` (13 tests).
+- New route tests at `tests/server/test_sharing_routes.py` (16 tests with FakeStore mocks).
 
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 

@@ -296,3 +296,33 @@ def test_slo_ops_are_async():
         assert inspect.iscoroutinefunction(method), (
             f"Store.{name} must be async"
         )
+
+
+REQUIRED_SHARING_OPS = {
+    "get_or_init_sharing_config",
+    "update_sharing_config",
+    "list_agent_sharing_configs",
+    "upsert_agent_sharing_config",
+    "list_deny_rules",
+    "create_deny_rule",
+    "delete_deny_rule",
+    "list_audit_events",
+    "record_audit_event",
+    "get_sharing_stats",
+    "purge_sharing",
+    "rate_lesson",
+}
+
+
+def test_store_declares_sharing_ops():
+    members = {name for name, _ in inspect.getmembers(Store)}
+    missing = REQUIRED_SHARING_OPS - members
+    assert not missing, f"Store missing SharingOps methods: {missing}"
+
+
+def test_sharing_ops_are_async():
+    for name in REQUIRED_SHARING_OPS:
+        method = getattr(Store, name)
+        assert inspect.iscoroutinefunction(method), (
+            f"Store.{name} must be async"
+        )

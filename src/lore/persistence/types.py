@@ -672,3 +672,74 @@ class StoredSloAlert:
 class TimeseriesPoint:
     timestamp: datetime
     value: Optional[float]
+
+
+# ── Sharing slice dataclasses ───
+
+
+@dataclass(frozen=True, slots=True)
+class SharingConfigData:
+    enabled: bool
+    human_review_enabled: bool
+    rate_limit_per_hour: int
+    volume_alert_threshold: int
+    updated_at: Optional[datetime] = None
+
+
+@dataclass(frozen=True, slots=True)
+class SharingConfigPatch:
+    enabled: Optional[bool] = None
+    human_review_enabled: Optional[bool] = None
+    rate_limit_per_hour: Optional[int] = None
+    volume_alert_threshold: Optional[int] = None
+
+
+@dataclass(frozen=True, slots=True)
+class AgentSharingConfigData:
+    agent_id: str
+    enabled: bool
+    categories: Sequence[str]
+    updated_at: Optional[datetime] = None
+
+
+@dataclass(frozen=True, slots=True)
+class DenyListRuleData:
+    id: str
+    pattern: str
+    is_regex: bool
+    reason: Optional[str]
+    created_at: Optional[datetime]
+
+
+@dataclass(frozen=True, slots=True)
+class NewDenyListRule:
+    org_id: str
+    pattern: str
+    is_regex: bool = False
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class AuditEventData:
+    id: str
+    event_type: str
+    lesson_id: Optional[str]
+    query_text: Optional[str]
+    initiated_by: str
+    created_at: Optional[datetime]
+
+
+@dataclass(frozen=True, slots=True)
+class NewAuditEvent:
+    org_id: str
+    event_type: str
+    initiated_by: str
+    lesson_id: Optional[str] = None
+    query_text: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class SharingStatsData:
+    count_shared: int
+    last_shared: Optional[datetime]
+    audit_summary: Mapping[str, int]

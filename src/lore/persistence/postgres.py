@@ -19,12 +19,17 @@ from ulid import ULID
 
 from lore.persistence.exceptions import BackendUnavailableError, IntegrityError, StoreNotFoundError
 from lore.persistence.types import (
+    AgentSharingConfigData,
+    AuditEventData,
+    DenyListRuleData,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewAuditEvent,
     NewConversationJob,
+    NewDenyListRule,
     NewDrillResult,
     NewEntity,
     NewMember,
@@ -45,6 +50,9 @@ from lore.persistence.types import (
     RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoredMemory,
+    SharingConfigData,
+    SharingConfigPatch,
+    SharingStatsData,
     SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
@@ -3011,6 +3019,341 @@ class PostgresStore:
             )
             for r in rows
         )
+
+    # ── SharingOps ────────────────────────────────────────────────────────────
+
+    async def get_or_init_sharing_config(self, org_id: str) -> "SharingConfigData":
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT enabled, human_review_enabled, rate_limit_per_hour,
+                       volume_alert_threshold, updated_at
+                FROM sharing_config
+                WHERE org_id = $1
+                """,
+                org_id,
+            )
+            if row is None:
+                cfg_id = str(ULID())
+                await conn.execute(
+                    "INSERT INTO sharing_config (id, org_id) VALUES ($1, $2) "
+                    "ON CONFLICT (org_id) DO NOTHING",
+                    cfg_id,
+                    org_id,
+                )
+                return SharingConfigData(
+                    enabled=False,
+                    human_review_enabled=False,
+                    rate_limit_per_hour=100,
+                    volume_alert_threshold=1000,
+                    updated_at=None,
+                )
+        return SharingConfigData(
+            enabled=bool(row["enabled"]),
+            human_review_enabled=bool(row["human_review_enabled"]),
+            rate_limit_per_hour=int(row["rate_limit_per_hour"]),
+            volume_alert_threshold=int(row["volume_alert_threshold"]),
+            updated_at=row["updated_at"],
+        )
+
+    async def update_sharing_config(
+        self, org_id: str, patch: "SharingConfigPatch",
+    ) -> "SharingConfigData":
+        async with self._acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT id FROM sharing_config WHERE org_id = $1", org_id,
+            )
+            if existing is None:
+                await conn.execute(
+                    "INSERT INTO sharing_config (id, org_id) VALUES ($1, $2)",
+                    str(ULID()),
+                    org_id,
+                )
+
+            set_parts = ["updated_at = now()"]
+            params: list[Any] = [org_id]
+            for field_name in (
+                "enabled",
+                "human_review_enabled",
+                "rate_limit_per_hour",
+                "volume_alert_threshold",
+            ):
+                val = getattr(patch, field_name)
+                if val is not None:
+                    params.append(val)
+                    set_parts.append(f"{field_name} = ${len(params)}")
+
+            row = await conn.fetchrow(
+                f"UPDATE sharing_config SET {', '.join(set_parts)} "
+                "WHERE org_id = $1 "
+                "RETURNING enabled, human_review_enabled, rate_limit_per_hour, "
+                "volume_alert_threshold, updated_at",
+                *params,
+            )
+        return SharingConfigData(
+            enabled=bool(row["enabled"]),
+            human_review_enabled=bool(row["human_review_enabled"]),
+            rate_limit_per_hour=int(row["rate_limit_per_hour"]),
+            volume_alert_threshold=int(row["volume_alert_threshold"]),
+            updated_at=row["updated_at"],
+        )
+
+    async def list_agent_sharing_configs(
+        self, org_id: str,
+    ) -> "Sequence[AgentSharingConfigData]":
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT agent_id, enabled, categories, updated_at
+                FROM agent_sharing_config
+                WHERE org_id = $1
+                ORDER BY agent_id
+                """,
+                org_id,
+            )
+        results = []
+        for r in rows:
+            cats = r["categories"]
+            if isinstance(cats, str):
+                cats = json.loads(cats) if cats else []
+            results.append(
+                AgentSharingConfigData(
+                    agent_id=r["agent_id"],
+                    enabled=bool(r["enabled"]),
+                    categories=tuple(cats or ()),
+                    updated_at=r["updated_at"],
+                )
+            )
+        return tuple(results)
+
+    async def upsert_agent_sharing_config(
+        self,
+        org_id: str,
+        agent_id: str,
+        *,
+        enabled: bool,
+        categories: "Sequence[str]",
+    ) -> "AgentSharingConfigData":
+        now = datetime.now(timezone.utc)
+        cats_json = json.dumps(list(categories))
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO agent_sharing_config
+                    (id, org_id, agent_id, enabled, categories, updated_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                ON CONFLICT (org_id, agent_id) DO UPDATE SET
+                    enabled = COALESCE($4, agent_sharing_config.enabled),
+                    categories = COALESCE($5::jsonb, agent_sharing_config.categories),
+                    updated_at = $6
+                RETURNING agent_id, enabled, categories, updated_at
+                """,
+                str(ULID()),
+                org_id,
+                agent_id,
+                enabled,
+                cats_json,
+                now,
+            )
+        cats = row["categories"]
+        if isinstance(cats, str):
+            cats = json.loads(cats) if cats else []
+        return AgentSharingConfigData(
+            agent_id=row["agent_id"],
+            enabled=bool(row["enabled"]),
+            categories=tuple(cats or ()),
+            updated_at=row["updated_at"],
+        )
+
+    async def list_deny_rules(self, org_id: str) -> "Sequence[DenyListRuleData]":
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, pattern, is_regex, reason, created_at
+                FROM deny_list_rules
+                WHERE org_id = $1
+                ORDER BY created_at
+                """,
+                org_id,
+            )
+        return tuple(
+            DenyListRuleData(
+                id=r["id"],
+                pattern=r["pattern"],
+                is_regex=bool(r["is_regex"]),
+                reason=r["reason"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        )
+
+    async def create_deny_rule(self, rule: "NewDenyListRule") -> "DenyListRuleData":
+        rule_id = str(ULID())
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO deny_list_rules (id, org_id, pattern, is_regex, reason)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, pattern, is_regex, reason, created_at
+                """,
+                rule_id,
+                rule.org_id,
+                rule.pattern,
+                rule.is_regex,
+                rule.reason,
+            )
+        return DenyListRuleData(
+            id=row["id"],
+            pattern=row["pattern"],
+            is_regex=bool(row["is_regex"]),
+            reason=row["reason"],
+            created_at=row["created_at"],
+        )
+
+    async def delete_deny_rule(self, rule_id: str, org_id: str) -> bool:
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM deny_list_rules WHERE id = $1 AND org_id = $2",
+                rule_id,
+                org_id,
+            )
+        return result.endswith(" 1")
+
+    async def list_audit_events(
+        self,
+        org_id: str,
+        *,
+        event_type: "Optional[str]" = None,
+        from_date: "Optional[datetime]" = None,
+        to_date: "Optional[datetime]" = None,
+        limit: int = 50,
+    ) -> "Sequence[AuditEventData]":
+        where = ["org_id = $1"]
+        params: list[Any] = [org_id]
+        if event_type is not None:
+            params.append(event_type)
+            where.append(f"event_type = ${len(params)}")
+        if from_date is not None:
+            params.append(from_date)
+            where.append(f"created_at >= ${len(params)}")
+        if to_date is not None:
+            params.append(to_date)
+            where.append(f"created_at <= ${len(params)}")
+        params.append(limit)
+        limit_idx = len(params)
+
+        sql = (
+            "SELECT id, event_type, lesson_id, query_text, initiated_by, created_at "
+            "FROM sharing_audit "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY created_at DESC LIMIT ${limit_idx}"
+        )
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return tuple(
+            AuditEventData(
+                id=r["id"],
+                event_type=r["event_type"],
+                lesson_id=r["lesson_id"],
+                query_text=r["query_text"],
+                initiated_by=r["initiated_by"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        )
+
+    async def record_audit_event(self, event: "NewAuditEvent") -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO sharing_audit
+                    (id, org_id, event_type, lesson_id, query_text, initiated_by)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                str(ULID()),
+                event.org_id,
+                event.event_type,
+                event.lesson_id,
+                event.query_text,
+                event.initiated_by,
+            )
+
+    async def get_sharing_stats(self, org_id: str) -> "SharingStatsData":
+        # Note: post-migration 009, "lessons" is a view over "memories";
+        # operate on the base table to keep aggregations correct.
+        async with self._acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE org_id = $1", org_id,
+            )
+            last = await conn.fetchval(
+                "SELECT MAX(created_at) FROM memories WHERE org_id = $1", org_id,
+            )
+            summary_rows = await conn.fetch(
+                """
+                SELECT event_type, COUNT(*)::int AS cnt
+                FROM sharing_audit
+                WHERE org_id = $1
+                GROUP BY event_type
+                """,
+                org_id,
+            )
+        summary = {r["event_type"]: int(r["cnt"]) for r in summary_rows}
+        return SharingStatsData(
+            count_shared=int(count or 0),
+            last_shared=last,
+            audit_summary=summary,
+        )
+
+    async def purge_sharing(self, org_id: str) -> int:
+        async with self._acquire() as conn:
+            async with conn.transaction():
+                deleted_lessons = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE org_id = $1", org_id,
+                )
+                await conn.execute("DELETE FROM memories WHERE org_id = $1", org_id)
+                await conn.execute("DELETE FROM sharing_audit WHERE org_id = $1", org_id)
+                await conn.execute("DELETE FROM deny_list_rules WHERE org_id = $1", org_id)
+                await conn.execute("DELETE FROM agent_sharing_config WHERE org_id = $1", org_id)
+                await conn.execute("DELETE FROM sharing_config WHERE org_id = $1", org_id)
+        return int(deleted_lessons or 0)
+
+    async def rate_lesson(
+        self,
+        lesson_id: str,
+        org_id: str,
+        delta: int,
+        initiated_by: str,
+    ) -> "Optional[int]":
+        # Update the base "memories" table (post-migration 009 the "lessons" view
+        # does not support UPDATE ... RETURNING).
+        async with self._acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE memories
+                    SET reputation_score = reputation_score + $1,
+                        updated_at = now()
+                    WHERE id = $2 AND org_id = $3
+                    RETURNING reputation_score
+                    """,
+                    delta,
+                    lesson_id,
+                    org_id,
+                )
+                if row is None:
+                    return None
+                await conn.execute(
+                    """
+                    INSERT INTO sharing_audit
+                        (id, org_id, event_type, lesson_id, initiated_by)
+                    VALUES ($1, $2, 'rate', $3, $4)
+                    """,
+                    str(ULID()),
+                    org_id,
+                    lesson_id,
+                    initiated_by,
+                )
+        return int(row["reputation_score"])
 
 
 class _BoundConn:
