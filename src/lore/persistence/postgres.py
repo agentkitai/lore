@@ -19,6 +19,7 @@ from ulid import ULID
 
 from lore.persistence.exceptions import BackendUnavailableError, IntegrityError, StoreNotFoundError
 from lore.persistence.types import (
+    ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
@@ -273,6 +274,39 @@ def _row_to_conversation_job(row: "asyncpg.Record") -> StoredConversationJob:
     )
 
 
+def _row_to_exported_memory(row: "asyncpg.Record") -> ExportedMemory:
+    tags = row["tags"]
+    if isinstance(tags, str):
+        tags = json.loads(tags)
+    meta = row["meta"]
+    if isinstance(meta, str):
+        meta = json.loads(meta)
+    embedding = row["embedding"]
+    if isinstance(embedding, str) and embedding:
+        # pgvector text format '[0.1,0.2,...]'
+        stripped = embedding.strip("[]")
+        embedding = [float(x) for x in stripped.split(",")] if stripped else None
+    elif embedding is not None and not isinstance(embedding, str):
+        embedding = list(embedding)
+    return ExportedMemory(
+        id=row["id"],
+        org_id=row["org_id"],
+        content=row["content"],
+        context=row["context"] if row["context"] else None,
+        tags=tuple(tags or ()),
+        confidence=float(row["confidence"]),
+        source=row["source"],
+        project=row["project"],
+        embedding=embedding if embedding is not None else None,
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        expires_at=row["expires_at"],
+        upvotes=row["upvotes"] or 0,
+        downvotes=row["downvotes"] or 0,
+        meta=dict(meta or {}),
+    )
+
+
 _VALID_TRUNCS = frozenset({"hour", "day", "week", "month"})
 
 
@@ -474,6 +508,186 @@ class PostgresStore:
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return [_row_to_stored(r) for r in rows]
+
+    async def list_memories_paginated(
+        self,
+        filter: "MemoryFilter",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, Sequence[StoredMemory]]:
+        """Two-query paginated list: COUNT(*) then SELECT with LIMIT/OFFSET."""
+        where: list[str] = ["org_id = $1"]
+        params: list[Any] = [filter.org_id]
+
+        if filter.project is not None:
+            params.append(filter.project)
+            where.append(f"project = ${len(params)}")
+        if filter.type is not None:
+            params.append(filter.type)
+            where.append(f"meta->>'type' = ${len(params)}")
+        if filter.tier is not None:
+            params.append(filter.tier)
+            where.append(f"meta->>'tier' = ${len(params)}")
+        if filter.tags:
+            params.append(json.dumps(list(filter.tags)))
+            where.append(f"tags @> ${len(params)}::jsonb")
+        if filter.since is not None:
+            params.append(filter.since)
+            where.append(f"created_at >= ${len(params)}")
+        if filter.text_query is not None:
+            params.append(f"%{filter.text_query}%")
+            idx = len(params)
+            where.append(f"(content ILIKE ${idx} OR context ILIKE ${idx})")
+        if filter.min_reputation is not None:
+            params.append(filter.min_reputation)
+            where.append(f"reputation_score >= ${len(params)}")
+        if not filter.include_expired:
+            where.append("(expires_at IS NULL OR expires_at > now())")
+
+        where_sql = " AND ".join(where)
+
+        params.append(limit)
+        limit_idx = len(params)
+        params.append(offset)
+        offset_idx = len(params)
+
+        count_sql = f"SELECT COUNT(*) FROM memories WHERE {where_sql}"
+        select_sql = (
+            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "project, created_at, updated_at, expires_at, upvotes, downvotes, "
+            "meta, importance_score, access_count, last_accessed_at "
+            f"FROM memories WHERE {where_sql} "
+            f"ORDER BY created_at DESC "
+            f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
+        )
+
+        # COUNT uses only the WHERE params (no limit/offset)
+        count_params = params[: offset_idx - 2]
+
+        async with self._acquire() as conn:
+            total = await conn.fetchval(count_sql, *count_params)
+            rows = await conn.fetch(select_sql, *params)
+
+        return (int(total), tuple(_row_to_stored(r) for r in rows))
+
+    async def list_memories_with_embeddings(
+        self,
+        filter: "MemoryFilter",
+    ) -> Sequence[ExportedMemory]:
+        """Bulk export — no LIMIT, includes embedding column."""
+        where: list[str] = ["org_id = $1"]
+        params: list[Any] = [filter.org_id]
+
+        if filter.project is not None:
+            params.append(filter.project)
+            where.append(f"project = ${len(params)}")
+        if filter.type is not None:
+            params.append(filter.type)
+            where.append(f"meta->>'type' = ${len(params)}")
+        if filter.tier is not None:
+            params.append(filter.tier)
+            where.append(f"meta->>'tier' = ${len(params)}")
+        if filter.tags:
+            params.append(json.dumps(list(filter.tags)))
+            where.append(f"tags @> ${len(params)}::jsonb")
+        if filter.since is not None:
+            params.append(filter.since)
+            where.append(f"created_at >= ${len(params)}")
+        if filter.text_query is not None:
+            params.append(f"%{filter.text_query}%")
+            idx = len(params)
+            where.append(f"(content ILIKE ${idx} OR context ILIKE ${idx})")
+        if filter.min_reputation is not None:
+            params.append(filter.min_reputation)
+            where.append(f"reputation_score >= ${len(params)}")
+        if not filter.include_expired:
+            where.append("(expires_at IS NULL OR expires_at > now())")
+
+        where_sql = " AND ".join(where)
+        select_sql = (
+            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "project, embedding, created_at, updated_at, expires_at, upvotes, downvotes, meta "
+            f"FROM memories WHERE {where_sql} "
+            "ORDER BY created_at"
+        )
+
+        async with self._acquire() as conn:
+            rows = await conn.fetch(select_sql, *params)
+
+        return tuple(_row_to_exported_memory(r) for r in rows)
+
+    async def upsert_memory_with_embedding(
+        self,
+        *,
+        memory_id: str,
+        org_id: str,
+        content: str,
+        context: Optional[str],
+        tags: Sequence[str],
+        confidence: float,
+        source: Optional[str],
+        project: Optional[str],
+        embedding: Optional[Sequence[float]],
+        expires_at: Optional[datetime],
+        upvotes: int,
+        downvotes: int,
+        meta: Mapping[str, Any],
+    ) -> bool:
+        """INSERT … ON CONFLICT (id) DO UPDATE … RETURNING (xmax = 0) AS inserted.
+
+        Returns True if a new row was inserted, False if an existing row was
+        updated or if no change occurred (e.g. org_id mismatch silently drops
+        the update — caller treats None as False).
+        """
+        encoded_tags = json.dumps(list(tags))
+        encoded_meta = json.dumps(dict(meta))
+        encoded_embedding = json.dumps(list(embedding)) if embedding is not None else None
+        safe_context = context if context is not None else ""
+
+        query = """
+            INSERT INTO memories
+                (id, org_id, content, context, tags, confidence, source, project,
+                 embedding, created_at, updated_at, expires_at,
+                 upvotes, downvotes, meta)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, now(), now(),
+                    $10, $11, $12, $13::jsonb)
+            ON CONFLICT (id) DO UPDATE SET
+                content = EXCLUDED.content,
+                context = EXCLUDED.context,
+                tags = EXCLUDED.tags,
+                confidence = EXCLUDED.confidence,
+                source = EXCLUDED.source,
+                project = EXCLUDED.project,
+                embedding = EXCLUDED.embedding,
+                updated_at = EXCLUDED.updated_at,
+                expires_at = EXCLUDED.expires_at,
+                upvotes = EXCLUDED.upvotes,
+                downvotes = EXCLUDED.downvotes,
+                meta = EXCLUDED.meta
+            WHERE memories.org_id = EXCLUDED.org_id
+            RETURNING (xmax = 0) AS inserted
+        """
+
+        async with self._acquire() as conn:
+            result = await conn.fetchval(
+                query,
+                memory_id,
+                org_id,
+                content,
+                safe_context,
+                encoded_tags,
+                confidence,
+                source,
+                project,
+                encoded_embedding,
+                expires_at,
+                upvotes,
+                downvotes,
+                encoded_meta,
+            )
+
+        return result is True
 
     async def recall_by_embedding(
         self, params: "RecallParams"

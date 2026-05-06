@@ -59,6 +59,8 @@ class MemoryFilter:
     limit: Optional[int] = None
     offset: int = 0
     include_expired: bool = False
+    text_query: Optional[str] = None       # ILIKE search across content + context
+    min_reputation: Optional[int] = None   # reputation_score >= N
 
 
 @dataclass(frozen=True, slots=True)
@@ -442,3 +444,27 @@ class StoredConversationJob:
     processing_time_ms: int
     created_at: datetime
     completed_at: Optional[datetime]
+
+
+# ── Lessons slice dataclasses ───
+
+
+@dataclass(frozen=True, slots=True)
+class ExportedMemory:
+    """Memory shape for bulk export — includes embedding + all wire-relevant fields."""
+
+    id: str
+    org_id: str
+    content: str
+    context: Optional[str]
+    tags: Sequence[str]
+    confidence: float
+    source: Optional[str]
+    project: Optional[str]
+    embedding: Optional[Sequence[float]]
+    created_at: datetime
+    updated_at: datetime
+    expires_at: Optional[datetime]
+    upvotes: int
+    downvotes: int
+    meta: Mapping[str, Any]

@@ -12,12 +12,15 @@ REQUIRED_MEMORY_OPS = {
     "update_memory",
     "delete_memory",
     "list_memories",
+    "list_memories_paginated",
+    "list_memories_with_embeddings",
     "recall_by_embedding",
     "expire_memories",
     "bump_access_counts",
     "vote_memory",
     "enrich_memory_meta",
     "import_extracted_memory",
+    "upsert_memory_with_embedding",
 }
 
 REQUIRED_GRAPH_OPS = {

@@ -18,6 +18,7 @@ MIGRATED_ROUTES = {
     "src/lore/server/routes/graph/stats.py",
     "src/lore/server/routes/graph/topics.py",
     "src/lore/server/routes/keys.py",
+    "src/lore/server/routes/lessons.py",
     "src/lore/server/routes/memories.py",
     "src/lore/server/routes/profiles.py",
     "src/lore/server/routes/recommendations.py",
@@ -54,6 +55,9 @@ ALLOWLIST = {
     ],
     "src/lore/server/routes/recommendations.py": [
         "recommendation config",              # Update/Delete docstrings (not raw SQL)
+    ],
+    "src/lore/server/routes/lessons.py": [
+        "a lesson",                           # Update/Delete docstrings (not raw SQL)
     ],
 }
 

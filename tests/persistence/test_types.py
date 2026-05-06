@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import pytest
 
 from lore.persistence.types import (
+    ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
@@ -1356,3 +1357,157 @@ def test_stored_conversation_job_slots():
         completed_at=None,
     )
     assert not hasattr(scj, "__dict__")
+
+
+# ── ExportedMemory ────────────────────────────────────────────────
+
+
+def test_exported_memory_defaults():
+    now = datetime.now(timezone.utc)
+    em = ExportedMemory(
+        id="mem_exp_01",
+        org_id="org_1",
+        content="exported content",
+        context=None,
+        tags=(),
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=None,
+        created_at=now,
+        updated_at=now,
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+    assert em.id == "mem_exp_01"
+    assert em.org_id == "org_1"
+    assert em.content == "exported content"
+    assert em.context is None
+    assert em.tags == ()
+    assert em.confidence == 0.5
+    assert em.source is None
+    assert em.project is None
+    assert em.embedding is None
+    assert em.created_at == now
+    assert em.updated_at == now
+    assert em.expires_at is None
+    assert em.upvotes == 0
+    assert em.downvotes == 0
+    assert em.meta == {}
+
+
+def test_exported_memory_all_fields():
+    now = datetime.now(timezone.utc)
+    expires = datetime(2027, 1, 1, tzinfo=timezone.utc)
+    em = ExportedMemory(
+        id="mem_exp_02",
+        org_id="org_2",
+        content="full memory",
+        context="some context",
+        tags=("python", "backend"),
+        confidence=0.9,
+        source="conversation",
+        project="proj_alpha",
+        embedding=[0.1, 0.2, 0.3],
+        created_at=now,
+        updated_at=now,
+        expires_at=expires,
+        upvotes=5,
+        downvotes=1,
+        meta={"type": "lesson", "quality": "high"},
+    )
+    assert em.context == "some context"
+    assert em.tags == ("python", "backend")
+    assert em.confidence == 0.9
+    assert em.source == "conversation"
+    assert em.project == "proj_alpha"
+    assert list(em.embedding) == [0.1, 0.2, 0.3]
+    assert em.expires_at == expires
+    assert em.upvotes == 5
+    assert em.downvotes == 1
+    assert em.meta == {"type": "lesson", "quality": "high"}
+
+
+def test_exported_memory_frozen():
+    now = datetime.now(timezone.utc)
+    em = ExportedMemory(
+        id="mem_exp_03",
+        org_id="org_1",
+        content="frozen test",
+        context=None,
+        tags=(),
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=None,
+        created_at=now,
+        updated_at=now,
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        em.content = "mutated"  # type: ignore[misc]
+
+
+def test_exported_memory_slots():
+    now = datetime.now(timezone.utc)
+    em = ExportedMemory(
+        id="mem_exp_04",
+        org_id="org_1",
+        content="slots test",
+        context=None,
+        tags=(),
+        confidence=0.5,
+        source=None,
+        project=None,
+        embedding=None,
+        created_at=now,
+        updated_at=now,
+        expires_at=None,
+        upvotes=0,
+        downvotes=0,
+        meta={},
+    )
+    assert not hasattr(em, "__dict__")
+
+
+# ── MemoryFilter extension ────────────────────────────────────────
+
+
+def test_memory_filter_new_fields_default_none():
+    f = MemoryFilter(org_id="org_1")
+    assert f.project is None
+    assert f.type is None
+    assert f.tier is None
+    assert f.limit is None
+    assert f.include_expired is False
+    assert f.text_query is None
+    assert f.min_reputation is None
+
+
+def test_memory_filter_with_text_query_and_min_reputation():
+    f = MemoryFilter(
+        org_id="org_1",
+        project="proj_a",
+        type="lesson",
+        tier="hot",
+        tags=("python",),
+        limit=20,
+        offset=5,
+        include_expired=True,
+        text_query="async patterns",
+        min_reputation=3,
+    )
+    assert f.text_query == "async patterns"
+    assert f.min_reputation == 3
+    assert f.project == "proj_a"
+    assert f.type == "lesson"
+    assert f.tier == "hot"
+    assert f.tags == ("python",)
+    assert f.limit == 20
+    assert f.offset == 5
+    assert f.include_expired is True

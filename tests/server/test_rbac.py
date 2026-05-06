@@ -151,13 +151,13 @@ async def test_admin_can_list_keys(client):
 async def test_reader_can_list_lessons(client):
     """Reader role can access GET /v1/lessons."""
     row = _key_row(role="reader", is_root=False)
-    mock_pool, mock_conn = _make_mock_pool_with_key(key_row=row)
-    mock_conn.fetchval = AsyncMock(return_value=0)
-    mock_conn.fetch = AsyncMock(return_value=[])
+    mock_pool, _ = _make_mock_pool_with_key(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
+    # lessons route now goes through get_store (already overridden in the
+    # client fixture via app.dependency_overrides[get_store])
     with patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.lessons.get_pool", return_value=mock_pool):
+         patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         resp = await client.get("/v1/lessons", headers=headers)
     assert resp.status_code == 200
 

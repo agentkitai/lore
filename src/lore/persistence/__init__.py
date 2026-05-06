@@ -15,6 +15,7 @@ from lore.persistence.exceptions import (
 from lore.persistence.factory import make_store
 from lore.persistence.protocol import Store
 from lore.persistence.types import (
+    ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
@@ -52,6 +53,7 @@ from lore.persistence.types import (
 __all__ = [
     "BackendUnavailableError",
     "ConfigError",
+    "ExportedMemory",
     "GraphStats",
     "IntegrityError",
     "LastRootKeyError",

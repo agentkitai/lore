@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from lore.persistence.types import (
+    ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
@@ -119,6 +120,38 @@ class Store(Protocol):
         confidence: float,
     ) -> bool:
         """Insert a pre-extracted memory with a caller-supplied id; returns True if inserted, False if duplicate."""
+        ...
+
+    async def list_memories_paginated(
+        self, filter: MemoryFilter, *, limit: int = 50, offset: int = 0,
+    ) -> tuple[int, Sequence[StoredMemory]]:
+        """List memories matching filter with pagination; returns (total_count, page_of_rows)."""
+        ...
+
+    async def list_memories_with_embeddings(
+        self, filter: MemoryFilter,
+    ) -> Sequence[ExportedMemory]:
+        """List memories with their raw embeddings included; used for export and migration."""
+        ...
+
+    async def upsert_memory_with_embedding(
+        self,
+        *,
+        memory_id: str,
+        org_id: str,
+        content: str,
+        context: Optional[str],
+        tags: Sequence[str],
+        confidence: float,
+        source: Optional[str],
+        project: Optional[str],
+        embedding: Optional[Sequence[float]],
+        expires_at: Optional[datetime],
+        upvotes: int,
+        downvotes: int,
+        meta: Mapping[str, Any],
+    ) -> bool:
+        """Insert or update a memory row including its embedding vector; returns True if inserted, False if updated."""
         ...
 
     # ── GraphOps ─────────────────────────────────────────────────────

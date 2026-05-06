@@ -23,8 +23,11 @@ pytest.importorskip("httpx")
 
 from httpx import ASGITransport, AsyncClient
 
+from lore.persistence import ExportedMemory, StoredMemory
+from lore.persistence.exceptions import StoreNotFoundError
 from lore.server.app import app
 from lore.server.auth import _key_cache, _last_used_updates
+from lore.server.db import get_store
 from lore.server.middleware import RateLimiter, set_rate_limiter
 
 # ── Constants ──────────────────────────────────────────────────────
@@ -152,11 +155,16 @@ async def client():
     _last_used_updates.clear()
     # Reset rate limiter for each test
     set_rate_limiter(RateLimiter())
+
+    mock_store = AsyncMock()
+    app.dependency_overrides[get_store] = lambda: mock_store
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     _key_cache.clear()
     _last_used_updates.clear()
+    app.dependency_overrides.pop(get_store, None)
 
 
 # ── Integration Test: Publish → Query → Verify Match ──────────────
@@ -165,16 +173,20 @@ async def client():
 @pytest.mark.asyncio
 async def test_full_flow_publish_query_verify(client: AsyncClient) -> None:
     """Full flow: create a lesson, then retrieve it and verify fields match."""
-    lesson_row = _lesson_row("lesson-flow-001", project=None)
-    # First fetchrow: auth (DB lookup, then cached). Second fetchrow: lesson get.
-    mock_pool, mock_conn = _make_mock_pool(
-        fetchrow_side_effect=[ROOT_KEY_ROW, lesson_row],
-    )
-
+    mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+    _stored = StoredMemory(
+        id="lesson-flow-001", org_id=ORG_ID, content="test problem",
+        context="test resolution", tags=("test",), confidence=0.8,
+        source=None, project=None, created_at=NOW, updated_at=NOW,
+        expires_at=None, upvotes=0, downvotes=0, meta={},
+        access_count=0, last_accessed_at=None, importance_score=1.0,
+    )
+
+    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+         patch("lore.services.lessons.create", new=AsyncMock(return_value="lesson-flow-001")), \
+         patch("lore.services.lessons.get", new=AsyncMock(return_value=_stored)):
         # Step 1: Publish
         create_resp = await client.post(
             "/v1/lessons",
@@ -215,16 +227,16 @@ async def test_project_scoping_isolation(client: AsyncClient) -> None:
     headers_b = {"Authorization": f"Bearer {PROJECT_B_KEY}"}
 
     # Key A creates a lesson (project-a), Key B tries to get it → 404
-    mock_pool, mock_conn = _make_mock_pool(
+    mock_pool, _ = _make_mock_pool(
         fetchrow_side_effect=[
             PROJECT_A_KEY_ROW,  # auth for Key A (cached after)
             PROJECT_B_KEY_ROW,  # auth for Key B (cached after)
-            None,               # lesson not found (scoped to project-b)
         ],
     )
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+         patch("lore.services.lessons.create", new=AsyncMock(return_value="lesson-proj-a-001")), \
+         patch("lore.services.lessons.get", new=AsyncMock(side_effect=StoreNotFoundError("memories", "lesson-proj-a-001"))):
         # Key A publishes
         create_resp = await client.post(
             "/v1/lessons",
@@ -255,8 +267,7 @@ async def test_revoked_key_rejected(client: AsyncClient) -> None:
 
     headers = {"Authorization": f"Bearer {REVOKED_KEY}"}
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool):
         resp = await client.get("/v1/lessons", headers=headers)
 
     assert resp.status_code == 401
@@ -272,20 +283,25 @@ async def test_upvote_downvote_round_trip(client: AsyncClient) -> None:
     """Upvote then downvote and verify counts update."""
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
-    upvoted_row = _lesson_row("lesson-vote-001", upvotes=1, downvotes=0)
-    downvoted_row = _lesson_row("lesson-vote-001", upvotes=1, downvotes=1)
+    mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
 
-    # Auth cached after first call, so: auth, upvote result, downvote result
-    mock_pool, mock_conn = _make_mock_pool(
-        fetchrow_side_effect=[
-            ROOT_KEY_ROW,    # auth (cached after)
-            upvoted_row,     # upvote RETURNING
-            downvoted_row,   # downvote RETURNING
-        ],
+    _after_upvote = StoredMemory(
+        id="lesson-vote-001", org_id=ORG_ID, content="test problem",
+        context="test resolution", tags=(), confidence=0.8,
+        source=None, project=None, created_at=NOW, updated_at=NOW,
+        expires_at=None, upvotes=1, downvotes=0, meta={},
+        access_count=0, last_accessed_at=None, importance_score=1.0,
+    )
+    _after_downvote = StoredMemory(
+        id="lesson-vote-001", org_id=ORG_ID, content="test problem",
+        context="test resolution", tags=(), confidence=0.8,
+        source=None, project=None, created_at=NOW, updated_at=NOW,
+        expires_at=None, upvotes=1, downvotes=1, meta={},
+        access_count=0, last_accessed_at=None, importance_score=1.0,
     )
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+         patch("lore.services.lessons.update", new=AsyncMock(side_effect=[_after_upvote, _after_downvote])):
         # Upvote
         resp1 = await client.patch(
             "/v1/lessons/lesson-vote-001",
@@ -315,25 +331,28 @@ async def test_export_import_between_contexts(client: AsyncClient) -> None:
     """Export from one org context, import to another — lessons transfer."""
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
-    export_rows = [
-        {
-            **_lesson_row("lesson-exp-001"),
-            "embedding": json.dumps(SAMPLE_EMBEDDING),
-        },
-        {
-            **_lesson_row("lesson-exp-002"),
-            "embedding": json.dumps(SAMPLE_EMBEDDING),
-        },
+    # Export mock
+    export_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
+
+    _exported_mems = [
+        ExportedMemory(
+            id="lesson-exp-001", org_id=ORG_ID, content="test problem",
+            context="test resolution", tags=("test",), confidence=0.8,
+            source=None, project=None, created_at=NOW, updated_at=NOW,
+            expires_at=None, upvotes=0, downvotes=0, meta={},
+            embedding=[0.1] * 384,
+        ),
+        ExportedMemory(
+            id="lesson-exp-002", org_id=ORG_ID, content="test problem",
+            context="test resolution", tags=("test",), confidence=0.8,
+            source=None, project=None, created_at=NOW, updated_at=NOW,
+            expires_at=None, upvotes=0, downvotes=0, meta={},
+            embedding=[0.1] * 384,
+        ),
     ]
 
-    # Export mock
-    export_pool, _ = _make_mock_pool(
-        key_row=ROOT_KEY_ROW,
-        fetch_return=export_rows,
-    )
-
-    with patch("lore.server.routes.lessons.get_pool", return_value=export_pool), \
-         patch("lore.server.auth.get_pool", return_value=export_pool):
+    with patch("lore.server.auth.get_pool", return_value=export_pool), \
+         patch("lore.services.lessons.export", new=AsyncMock(return_value=_exported_mems)):
         export_resp = await client.post("/v1/lessons/export", headers=headers)
 
     assert export_resp.status_code == 200
@@ -341,10 +360,10 @@ async def test_export_import_between_contexts(client: AsyncClient) -> None:
     assert len(exported) == 2
 
     # Import the exported lessons
-    import_pool, import_conn = _make_mock_pool(key_row=ROOT_KEY_ROW)
+    import_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=import_pool), \
-         patch("lore.server.auth.get_pool", return_value=import_pool):
+    with patch("lore.server.auth.get_pool", return_value=import_pool), \
+         patch("lore.services.lessons.import_lessons", new=AsyncMock(return_value=2)):
         import_resp = await client.post(
             "/v1/lessons/import",
             headers=headers,
@@ -376,8 +395,8 @@ async def test_rate_limit_exceeded(client: AsyncClient) -> None:
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
     mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW, fetchval_return=0, fetch_return=[])
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+         patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         # First 3 requests should succeed
         for _ in range(3):
             resp = await client.get("/v1/lessons", headers=headers)
@@ -409,8 +428,8 @@ async def test_rate_limit_independent_per_key(client: AsyncClient) -> None:
         fetch_return=[],
     )
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+         patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         # Key A: 2 requests OK
         for _ in range(2):
             resp = await client.get("/v1/lessons", headers=headers_a)
@@ -468,13 +487,11 @@ async def test_body_too_large_returns_413(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_consistent_error_shape_404(client: AsyncClient) -> None:
     """404 responses have consistent JSON shape."""
-    mock_pool, mock_conn = _make_mock_pool(
-        fetchrow_side_effect=[ROOT_KEY_ROW, None],
-    )
+    mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+         patch("lore.services.lessons.get", new=AsyncMock(side_effect=StoreNotFoundError("memories", "nonexistent"))):
         resp = await client.get("/v1/lessons/nonexistent", headers=headers)
 
     assert resp.status_code == 404
@@ -489,8 +506,7 @@ async def test_consistent_error_shape_422(client: AsyncClient) -> None:
     mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
-    with patch("lore.server.routes.lessons.get_pool", return_value=mock_pool), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool):
         resp = await client.post(
             "/v1/lessons",
             headers=headers,

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -12,13 +11,10 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
-try:
-    from ulid import ULID
-except ImportError:
-    raise ImportError("python-ulid is required. Install with: pip install python-ulid")
-
+from lore.persistence import ExportedMemory, Store, StoredMemory
+from lore.persistence.exceptions import StoreNotFoundError
 from lore.server.auth import AuthContext, get_auth_context, require_role
-from lore.server.db import get_pool
+from lore.server.db import get_store
 from lore.server.models import (
     LessonCreateRequest,
     LessonCreateResponse,
@@ -33,47 +29,53 @@ from lore.server.models import (
     LessonSearchResult,
     LessonUpdateRequest,
 )
+from lore.services import lessons as lessons_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/lessons", tags=["lessons"])
 
 
-def _row_to_response(row: dict) -> LessonResponse:
-    """Convert a DB row to a LessonResponse (no embedding)."""
-    tags = row.get("tags") or []
-    if isinstance(tags, str):
-        tags = json.loads(tags)
-    meta = row.get("meta") or {}
-    if isinstance(meta, str):
-        meta = json.loads(meta)
+# ── Translation helpers ────────────────────────────────────────────
+
+
+def _to_lesson_response(m: StoredMemory) -> LessonResponse:
     return LessonResponse(
-        id=row["id"],
-        problem=row["problem"],
-        resolution=row["resolution"],
-        context=row.get("context"),
-        tags=tags,
-        confidence=row["confidence"],
-        source=row.get("source"),
-        project=row.get("project"),
-        created_at=row["created_at"],
-        updated_at=row["updated_at"],
-        expires_at=row.get("expires_at"),
-        upvotes=row.get("upvotes", 0),
-        downvotes=row.get("downvotes", 0),
-        meta=meta,
+        id=m.id,
+        problem=m.content,
+        resolution=m.context if m.context else "",
+        context=None,  # legacy field; not stored
+        tags=list(m.tags),
+        confidence=m.confidence,
+        source=m.source,
+        project=m.project,
+        created_at=m.created_at,
+        updated_at=m.updated_at,
+        expires_at=m.expires_at,
+        upvotes=m.upvotes,
+        downvotes=m.downvotes,
+        meta=dict(m.meta),
     )
 
 
-def _scope_filter(auth: AuthContext) -> tuple[str, list]:
-    """Build WHERE clause for org + project scoping.
-
-    Returns (sql_fragment, params) starting at $1.
-    Project-scoped keys only see their project (returns 404 for others).
-    """
-    if auth.project is not None:
-        return "org_id = $1 AND project = $2", [auth.org_id, auth.project]
-    return "org_id = $1", [auth.org_id]
+def _to_export_item(em: ExportedMemory) -> LessonExportItem:
+    return LessonExportItem(
+        id=em.id,
+        problem=em.content,
+        resolution=em.context if em.context else "",
+        context=None,
+        tags=list(em.tags),
+        confidence=em.confidence,
+        source=em.source,
+        project=em.project,
+        embedding=list(em.embedding) if em.embedding else None,
+        created_at=em.created_at,
+        updated_at=em.updated_at,
+        expires_at=em.expires_at,
+        upvotes=em.upvotes,
+        downvotes=em.downvotes,
+        meta=dict(em.meta),
+    )
 
 
 # ── Create ─────────────────────────────────────────────────────────
@@ -83,153 +85,75 @@ def _scope_filter(auth: AuthContext) -> tuple[str, list]:
 async def create_lesson(
     body: LessonCreateRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
+    store: Store = Depends(get_store),
 ) -> LessonCreateResponse:
     """Create a new lesson."""
-    # Project-scoped key: force project
     project = body.project
     if auth.project is not None:
         project = auth.project
 
-    now = datetime.now(timezone.utc)
-    lesson_id = str(ULID())
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO lessons
-               (id, org_id, problem, resolution, context, tags, confidence,
-                source, project, embedding, created_at, updated_at, expires_at,
-                upvotes, downvotes, meta)
-               VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
-                       $11, $12, $13, $14, $15, $16::jsonb)""",
-            lesson_id,
-            auth.org_id,
-            body.problem,
-            body.resolution,
-            body.context,
-            json.dumps(body.tags),
-            body.confidence,
-            body.source,
-            project,
-            json.dumps(body.embedding) if body.embedding else None,
-            now,
-            now,
-            body.expires_at,
-            0,
-            0,
-            json.dumps(body.meta),
-        )
-
+    lesson_id = await lessons_service.create(
+        store,
+        org_id=auth.org_id,
+        problem=body.problem,
+        resolution=body.resolution,
+        context=body.context,
+        tags=body.tags,
+        confidence=body.confidence,
+        source=body.source,
+        project=project,
+        embedding=body.embedding,
+        expires_at=body.expires_at,
+        meta=body.meta,
+    )
     return LessonCreateResponse(id=lesson_id)
 
 
 # ── Search ─────────────────────────────────────────────────────────
-
-# Type-specific decay half-lives (days), matching DECAY_HALF_LIVES in types.py.
-_HALF_LIFE_DEFAULT = 30
 
 
 @router.post("/search", response_model=LessonSearchResponse)
 async def search_lessons(
     body: LessonSearchRequest,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> LessonSearchResponse:
-    """Semantic search with multiplicative scoring.
-
-    Score = cosine_similarity * time_adjusted_importance
-    where time_adjusted_importance = importance_score * 0.5^(effective_age / half_life)
-    and effective_age = LEAST(age_since_created, age_since_last_accessed).
-    """
-    # Build WHERE clause
-    where_parts: list[str] = ["org_id = $1"]
-    params: list = [auth.org_id]
-
-    # Project scoping: key scope overrides body
+    """Semantic search with multiplicative scoring."""
     project = body.project
     if auth.project is not None:
         project = auth.project
-    if project is not None:
-        params.append(project)
-        where_parts.append(f"project = ${len(params)}")
 
-    # Tag filtering (AND logic)
-    if body.tags:
-        params.append(json.dumps(body.tags))
-        where_parts.append(f"tags @> ${len(params)}::jsonb")
+    results = await lessons_service.search(
+        store,
+        org_id=auth.org_id,
+        embedding=body.embedding,
+        project=project,
+        tags=body.tags,
+        limit=body.limit,
+        min_confidence=body.min_confidence,
+    )
 
-    # Exclude expired lessons
-    where_parts.append("(expires_at IS NULL OR expires_at > now())")
-
-    # Embedding must exist
-    where_parts.append("embedding IS NOT NULL")
-
-    where_sql = " AND ".join(where_parts)
-
-    # Embedding parameter for pgvector
-    params.append(json.dumps(body.embedding))
-    emb_idx = len(params)
-
-    # Limit
-    params.append(body.limit)
-    limit_idx = len(params)
-
-    # SQL: multiplicative scoring
-    # cosine = 1 - (embedding <=> query)
-    # effective_age = LEAST(age_since_created, age_since_last_accessed)
-    # tai = importance_score * 0.5^(effective_age / half_life)
-    # score = cosine * tai
-    query = f"""
-        SELECT id, problem, resolution, context, tags, confidence,
-               source, project, created_at, updated_at, expires_at,
-               upvotes, downvotes, meta,
-               importance_score, access_count, last_accessed_at,
-               (1 - (embedding <=> ${emb_idx}::vector)) *
-               COALESCE(importance_score, 1.0) *
-               power(0.5,
-                   LEAST(
-                       EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0,
-                       COALESCE(
-                           EXTRACT(EPOCH FROM (now() - last_accessed_at)) / 86400.0,
-                           EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0
-                       )
-                   )
-                   / (CASE meta->>'type'
-                       WHEN 'code' THEN 14
-                       WHEN 'note' THEN 21
-                       WHEN 'lesson' THEN 30
-                       WHEN 'convention' THEN 60
-                       ELSE {_HALF_LIFE_DEFAULT}
-                     END)
-               )
-               AS score
-        FROM lessons
-        WHERE {where_sql}
-        ORDER BY score DESC
-        LIMIT ${limit_idx}
-    """
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(query, *params)
-
-    # Filter by min_confidence after scoring
-    results = []
-    for r in rows:
-        rd = dict(r)
-        score = float(rd.pop("score", 0.0))
-        # Remove extra columns not in _row_to_response
-        rd.pop("importance_score", None)
-        rd.pop("access_count", None)
-        rd.pop("last_accessed_at", None)
-        if score < body.min_confidence:
-            continue
-        lesson_resp = _row_to_response(rd)
-        results.append(LessonSearchResult(
-            **lesson_resp.model_dump(),
-            score=round(max(score, 0.0), 6),
-        ))
-
-    return LessonSearchResponse(lessons=results)
+    lessons = [
+        LessonSearchResult(
+            id=r["id"],
+            problem=r["content"],
+            resolution=r["context"] or "",
+            context=None,
+            tags=r["tags"],
+            confidence=r["confidence"],
+            source=r["source"],
+            project=r["project"],
+            created_at=r["created_at"],
+            updated_at=r["updated_at"],
+            expires_at=r["expires_at"],
+            upvotes=r["upvotes"],
+            downvotes=r["downvotes"],
+            meta=r["meta"],
+            score=r["score"],
+        )
+        for r in results
+    ]
+    return LessonSearchResponse(lessons=lessons)
 
 
 # ── Access tracking ────────────────────────────────────────────────
@@ -239,37 +163,26 @@ async def search_lessons(
 async def record_access(
     lesson_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> dict:
     """Record an access event: increment access_count, set last_accessed_at,
     and recompute importance_score server-side."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""UPDATE lessons SET
-                    access_count = COALESCE(access_count, 0) + 1,
-                    last_accessed_at = now(),
-                    importance_score = (
-                        confidence
-                        * GREATEST(0.1, 1.0 + (upvotes - downvotes) * 0.1)
-                        * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
-                    ),
-                    updated_at = now()
-                WHERE id = ${len(scope_params) + 1} AND {scope_sql}
-                RETURNING id, access_count, last_accessed_at, importance_score""",
-            *scope_params,
-            lesson_id,
+    try:
+        result = await lessons_service.record_access(
+            store,
+            org_id=auth.org_id,
+            lesson_id=lesson_id,
+            project=auth.project,
         )
-
-    if row is None:
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Lesson not found")
 
+    last_acc = result["last_accessed_at"]
     return {
-        "id": row["id"],
-        "access_count": row["access_count"],
-        "last_accessed_at": row["last_accessed_at"].isoformat() if row["last_accessed_at"] else None,
-        "importance_score": float(row["importance_score"]),
+        "id": result["id"],
+        "access_count": result["access_count"],
+        "last_accessed_at": last_acc.isoformat() if last_acc else None,
+        "importance_score": float(result["importance_score"] or 0.0),
     }
 
 
@@ -280,25 +193,19 @@ async def record_access(
 async def get_lesson(
     lesson_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> LessonResponse:
     """Get a single lesson by ID."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""SELECT id, problem, resolution, context, tags, confidence,
-                       source, project, created_at, updated_at, expires_at,
-                       upvotes, downvotes, meta
-                FROM lessons WHERE id = ${len(scope_params) + 1} AND {scope_sql}""",
-            *scope_params,
-            lesson_id,
+    try:
+        m = await lessons_service.get(
+            store,
+            org_id=auth.org_id,
+            lesson_id=lesson_id,
+            project=auth.project,
         )
-
-    if row is None:
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Lesson not found")
-
-    return _row_to_response(dict(row))
+    return _to_lesson_response(m)
 
 
 # ── Update ─────────────────────────────────────────────────────────
@@ -309,64 +216,26 @@ async def update_lesson(
     lesson_id: str,
     body: LessonUpdateRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
+    store: Store = Depends(get_store),
 ) -> LessonResponse:
     """Update a lesson. Supports atomic upvote/downvote."""
-    scope_sql, scope_params = _scope_filter(auth)
-    len(scope_params) + 1  # next param index
-
-    # Build SET clause dynamically
-    set_parts: list[str] = []
-    params: list = list(scope_params)
-
-    if body.confidence is not None:
-        params.append(body.confidence)
-        set_parts.append(f"confidence = ${len(params)}")
-
-    if body.tags is not None:
-        params.append(json.dumps(body.tags))
-        set_parts.append(f"tags = ${len(params)}::jsonb")
-
-    if body.meta is not None:
-        params.append(json.dumps(body.meta))
-        set_parts.append(f"meta = ${len(params)}::jsonb")
-
-    # Handle atomic vote increments
-    for vote_field in ("upvotes", "downvotes"):
-        val = getattr(body, vote_field)
-        if val is not None:
-            if isinstance(val, str):
-                # "+1" or "-1" → atomic increment
-                delta = 1 if val == "+1" else -1
-                params.append(delta)
-                set_parts.append(f"{vote_field} = {vote_field} + ${len(params)}")
-            else:
-                params.append(val)
-                set_parts.append(f"{vote_field} = ${len(params)}")
-
-    if not set_parts:
-        raise HTTPException(status_code=422, detail="No fields to update")
-
-    # Always update updated_at
-    set_parts.append("updated_at = now()")
-
-    params.append(lesson_id)
-    id_idx = len(params)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""UPDATE lessons SET {', '.join(set_parts)}
-                WHERE id = ${id_idx} AND {scope_sql}
-                RETURNING id, problem, resolution, context, tags, confidence,
-                          source, project, created_at, updated_at, expires_at,
-                          upvotes, downvotes, meta""",
-            *params,
+    try:
+        m = await lessons_service.update(
+            store,
+            org_id=auth.org_id,
+            lesson_id=lesson_id,
+            project=auth.project,
+            confidence=body.confidence,
+            tags=body.tags,
+            meta=body.meta,
+            upvotes=body.upvotes,
+            downvotes=body.downvotes,
         )
-
-    if row is None:
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Lesson not found")
-
-    return _row_to_response(dict(row))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return _to_lesson_response(m)
 
 
 # ── Delete ─────────────────────────────────────────────────────────
@@ -376,20 +245,17 @@ async def update_lesson(
 async def delete_lesson(
     lesson_id: str,
     auth: AuthContext = Depends(require_role("writer", "admin")),
+    store: Store = Depends(get_store),
 ) -> None:
     """Delete a lesson."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            f"DELETE FROM lessons WHERE id = ${len(scope_params) + 1} AND {scope_sql}",
-            *scope_params,
-            lesson_id,
+    try:
+        await lessons_service.delete(
+            store,
+            org_id=auth.org_id,
+            lesson_id=lesson_id,
+            project=auth.project,
         )
-
-    # asyncpg returns "DELETE N"
-    if result == "DELETE 0":
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Lesson not found")
 
 
@@ -406,67 +272,30 @@ async def list_lessons(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> LessonListResponse:
     """List lessons with pagination."""
-    # Build WHERE
-    where_parts: list[str] = ["org_id = $1"]
-    params: list = [auth.org_id]
+    # Project-scoped key overrides query param
+    effective_project = auth.project if auth.project is not None else project
 
-    # Project scoping
-    if auth.project is not None:
-        params.append(auth.project)
-        where_parts.append(f"project = ${len(params)}")
-    elif project is not None:
-        params.append(project)
-        where_parts.append(f"project = ${len(params)}")
-
-    # Time-range filter
+    since_dt: Optional[datetime] = None
     if since is not None:
-        params.append(since)
-        where_parts.append(f"created_at >= ${len(params)}")
+        _dt = datetime.fromisoformat(since)
+        since_dt = _dt if _dt.tzinfo else _dt.replace(tzinfo=timezone.utc)
 
-    # Text search (ILIKE on problem + resolution)
-    if query:
-        params.append(f"%{query}%")
-        idx = len(params)
-        where_parts.append(f"(problem ILIKE ${idx} OR resolution ILIKE ${idx})")
-
-    # Category filter (tag in jsonb array)
-    if category:
-        params.append(json.dumps([category]))
-        where_parts.append(f"tags @> ${len(params)}::jsonb")
-
-    # Minimum reputation filter
-    if min_reputation is not None:
-        params.append(min_reputation)
-        where_parts.append(f"reputation_score >= ${len(params)}")
-
-    where_sql = " AND ".join(where_parts)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        total = await conn.fetchval(
-            f"SELECT COUNT(*) FROM lessons WHERE {where_sql}",
-            *params,
-        )
-
-        params.append(limit)
-        limit_idx = len(params)
-        params.append(offset)
-        offset_idx = len(params)
-
-        rows = await conn.fetch(
-            f"""SELECT id, problem, resolution, context, tags, confidence,
-                       source, project, created_at, updated_at, expires_at,
-                       upvotes, downvotes, meta, reputation_score, quality_signals
-                FROM lessons WHERE {where_sql}
-                ORDER BY created_at DESC
-                LIMIT ${limit_idx} OFFSET ${offset_idx}""",
-            *params,
-        )
-
+    total, memories = await lessons_service.list_lessons(
+        store,
+        org_id=auth.org_id,
+        project=effective_project,
+        query=query,
+        category=category,
+        since=since_dt,
+        min_reputation=min_reputation,
+        limit=limit,
+        offset=offset,
+    )
     return LessonListResponse(
-        lessons=[_row_to_response(dict(r)) for r in rows],
+        lessons=[_to_lesson_response(m) for m in memories],
         total=total,
         limit=limit,
         offset=offset,
@@ -479,52 +308,15 @@ async def list_lessons(
 @router.post("/export", response_model=LessonExportResponse)
 async def export_lessons(
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> LessonExportResponse:
     """Bulk export all lessons (with embeddings) for the org/project."""
-    scope_sql, scope_params = _scope_filter(auth)
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            f"""SELECT id, problem, resolution, context, tags, confidence,
-                       source, project, embedding, created_at, updated_at,
-                       expires_at, upvotes, downvotes, meta
-                FROM lessons WHERE {scope_sql}
-                ORDER BY created_at""",
-            *scope_params,
-        )
-
-    items = []
-    for r in rows:
-        rd = dict(r)
-        tags = rd.get("tags") or []
-        if isinstance(tags, str):
-            tags = json.loads(tags)
-        meta = rd.get("meta") or {}
-        if isinstance(meta, str):
-            meta = json.loads(meta)
-        emb = rd.get("embedding")
-        if isinstance(emb, str):
-            emb = json.loads(emb)
-        items.append(LessonExportItem(
-            id=rd["id"],
-            problem=rd["problem"],
-            resolution=rd["resolution"],
-            context=rd.get("context"),
-            tags=tags,
-            confidence=rd["confidence"],
-            source=rd.get("source"),
-            project=rd.get("project"),
-            embedding=emb,
-            created_at=rd["created_at"],
-            updated_at=rd["updated_at"],
-            expires_at=rd.get("expires_at"),
-            upvotes=rd.get("upvotes", 0),
-            downvotes=rd.get("downvotes", 0),
-            meta=meta,
-        ))
-
-    return LessonExportResponse(lessons=items)
+    items = await lessons_service.export(
+        store,
+        org_id=auth.org_id,
+        project=auth.project,
+    )
+    return LessonExportResponse(lessons=[_to_export_item(em) for em in items])
 
 
 # ── Import ─────────────────────────────────────────────────────────
@@ -534,59 +326,13 @@ async def export_lessons(
 async def import_lessons(
     body: LessonImportRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
+    store: Store = Depends(get_store),
 ) -> LessonImportResponse:
     """Bulk import (upsert) lessons."""
-    now = datetime.now(timezone.utc)
-    imported = 0
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            for item in body.lessons:
-                lesson_id = item.id or str(ULID())
-                project = item.project
-                if auth.project is not None:
-                    project = auth.project
-
-                await conn.execute(
-                    """INSERT INTO lessons
-                       (id, org_id, problem, resolution, context, tags, confidence,
-                        source, project, embedding, created_at, updated_at, expires_at,
-                        upvotes, downvotes, meta)
-                       VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10,
-                               $11, $12, $13, $14, $15, $16::jsonb)
-                       ON CONFLICT (id) DO UPDATE SET
-                           problem = EXCLUDED.problem,
-                           resolution = EXCLUDED.resolution,
-                           context = EXCLUDED.context,
-                           tags = EXCLUDED.tags,
-                           confidence = EXCLUDED.confidence,
-                           source = EXCLUDED.source,
-                           project = EXCLUDED.project,
-                           embedding = EXCLUDED.embedding,
-                           updated_at = EXCLUDED.updated_at,
-                           expires_at = EXCLUDED.expires_at,
-                           upvotes = EXCLUDED.upvotes,
-                           downvotes = EXCLUDED.downvotes,
-                           meta = EXCLUDED.meta
-                       WHERE lessons.org_id = EXCLUDED.org_id""",
-                    lesson_id,
-                    auth.org_id,
-                    item.problem,
-                    item.resolution,
-                    item.context,
-                    json.dumps(item.tags),
-                    item.confidence,
-                    item.source,
-                    project,
-                    json.dumps(item.embedding),
-                    now,
-                    now,
-                    item.expires_at,
-                    item.upvotes,
-                    item.downvotes,
-                    json.dumps(item.meta),
-                )
-                imported += 1
-
-    return LessonImportResponse(imported=imported)
+    count = await lessons_service.import_lessons(
+        store,
+        org_id=auth.org_id,
+        lessons=body.lessons,
+        project_override=auth.project,
+    )
+    return LessonImportResponse(imported=count)
