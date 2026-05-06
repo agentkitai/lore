@@ -448,6 +448,18 @@ class Store(Protocol):
         """Count active (non-revoked) root-level API keys for an org."""
         ...
 
+    async def lookup_api_key_by_hash(self, key_hash: str) -> Optional[StoredApiKey]:
+        """Return the API key matching a sha256 key_hash, or None if absent.
+
+        Used by the auth middleware on every request (after cache miss)."""
+        ...
+
+    async def touch_api_key_last_used(self, key_id: str) -> None:
+        """Update last_used_at = now() for an API key.
+
+        Called from a debounced background task — failure is logged, not raised."""
+        ...
+
     # ── AnalyticsOps ─────────────────────────────────────────────────
 
     async def record_retrieval_event(self, event: NewRetrievalEvent) -> None:

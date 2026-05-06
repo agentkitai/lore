@@ -209,6 +209,7 @@ def _row_to_api_key(row: "asyncpg.Record") -> StoredApiKey:
         revoked_at=row["revoked_at"],
         created_at=row["created_at"],
         last_used_at=row["last_used_at"],
+        role=row["role"],
     )
 
 
@@ -2008,7 +2009,7 @@ class PostgresStore:
             row = await conn.fetchrow(
                 """
                 SELECT id, org_id, name, key_hash, key_prefix, project, is_root,
-                       workspace_id, revoked_at, created_at, last_used_at
+                       workspace_id, revoked_at, created_at, last_used_at, role
                 FROM api_keys
                 WHERE id = $1
                 """,
@@ -2021,7 +2022,7 @@ class PostgresStore:
             rows = await conn.fetch(
                 """
                 SELECT id, org_id, name, key_hash, key_prefix, project, is_root,
-                       workspace_id, revoked_at, created_at, last_used_at
+                       workspace_id, revoked_at, created_at, last_used_at, role
                 FROM api_keys
                 WHERE org_id = $1
                 ORDER BY created_at
@@ -2039,7 +2040,7 @@ class PostgresStore:
                     (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id, org_id, name, key_hash, key_prefix, project, is_root,
-                          workspace_id, revoked_at, created_at, last_used_at
+                          workspace_id, revoked_at, created_at, last_used_at, role
                 """,
                 key_id,
                 key.org_id,
@@ -2060,7 +2061,7 @@ class PostgresStore:
                 SET revoked_at = now()
                 WHERE id = $1 AND revoked_at IS NULL
                 RETURNING id, org_id, name, key_hash, key_prefix, project, is_root,
-                          workspace_id, revoked_at, created_at, last_used_at
+                          workspace_id, revoked_at, created_at, last_used_at, role
                 """,
                 key_id,
             )
@@ -2077,6 +2078,26 @@ class PostgresStore:
                 org_id,
             )
         return int(result or 0)
+
+    async def lookup_api_key_by_hash(self, key_hash: str) -> Optional[StoredApiKey]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, key_hash, key_prefix, project, is_root,
+                       workspace_id, revoked_at, created_at, last_used_at, role
+                FROM api_keys
+                WHERE key_hash = $1
+                """,
+                key_hash,
+            )
+        return _row_to_api_key(row) if row else None
+
+    async def touch_api_key_last_used(self, key_id: str) -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET last_used_at = now() WHERE id = $1",
+                key_id,
+            )
 
     # ── AnalyticsOps ─────────────────────────────────────────────────
 

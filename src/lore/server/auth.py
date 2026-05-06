@@ -16,7 +16,7 @@ except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
 from lore.server.config import settings
-from lore.server.db import get_pool
+from lore.server.db import get_store
 
 logger = logging.getLogger(__name__)
 
@@ -199,23 +199,26 @@ async def _resolve_api_key(raw_key: str) -> AuthContext:
         if time.monotonic() - cached_at < CACHE_TTL_SECONDS:
             return _validate_row(row)
 
-    # DB lookup
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """SELECT id, org_id, project, is_root, revoked_at, key_hash, role
-               FROM api_keys WHERE key_hash = $1""",
-            key_hash,
-        )
+    # DB lookup (Phase 1M: via Store)
+    store = await get_store()
+    stored = await store.lookup_api_key_by_hash(key_hash)
 
-    if row is None:
+    if stored is None:
         raise _auth_error("invalid_api_key")
-
-    row_dict = dict(row)
 
     # Timing-safe comparison
-    if not hmac.compare_digest(row_dict["key_hash"], key_hash):
+    if not hmac.compare_digest(stored.key_hash, key_hash):
         raise _auth_error("invalid_api_key")
+
+    row_dict: Dict[str, Any] = {
+        "id": stored.id,
+        "org_id": stored.org_id,
+        "project": stored.project,
+        "is_root": stored.is_root,
+        "revoked_at": stored.revoked_at,
+        "key_hash": stored.key_hash,
+        "role": stored.role,
+    }
 
     # Cache (with size limit)
     if len(_key_cache) >= CACHE_MAX_SIZE:
@@ -257,12 +260,8 @@ def _maybe_update_last_used(key_id: str) -> None:
 
     async def _do_update() -> None:
         try:
-            pool = await get_pool()
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE api_keys SET last_used_at = now() WHERE id = $1",
-                    key_id,
-                )
+            store = await get_store()
+            await store.touch_api_key_last_used(key_id)
         except Exception:
             logger.debug("Failed to update last_used_at for key %s", key_id, exc_info=True)
 

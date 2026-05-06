@@ -141,6 +141,8 @@ REQUIRED_AUTH_OPS = {
     "create_api_key",
     "revoke_api_key",
     "count_active_root_keys",
+    "lookup_api_key_by_hash",
+    "touch_api_key_last_used",
 }
 
 
