@@ -29,6 +29,7 @@ from lore.persistence.types import (
     NewMention,
     NewProfile,
     NewRelationship,
+    NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
@@ -498,6 +499,13 @@ class PostgresStore:
                 list(memory_ids),
                 org_id,
             )
+
+    async def enrich_memory_meta(
+        self,
+        memory_id: str,
+        enrichment_data: "Mapping[str, Any]",
+    ) -> None:
+        raise NotImplementedError("enrich_memory_meta implemented in T5")
 
     async def vote_memory(
         self,
@@ -1609,6 +1617,46 @@ class PostgresStore:
                 org_id,
             )
         return int(result or 0)
+
+    # ── AnalyticsOps ─────────────────────────────────────────────────
+
+    async def record_retrieval_event(self, event: NewRetrievalEvent) -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO retrieval_events
+                    (org_id, query, results_count, scores, memory_ids,
+                     avg_score, max_score, min_score_threshold, query_time_ms,
+                     project, format)
+                VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11)
+                """,
+                event.org_id,
+                event.query,
+                event.results_count,
+                json.dumps(list(event.scores)),
+                json.dumps(list(event.memory_ids)),
+                event.avg_score,
+                event.max_score,
+                event.min_score_threshold,
+                event.query_time_ms,
+                event.project,
+                event.format,
+            )
+
+    async def record_memory_access(
+        self, org_id: str, memory_id: str
+    ) -> Optional[StoredMemory]:
+        raise NotImplementedError("record_memory_access implemented in T4")
+
+    async def list_recent_session_snapshots(
+        self,
+        org_id: str,
+        *,
+        project: Optional[str] = None,
+        exclude_ids: Sequence[str] = (),
+        limit: int = 3,
+    ) -> Sequence[StoredMemory]:
+        raise NotImplementedError("list_recent_session_snapshots implemented in T4")
 
 
 class _BoundConn:
