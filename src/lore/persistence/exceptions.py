@@ -38,3 +38,11 @@ class ConfigError(LoreError):
 
 class BackendUnavailableError(ConfigError):
     """The selected backend's runtime is not available (driver, extension)."""
+
+
+class IntegrityError(StoreError):
+    """Cross-table or constraint invariant violated (e.g. unique (org_id, name))."""
+
+
+class ProfileImmutableError(LoreError):
+    """Raised when caller attempts to modify or delete a preset profile."""

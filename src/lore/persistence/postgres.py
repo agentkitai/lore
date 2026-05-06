@@ -17,7 +17,7 @@ except ImportError:  # pragma: no cover
 
 from ulid import ULID
 
-from lore.persistence.exceptions import BackendUnavailableError, StoreNotFoundError
+from lore.persistence.exceptions import BackendUnavailableError, IntegrityError, StoreNotFoundError
 from lore.persistence.types import (
     GraphStats,
     MemoryFilter,
@@ -25,13 +25,16 @@ from lore.persistence.types import (
     NewEntity,
     NewMemory,
     NewMention,
+    NewProfile,
     NewRelationship,
     PendingRelationshipRow,
+    ProfilePatch,
     RecallParams,
     ScoredMemory,
     StoredEntity,
     StoredMemory,
     StoredMention,
+    StoredProfile,
     StoredRelationship,
     TimelineBucketRow,
 )
@@ -116,6 +119,31 @@ def _row_to_entity(row: "asyncpg.Record") -> StoredEntity:
         mention_count=row["mention_count"] or 0,
         first_seen_at=row["first_seen_at"],
         last_seen_at=row["last_seen_at"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_profile(row: "asyncpg.Record") -> StoredProfile:
+    tier_filters = row["tier_filters"]
+    # asyncpg returns Postgres TEXT[] as list[str] | None
+    tf: Optional[tuple] = tuple(tier_filters) if tier_filters is not None else None
+    return StoredProfile(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        semantic_weight=float(row["semantic_weight"]),
+        graph_weight=float(row["graph_weight"]),
+        recency_bias=float(row["recency_bias"]),
+        tier_filters=tf,
+        min_score=float(row["min_score"]),
+        max_results=int(row["max_results"]),
+        is_preset=bool(row["is_preset"]),
+        k=row["k"],
+        threshold=float(row["threshold"]) if row["threshold"] is not None else None,
+        # DB-level defaults ensure these are never NULL; coerce for safety
+        rerank=bool(row["rerank"]) if row["rerank"] is not None else False,
+        include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -1112,6 +1140,193 @@ class PostgresStore:
                 limit,
             )
         return [_row_to_stored(r) for r in rows]
+
+    # ── PolicyOps ─────────────────────────────────────────────────────
+
+    async def get_profile(self, profile_id: str) -> Optional[StoredProfile]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name,
+                       semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset,
+                       k, threshold, rerank, include_graph,
+                       created_at, updated_at
+                FROM retrieval_profiles
+                WHERE id = $1
+                """,
+                profile_id,
+            )
+        return _row_to_profile(row) if row else None
+
+    async def get_profile_by_name(
+        self, org_id: str, name: str
+    ) -> Optional[StoredProfile]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name,
+                       semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset,
+                       k, threshold, rerank, include_graph,
+                       created_at, updated_at
+                FROM retrieval_profiles
+                WHERE name = $1 AND org_id = $2
+                """,
+                name,
+                org_id,
+            )
+        return _row_to_profile(row) if row else None
+
+    # ── PolicyOps: list, create, update, delete, resolve ──────────────
+
+    async def list_profiles(self, org_id: str) -> Sequence[StoredProfile]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, name,
+                       semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset,
+                       k, threshold, rerank, include_graph,
+                       created_at, updated_at
+                FROM retrieval_profiles
+                WHERE org_id = $1 OR org_id = '__global__'
+                ORDER BY name
+                """,
+                org_id,
+            )
+        return tuple(_row_to_profile(r) for r in rows)
+
+    async def create_profile(self, profile: NewProfile) -> StoredProfile:
+        profile_id = f"prof_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO retrieval_profiles
+                      (id, org_id, name, semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset,
+                       k, threshold, rerank, include_graph)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                    RETURNING id, org_id, name,
+                              semantic_weight, graph_weight, recency_bias,
+                              tier_filters, min_score, max_results, is_preset,
+                              k, threshold, rerank, include_graph,
+                              created_at, updated_at
+                    """,
+                    profile_id,
+                    profile.org_id,
+                    profile.name,
+                    profile.semantic_weight,
+                    profile.graph_weight,
+                    profile.recency_bias,
+                    list(profile.tier_filters) if profile.tier_filters is not None else None,
+                    profile.min_score,
+                    profile.max_results,
+                    profile.is_preset,
+                    profile.k,
+                    profile.threshold,
+                    profile.rerank,
+                    profile.include_graph,
+                )
+            except asyncpg.UniqueViolationError as e:
+                raise IntegrityError(
+                    f"Profile name {profile.name!r} already exists for org_id={profile.org_id!r}"
+                ) from e
+        return _row_to_profile(row)
+
+    async def update_profile(
+        self, profile_id: str, patch: ProfilePatch
+    ) -> Optional[StoredProfile]:
+        # Build dynamic SET clause from non-None patch fields
+        sets: list[str] = []
+        params: list = [profile_id]
+
+        if patch.name is not None:
+            params.append(patch.name)
+            sets.append(f"name = ${len(params)}")
+        if patch.semantic_weight is not None:
+            params.append(patch.semantic_weight)
+            sets.append(f"semantic_weight = ${len(params)}")
+        if patch.graph_weight is not None:
+            params.append(patch.graph_weight)
+            sets.append(f"graph_weight = ${len(params)}")
+        if patch.recency_bias is not None:
+            params.append(patch.recency_bias)
+            sets.append(f"recency_bias = ${len(params)}")
+        if patch.tier_filters is not None:
+            params.append(list(patch.tier_filters))
+            sets.append(f"tier_filters = ${len(params)}")
+        if patch.min_score is not None:
+            params.append(patch.min_score)
+            sets.append(f"min_score = ${len(params)}")
+        if patch.max_results is not None:
+            params.append(patch.max_results)
+            sets.append(f"max_results = ${len(params)}")
+        if patch.is_preset is not None:
+            params.append(patch.is_preset)
+            sets.append(f"is_preset = ${len(params)}")
+        if patch.k is not None:
+            params.append(patch.k)
+            sets.append(f"k = ${len(params)}")
+        if patch.threshold is not None:
+            params.append(patch.threshold)
+            sets.append(f"threshold = ${len(params)}")
+        if patch.rerank is not None:
+            params.append(patch.rerank)
+            sets.append(f"rerank = ${len(params)}")
+        if patch.include_graph is not None:
+            params.append(patch.include_graph)
+            sets.append(f"include_graph = ${len(params)}")
+
+        if not sets:
+            raise ValueError(
+                "update_profile called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sets.append("updated_at = now()")
+        sql = (
+            "UPDATE retrieval_profiles "
+            f"SET {', '.join(sets)} "
+            "WHERE id = $1 "
+            "RETURNING id, org_id, name, "
+            "semantic_weight, graph_weight, recency_bias, "
+            "tier_filters, min_score, max_results, is_preset, "
+            "k, threshold, rerank, include_graph, "
+            "created_at, updated_at"
+        )
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+        return _row_to_profile(row) if row else None
+
+    async def delete_profile(self, profile_id: str, org_id: str) -> bool:
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM retrieval_profiles WHERE id = $1 AND org_id = $2",
+                profile_id,
+                org_id,
+            )
+        # asyncpg returns "DELETE n"
+        return result.endswith(" 1")
+
+    async def resolve_profile_for_key(
+        self, org_id: str, name: str
+    ) -> Optional[StoredProfile]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, semantic_weight, graph_weight, recency_bias,
+                       tier_filters, min_score, max_results, is_preset, k, threshold,
+                       rerank, include_graph, created_at, updated_at
+                FROM retrieval_profiles
+                WHERE name = $1 AND (org_id = $2 OR org_id = '__global__')
+                ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END
+                LIMIT 1
+                """,
+                name,
+                org_id,
+            )
+        return _row_to_profile(row) if row else None
 
 
 class _BoundConn:

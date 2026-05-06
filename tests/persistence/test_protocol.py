@@ -1,4 +1,4 @@
-"""Tests that the Store Protocol declares the MemoryOps and GraphOps slices."""
+"""Tests that the Store Protocol declares the MemoryOps, GraphOps, and PolicyOps slices."""
 
 from __future__ import annotations
 
@@ -68,6 +68,31 @@ def test_store_declares_graph_ops():
 
 def test_graph_ops_are_async():
     for name in REQUIRED_GRAPH_OPS:
+        method = getattr(Store, name)
+        assert inspect.iscoroutinefunction(method), (
+            f"Store.{name} must be async"
+        )
+
+
+REQUIRED_POLICY_OPS = {
+    "get_profile",
+    "get_profile_by_name",
+    "list_profiles",
+    "create_profile",
+    "update_profile",
+    "delete_profile",
+    "resolve_profile_for_key",
+}
+
+
+def test_store_declares_policy_ops():
+    members = {name for name, _ in inspect.getmembers(Store)}
+    missing = REQUIRED_POLICY_OPS - members
+    assert not missing, f"Store missing PolicyOps methods: {missing}"
+
+
+def test_policy_ops_are_async():
+    for name in REQUIRED_POLICY_OPS:
         method = getattr(Store, name)
         assert inspect.iscoroutinefunction(method), (
             f"Store.{name} must be async"

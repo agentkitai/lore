@@ -1,6 +1,9 @@
 """Tests for persistence-layer dataclasses."""
 
+import dataclasses
 from datetime import datetime, timezone
+
+import pytest
 
 from lore.persistence.types import (
     GraphStats,
@@ -9,13 +12,17 @@ from lore.persistence.types import (
     NewEntity,
     NewMemory,
     NewMention,
+    NewProfile,
     NewRelationship,
     PendingRelationshipRow,
+    ProfilePatch,
     RecallParams,
+    ResolvedProfile,
     ScoredMemory,
     StoredEntity,
     StoredMemory,
     StoredMention,
+    StoredProfile,
     StoredRelationship,
     TimelineBucketRow,
 )
@@ -316,3 +323,254 @@ def test_pending_relationship_row_construction():
     assert prr.source_name == "Alice"
     assert prr.target_mentions == 3
     assert prr.weight == 0.5
+
+
+# Profile dataclass tests
+
+
+def test_new_profile_defaults():
+    np = NewProfile(org_id="org_1", name="default")
+    assert np.org_id == "org_1"
+    assert np.name == "default"
+    assert np.semantic_weight == 1.0
+    assert np.graph_weight == 1.0
+    assert np.recency_bias == 30.0
+    assert np.tier_filters is None
+    assert np.min_score == 0.3
+    assert np.max_results == 10
+    assert np.is_preset is False
+    assert np.k is None
+    assert np.threshold is None
+    assert np.rerank is False
+    assert np.include_graph is True
+
+
+def test_new_profile_all_fields():
+    np = NewProfile(
+        org_id="org_2",
+        name="strict",
+        semantic_weight=0.8,
+        graph_weight=0.6,
+        recency_bias=14.0,
+        tier_filters=["hot", "warm"],
+        min_score=0.5,
+        max_results=5,
+        is_preset=True,
+        k=3,
+        threshold=0.7,
+        rerank=True,
+        include_graph=False,
+    )
+    assert np.semantic_weight == 0.8
+    assert np.graph_weight == 0.6
+    assert np.recency_bias == 14.0
+    assert np.tier_filters == ["hot", "warm"]
+    assert np.min_score == 0.5
+    assert np.max_results == 5
+    assert np.is_preset is True
+    assert np.k == 3
+    assert np.threshold == 0.7
+    assert np.rerank is True
+    assert np.include_graph is False
+
+
+def test_new_profile_frozen():
+    np = NewProfile(org_id="org_1", name="default")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        np.name = "other"  # type: ignore[misc]
+
+
+def test_new_profile_slots():
+    np = NewProfile(org_id="org_1", name="default")
+    assert not hasattr(np, "__dict__")
+
+
+def test_stored_profile_round_trip():
+    now = datetime.now(timezone.utc)
+    sp = StoredProfile(
+        id="prof_01",
+        org_id="org_1",
+        name="balanced",
+        semantic_weight=1.0,
+        graph_weight=1.0,
+        recency_bias=30.0,
+        tier_filters=None,
+        min_score=0.3,
+        max_results=10,
+        is_preset=False,
+        k=None,
+        threshold=None,
+        rerank=False,
+        include_graph=True,
+        created_at=now,
+        updated_at=now,
+    )
+    assert sp.id == "prof_01"
+    assert sp.org_id == "org_1"
+    assert sp.name == "balanced"
+    assert sp.created_at == now
+    assert sp.updated_at == now
+
+
+def test_stored_profile_frozen():
+    now = datetime.now(timezone.utc)
+    sp = StoredProfile(
+        id="prof_02",
+        org_id="org_1",
+        name="test",
+        semantic_weight=1.0,
+        graph_weight=1.0,
+        recency_bias=30.0,
+        tier_filters=None,
+        min_score=0.3,
+        max_results=10,
+        is_preset=False,
+        k=None,
+        threshold=None,
+        rerank=False,
+        include_graph=True,
+        created_at=now,
+        updated_at=now,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        sp.name = "mutated"  # type: ignore[misc]
+
+
+def test_stored_profile_slots():
+    now = datetime.now(timezone.utc)
+    sp = StoredProfile(
+        id="prof_03",
+        org_id="org_1",
+        name="test",
+        semantic_weight=1.0,
+        graph_weight=1.0,
+        recency_bias=30.0,
+        tier_filters=None,
+        min_score=0.3,
+        max_results=10,
+        is_preset=False,
+        k=None,
+        threshold=None,
+        rerank=False,
+        include_graph=True,
+        created_at=now,
+        updated_at=now,
+    )
+    assert not hasattr(sp, "__dict__")
+
+
+def test_profile_patch_all_none():
+    pp = ProfilePatch()
+    assert pp.name is None
+    assert pp.semantic_weight is None
+    assert pp.graph_weight is None
+    assert pp.recency_bias is None
+    assert pp.tier_filters is None
+    assert pp.min_score is None
+    assert pp.max_results is None
+    assert pp.is_preset is None
+    assert pp.k is None
+    assert pp.threshold is None
+    assert pp.rerank is None
+    assert pp.include_graph is None
+
+
+def test_profile_patch_partial():
+    pp = ProfilePatch(name="renamed", min_score=0.6)
+    assert pp.name == "renamed"
+    assert pp.min_score == 0.6
+    assert pp.semantic_weight is None
+
+
+def test_profile_patch_frozen():
+    pp = ProfilePatch(name="x")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        pp.name = "y"  # type: ignore[misc]
+
+
+def test_profile_patch_slots():
+    pp = ProfilePatch()
+    assert not hasattr(pp, "__dict__")
+
+
+def test_resolved_profile_stored_source():
+    rp = ResolvedProfile(
+        name="balanced",
+        source="stored",
+        semantic_weight=1.0,
+        graph_weight=1.0,
+        recency_bias=30.0,
+        min_score=0.3,
+        max_results=10,
+        tier_filters=None,
+        k=None,
+        threshold=None,
+        rerank=False,
+        include_graph=True,
+    )
+    assert rp.name == "balanced"
+    assert rp.source == "stored"
+    assert rp.semantic_weight == 1.0
+    assert rp.tier_filters is None
+    assert rp.rerank is False
+    assert rp.include_graph is True
+
+
+def test_resolved_profile_default_source():
+    rp = ResolvedProfile(
+        name="default",
+        source="default",
+        semantic_weight=0.5,
+        graph_weight=0.5,
+        recency_bias=60.0,
+        min_score=0.4,
+        max_results=20,
+        tier_filters=["hot"],
+        k=10,
+        threshold=0.8,
+        rerank=True,
+        include_graph=False,
+    )
+    assert rp.source == "default"
+    assert rp.tier_filters == ["hot"]
+    assert rp.k == 10
+    assert rp.threshold == 0.8
+    assert rp.rerank is True
+    assert rp.include_graph is False
+
+
+def test_resolved_profile_frozen():
+    rp = ResolvedProfile(
+        name="default",
+        source="default",
+        semantic_weight=1.0,
+        graph_weight=1.0,
+        recency_bias=30.0,
+        min_score=0.3,
+        max_results=10,
+        tier_filters=None,
+        k=None,
+        threshold=None,
+        rerank=False,
+        include_graph=True,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rp.source = "stored"  # type: ignore[misc]
+
+
+def test_resolved_profile_slots():
+    rp = ResolvedProfile(
+        name="default",
+        source="default",
+        semantic_weight=1.0,
+        graph_weight=1.0,
+        recency_bias=30.0,
+        min_score=0.3,
+        max_results=10,
+        tier_filters=None,
+        k=None,
+        threshold=None,
+        rerank=False,
+        include_graph=True,
+    )
+    assert not hasattr(rp, "__dict__")

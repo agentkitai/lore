@@ -304,17 +304,18 @@ Consolidation can run in dry-run mode (preview only) or execute mode (applies ch
 ## Persistence layer
 
 Lore's server-side persistence is defined by the `Store` protocol in
-`lore.persistence.protocol`. The protocol defines two slices:
+`lore.persistence.protocol`. The protocol defines three slices:
 
 - **MemoryOps** (Phase 1A): insert, get, update, delete, list, recall, expire, bump, vote operations on memories.
 - **GraphOps** (Phase 1B): 24 typed methods spanning entity/mention/relationship management, graph traversal, stats, and a UI-facing text search.
+- **PolicyOps** (Phase 1C): 7 typed methods for retrieval-profile CRUD + key-based resolution.
 
 Implementations:
 
-- `PostgresStore` — asyncpg + pgvector. Production default. Implements both MemoryOps and GraphOps.
+- `PostgresStore` — asyncpg + pgvector. Production default. Implements MemoryOps, GraphOps, and PolicyOps.
 - (Coming in Phase 3) `SqliteStore` — aiosqlite + sqlite-vec. For solo / embedded use.
 
-The protocol is grown slice-by-slice. Phase 1A shipped the `MemoryOps` slice; Phase 1B completed the `GraphOps` slice; Phase 1C–1G will migrate remaining route SQL. Until a slice is migrated, those routes still call `asyncpg` directly via `get_pool()`.
+The protocol is grown slice-by-slice. Phase 1A shipped the `MemoryOps` slice; Phase 1B completed the `GraphOps` slice; Phase 1C added `PolicyOps`; Phase 1D–1G will migrate remaining route SQL. Until a slice is migrated, those routes still call `asyncpg` directly via `get_pool()`.
 
 Routes call services; services call the Store. Contract test suite at `tests/persistence/test_contract_*.py` validates every Store implementation against the shared protocol.
 
@@ -323,4 +324,4 @@ Routes call services; services call the Store. Contract test suite at `tests/per
 2. The Service layer is the only place business logic exists once. The HTTP front-end and the embedded API both call into services.
 3. Backend chosen by `database_url` URL scheme. `LORE_BACKEND` env var is just a shortcut.
 
-These invariants are guarded by `scripts/check_routes_no_sql.py` for the migrated slice; coverage grows as more routes migrate.
+These invariants are guarded by `scripts/check_routes_no_sql.py` for the migrated slices; coverage grows as more routes migrate. Currently covers 8 migrated route files: 2 in the MemoryOps slice (`memories.py`, `retrieve.py`), 5 in the GraphOps slice (the four `graph/*.py` files plus `review.py`), and 1 in the PolicyOps slice (`profiles.py`).

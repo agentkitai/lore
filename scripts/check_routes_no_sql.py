@@ -17,6 +17,7 @@ MIGRATED_ROUTES = {
     "src/lore/server/routes/graph/stats.py",
     "src/lore/server/routes/graph/topics.py",
     "src/lore/server/routes/memories.py",
+    "src/lore/server/routes/profiles.py",
     "src/lore/server/routes/retrieve.py",
     "src/lore/server/routes/review.py",
 }
@@ -38,7 +39,7 @@ FORBIDDEN_PATTERNS = [
 # the match (text[match.start()-30 : match.end()+30]).
 ALLOWLIST = {
     "src/lore/server/routes/retrieve.py": [
-        "pool = await get_pool()",   # profile resolution + analytics + bump_access + session snapshots
+        "pool = await get_pool()",   # analytics + bump_access + session snapshots (profile resolution migrated in 1C)
         "retrieval_events",          # _record_retrieval_event docstring and INSERT SQL
         "UPDATE memories\n",         # _bump_access_counts UPDATE SQL (no SET on same line)
         "len(params)",               # _fetch_session_snapshots SELECT SQL
@@ -52,6 +53,9 @@ ALLOWLIST = {
     ],
     "src/lore/server/routes/graph/memories.py": [
         "No SQL or get_pool() here.",         # module docstring asserting absence (not actual usage)
+    ],
+    "src/lore/server/routes/profiles.py": [
+        "a profile",                          # Update/Delete docstrings (not raw SQL)
     ],
 }
 

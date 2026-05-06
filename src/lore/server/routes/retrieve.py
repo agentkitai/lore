@@ -134,24 +134,18 @@ async def retrieve(
     """
     start = time.monotonic()
 
+    store = await get_store()
+
     # Resolve profile if specified — override limit/min_score from profile settings
     if profile:
-        from lore.server.routes.profiles import resolve_profile as _resolve_profile
+        from lore.services import profiles as profiles_service
 
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            resolved = await _resolve_profile(conn, auth.org_id, profile, None)
+        resolved = await profiles_service.resolve_profile(store, auth.org_id, profile)
         if resolved:
-            # Profile k/max_results overrides limit
-            if resolved.get("k") is not None:
-                limit = resolved["k"]
-            elif resolved.get("max_results") is not None:
-                limit = resolved["max_results"]
-            # Profile threshold/min_score overrides min_score
-            if resolved.get("threshold") is not None:
-                min_score = resolved["threshold"]
-            elif resolved.get("min_score") is not None:
-                min_score = resolved["min_score"]
+            # Profile k overrides limit; otherwise use max_results.
+            limit = resolved.k if resolved.k is not None else resolved.max_results
+            # Profile threshold overrides min_score; otherwise use min_score.
+            min_score = resolved.threshold if resolved.threshold is not None else resolved.min_score
         else:
             raise HTTPException(
                 status_code=404,
@@ -173,8 +167,6 @@ async def retrieve(
     effective_project = project
     if auth.project is not None:
         effective_project = auth.project
-
-    store = await get_store()
     out = await _retrieve_service(
         store,
         org_id=auth.org_id,

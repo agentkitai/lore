@@ -18,13 +18,16 @@ from lore.persistence.types import (
     NewEntity,
     NewMemory,
     NewMention,
+    NewProfile,
     NewRelationship,
     PendingRelationshipRow,
+    ProfilePatch,
     RecallParams,
     ScoredMemory,
     StoredEntity,
     StoredMemory,
     StoredMention,
+    StoredProfile,
     StoredRelationship,
     TimelineBucketRow,
 )
@@ -266,4 +269,34 @@ class Store(Protocol):
         limit: int = 20,
     ) -> Sequence[StoredMemory]:
         """Case-insensitive substring match against memories.content for the UI search box."""
+        ...
+
+    # ── PolicyOps ────────────────────────────────────────────────────
+
+    async def get_profile(self, profile_id: str) -> Optional[StoredProfile]:
+        """Return a profile by id, or None if absent."""
+        ...
+
+    async def get_profile_by_name(self, org_id: str, name: str) -> Optional[StoredProfile]:
+        """Return the profile matching (org_id, name), or None if absent."""
+        ...
+
+    async def list_profiles(self, org_id: str) -> Sequence[StoredProfile]:
+        """List all profiles for an org, ordered by name."""
+        ...
+
+    async def create_profile(self, profile: NewProfile) -> StoredProfile:
+        """Insert a new profile; returns the stored row with server-generated id/timestamps."""
+        ...
+
+    async def update_profile(self, profile_id: str, patch: ProfilePatch) -> Optional[StoredProfile]:
+        """Apply a patch to a profile and return the updated row, or None if absent."""
+        ...
+
+    async def delete_profile(self, profile_id: str, org_id: str) -> bool:
+        """Delete a profile; returns True if a row was deleted."""
+        ...
+
+    async def resolve_profile_for_key(self, org_id: str, name: str) -> Optional[StoredProfile]:
+        """Resolve the effective profile for an org/name key, falling back to defaults."""
         ...
