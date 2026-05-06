@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -60,33 +58,6 @@ class FakeStore:
         pass
 
 
-class FakeConn:
-    def __init__(self):
-        self.execute = AsyncMock()
-        self.fetchrow = AsyncMock(return_value=None)
-        self.fetchval = AsyncMock(return_value=0)
-        self.fetch = AsyncMock(return_value=[])
-
-
-class FakePool:
-    def __init__(self, conn):
-        self._conn = conn
-
-    @asynccontextmanager
-    async def acquire(self):
-        yield self._conn
-
-
-@pytest.fixture
-def db_conn():
-    return FakeConn()
-
-
-@pytest.fixture
-def db_pool(db_conn):
-    return FakePool(db_conn)
-
-
 @pytest.fixture
 def fake_store():
     return FakeStore()
@@ -105,7 +76,7 @@ def mock_auth():
 
 
 @pytest.fixture
-def client(fake_store, db_pool, db_conn, mock_auth):
+def client(fake_store, mock_auth):
     from lore.server.auth import get_auth_context
     from lore.server.routes.memories import router
 
@@ -116,24 +87,20 @@ def client(fake_store, db_pool, db_conn, mock_auth):
     async def fake_get_store():
         return fake_store
 
-    async def fake_get_pool():
-        return db_pool
-
     # Mock the embedder so tests don't need ONNX models loaded
     mock_embedder = MagicMock()
     mock_embedder.embed.return_value = [0.0] * 384
 
     with patch("lore.server.routes.memories.get_store", fake_get_store):
-        with patch("lore.server.routes.memories.get_pool", fake_get_pool):
-            with patch("lore.server.routes.memories.require_role", return_value=lambda: mock_auth):
-                with patch("lore.server.routes.retrieve._get_embedder", return_value=mock_embedder):
-                    yield TestClient(app), db_conn
+        with patch("lore.server.routes.memories.require_role", return_value=lambda: mock_auth):
+            with patch("lore.server.routes.retrieve._get_embedder", return_value=mock_embedder):
+                yield TestClient(app)
 
 
 class TestEnrichmentTrigger:
     def test_create_memory_returns_201_without_enrichment(self, client):
         """Memory creation works even when enrichment is not enabled."""
-        test_client, conn = client
+        test_client = client
         with patch.dict("os.environ", {"LORE_ENRICHMENT_ENABLED": "false"}):
             resp = test_client.post("/v1/memories", json={
                 "content": "FastAPI supports async handlers natively",
@@ -143,7 +110,7 @@ class TestEnrichmentTrigger:
 
     def test_create_memory_with_enrich_false(self, client):
         """Explicit enrich=false should skip enrichment."""
-        test_client, conn = client
+        test_client = client
         with patch("lore.server.routes.memories.asyncio") as mock_asyncio:
             mock_asyncio.to_thread = AsyncMock(return_value=[0.0] * 384)
             resp = test_client.post("/v1/memories", json={
@@ -156,7 +123,7 @@ class TestEnrichmentTrigger:
 
     def test_create_memory_with_enrich_true(self, client):
         """Explicit enrich=true should trigger enrichment."""
-        test_client, conn = client
+        test_client = client
         with patch("lore.server.routes.memories.asyncio") as mock_asyncio:
             mock_asyncio.to_thread = AsyncMock(return_value=[0.0] * 384)
             resp = test_client.post("/v1/memories", json={
@@ -169,7 +136,7 @@ class TestEnrichmentTrigger:
 
     def test_create_memory_env_enrichment_enabled(self, client):
         """When LORE_ENRICHMENT_ENABLED=true and enrich is not set, should trigger."""
-        test_client, conn = client
+        test_client = client
         with patch("lore.server.routes.memories.asyncio") as mock_asyncio, \
              patch.dict("os.environ", {"LORE_ENRICHMENT_ENABLED": "true"}):
             mock_asyncio.to_thread = AsyncMock(return_value=[0.0] * 384)
@@ -181,7 +148,7 @@ class TestEnrichmentTrigger:
 
     def test_enrichment_does_not_block_response(self, client):
         """The POST response should return immediately, not wait for enrichment."""
-        test_client, conn = client
+        test_client = client
         # If enrichment blocked, this would hang or fail
         with patch("lore.server.routes.memories.asyncio") as mock_asyncio:
             mock_asyncio.to_thread = AsyncMock(return_value=[0.0] * 384)
@@ -197,11 +164,8 @@ class TestEnrichmentTrigger:
 class TestEnrichMemoryFunction:
     @pytest.mark.asyncio
     async def test_enrich_memory_updates_meta(self):
-        """_enrich_memory should update the memory's meta with enrichment data."""
-        from lore.server.routes.memories import _enrich_memory
-
-        fake_conn = FakeConn()
-        fake_pool = FakePool(fake_conn)
+        """enrich_memory_async should update the memory's meta with enrichment data."""
+        from lore.services.memories import enrich_memory_async
 
         mock_result = {
             "topics": ["docker", "containers"],
@@ -210,26 +174,24 @@ class TestEnrichMemoryFunction:
             "categories": ["infrastructure"],
         }
 
-        with patch("lore.server.routes.memories.get_pool", AsyncMock(return_value=fake_pool)), \
-             patch("lore.enrichment.pipeline.EnrichmentPipeline.enrich", return_value=mock_result), \
-             patch("lore.enrichment.llm.LLMClient.__init__", return_value=None):
-            await _enrich_memory("mem-001", "Docker is great", None)
+        fake_store = FakeStore()
+        fake_store.enrich_memory_meta = AsyncMock()
 
-        # Verify the enrichment UPDATE was called (embedding UPDATE may also fire)
-        assert fake_conn.execute.call_count >= 1
-        call_args = fake_conn.execute.call_args_list[0]
-        assert "mem-001" in call_args[0]
-        enrichment_json = call_args[0][2]
-        enrichment = json.loads(enrichment_json)
-        assert "docker" in enrichment["topics"]
-        assert enrichment["entities"][0]["name"] == "Docker"
+        with patch("lore.enrichment.pipeline.EnrichmentPipeline.enrich", return_value=mock_result), \
+             patch("lore.enrichment.llm.LLMClient.__init__", return_value=None):
+            await enrich_memory_async(fake_store, memory_id="mem-001", content="Docker is great", context=None)
+
+        # Verify the store's enrich_memory_meta was called with the enrichment data
+        fake_store.enrich_memory_meta.assert_called_once_with("mem-001", mock_result)
 
     @pytest.mark.asyncio
     async def test_enrich_memory_handles_failure_gracefully(self):
-        """_enrich_memory should log but not raise on failure."""
-        from lore.server.routes.memories import _enrich_memory
+        """enrich_memory_async should log but not raise on failure."""
+        from lore.services.memories import enrich_memory_async
+
+        fake_store = FakeStore()
 
         with patch("lore.enrichment.pipeline.EnrichmentPipeline.enrich", side_effect=Exception("LLM down")), \
              patch("lore.enrichment.llm.LLMClient.__init__", return_value=None):
             # Should not raise
-            await _enrich_memory("mem-001", "test content", None)
+            await enrich_memory_async(fake_store, memory_id="mem-001", content="test content", context=None)

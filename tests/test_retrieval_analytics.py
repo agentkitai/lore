@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -107,74 +106,56 @@ class TestRetrievalEventLogging:
 
     @pytest.mark.asyncio
     async def test_log_event_writes_to_db(self):
-        """_record_retrieval_event should INSERT into retrieval_events."""
-        from lore.server.routes.retrieve import RetrieveMemory, _record_retrieval_event
+        """retrieve_service.record_retrieval_event should call store.record_retrieval_event."""
+        from lore.services import retrieve as retrieve_service
 
-        mock_conn = AsyncMock()
-        mock_conn.execute = AsyncMock()
-        mock_conn.__aenter__ = AsyncMock(return_value=mock_conn)
-        mock_conn.__aexit__ = AsyncMock(return_value=False)
+        mock_store = AsyncMock()
+        mock_store.record_retrieval_event = AsyncMock()
 
-        mock_pool = AsyncMock()
-        mock_pool.acquire = MagicMock(return_value=mock_conn)
-
-        mock_auth = MagicMock()
-        mock_auth.org_id = "test-org"
-
-        memories = [
-            RetrieveMemory(
-                id="mem1", content="test content", type="fact",
-                tier="long", score=0.85, created_at="2026-03-09",
-            ),
-            RetrieveMemory(
-                id="mem2", content="another", type="lesson",
-                tier="long", score=0.62, created_at="2026-03-09",
-            ),
-        ]
-
-        with patch("lore.server.routes.retrieve.get_pool", return_value=mock_pool), \
-             patch("lore.server.metrics.retrieve_queries_total", MagicMock()), \
+        with patch("lore.server.metrics.retrieve_queries_total", MagicMock()), \
              patch("lore.server.metrics.retrieve_results_total", MagicMock()), \
              patch("lore.server.metrics.retrieve_empty_total", MagicMock()), \
              patch("lore.server.metrics.retrieve_latency", MagicMock()), \
              patch("lore.server.metrics.retrieve_max_score", MagicMock()):
-            await _record_retrieval_event(
-                auth=mock_auth,
+            await retrieve_service.record_retrieval_event(
+                mock_store,
+                org_id="test-org",
                 query_text="test query",
-                memories=memories,
+                memory_ids=["mem1", "mem2"],
+                scores=[0.85, 0.62],
                 min_score=0.3,
                 elapsed_ms=15.5,
                 fmt="xml",
-                effective_project=None,
+                project=None,
             )
 
-        mock_conn.execute.assert_called_once()
-        call_args = mock_conn.execute.call_args
-        assert "INSERT INTO retrieval_events" in call_args[0][0]
-        assert call_args[0][1] == "test-org"
-        assert call_args[0][2] == "test query"
-        assert call_args[0][3] == 2  # results_count
-        assert json.loads(call_args[0][4]) == [0.85, 0.62]  # scores
+        mock_store.record_retrieval_event.assert_called_once()
+        event = mock_store.record_retrieval_event.call_args[0][0]
+        assert event.org_id == "test-org"
+        assert event.query == "test query"
+        assert event.results_count == 2
+        assert event.scores == [0.85, 0.62]
 
     @pytest.mark.asyncio
     async def test_log_event_handles_errors_gracefully(self):
-        """_record_retrieval_event should not raise on DB errors."""
-        from lore.server.routes.retrieve import _record_retrieval_event
+        """retrieve_service.record_retrieval_event should not raise on store errors."""
+        from lore.services import retrieve as retrieve_service
 
-        mock_auth = MagicMock()
-        mock_auth.org_id = "test-org"
+        mock_store = AsyncMock()
+        mock_store.record_retrieval_event = AsyncMock(side_effect=Exception("DB down"))
 
-        with patch("lore.server.routes.retrieve.get_pool", side_effect=Exception("DB down")):
-            # Should not raise
-            await _record_retrieval_event(
-                auth=mock_auth,
-                query_text="test",
-                memories=[],
-                min_score=0.3,
-                elapsed_ms=5.0,
-                fmt="xml",
-                effective_project=None,
-            )
+        # Should not raise
+        await retrieve_service.record_retrieval_event(
+            mock_store,
+            org_id="test-org",
+            query_text="test",
+            memory_ids=[],
+            scores=[],
+            min_score=0.3,
+            elapsed_ms=5.0,
+            fmt="xml",
+            project=None,
+        )
 
 
 class TestPrometheusMetrics:

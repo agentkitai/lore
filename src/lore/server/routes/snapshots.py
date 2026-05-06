@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import uuid
-from datetime import datetime, timezone
 from typing import List, Optional
 
 try:
@@ -14,13 +11,10 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
-try:
-    from ulid import ULID
-except ImportError:
-    raise ImportError("python-ulid is required. Install with: pip install python-ulid")
-
+from lore.persistence import Store
 from lore.server.auth import AuthContext, require_role
-from lore.server.db import get_pool
+from lore.server.db import get_store
+from lore.services import snapshots as snapshots_service
 
 logger = logging.getLogger(__name__)
 
@@ -53,53 +47,23 @@ class SnapshotCreateResponse(BaseModel):
 async def create_snapshot(
     body: SnapshotCreateRequest,
     auth: AuthContext = Depends(require_role("writer", "admin")),
+    store: Store = Depends(get_store),
 ) -> SnapshotCreateResponse:
     """Create a session snapshot."""
-    session_id = body.session_id or uuid.uuid4().hex[:12]
-    title = body.title or body.content[:80].strip()
-    project = body.project
-    if auth.project is not None:
-        project = auth.project
-
-    now = datetime.now(timezone.utc)
-    memory_id = str(ULID())
-
-    all_tags = ["session_snapshot", session_id] + (body.tags or [])
-    metadata = {
-        "session_id": session_id,
-        "title": title,
-        "extraction_method": "raw",
-    }
-
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        await conn.execute(
-            """INSERT INTO memories
-               (id, org_id, content, tags, confidence,
-                project, created_at, updated_at,
-                upvotes, downvotes, meta, importance_score, tier, type)
-               VALUES ($1, $2, $3, $4::jsonb, $5, $6,
-                       $7, $8, $9, $10, $11::jsonb, $12, $13, $14)""",
-            memory_id,
-            auth.org_id,
-            body.content,
-            json.dumps(all_tags),
-            1.0,
-            project,
-            now,
-            now,
-            0,
-            0,
-            json.dumps(metadata),
-            0.95,
-            "long",
-            "session_snapshot",
-        )
-
+    project = auth.project if auth.project is not None else body.project
+    stored = await snapshots_service.create_snapshot(
+        store,
+        org_id=auth.org_id,
+        content=body.content,
+        title=body.title,
+        session_id=body.session_id,
+        tags=body.tags,
+        project=project,
+    )
     return SnapshotCreateResponse(
-        id=memory_id,
-        session_id=session_id,
-        title=title,
-        extraction_method="raw",
-        created_at=now.isoformat(),
+        id=stored.id,
+        session_id=stored.meta.get("session_id", ""),
+        title=stored.meta.get("title", ""),
+        extraction_method=stored.meta.get("extraction_method", "raw"),
+        created_at=stored.created_at.isoformat() if stored.created_at else "",
     )

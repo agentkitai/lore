@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 try:
     import asyncpg
@@ -29,6 +29,7 @@ from lore.persistence.types import (
     NewMention,
     NewProfile,
     NewRelationship,
+    NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
@@ -497,6 +498,23 @@ class PostgresStore:
                 """,
                 list(memory_ids),
                 org_id,
+            )
+
+    async def enrich_memory_meta(
+        self,
+        memory_id: str,
+        enrichment_data: "Mapping[str, Any]",
+    ) -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE memories SET
+                    meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{enrichment}', $2::jsonb),
+                    updated_at = now()
+                WHERE id = $1
+                """,
+                memory_id,
+                json.dumps(dict(enrichment_data)),
             )
 
     async def vote_memory(
@@ -1609,6 +1627,95 @@ class PostgresStore:
                 org_id,
             )
         return int(result or 0)
+
+    # ── AnalyticsOps ─────────────────────────────────────────────────
+
+    async def record_retrieval_event(self, event: NewRetrievalEvent) -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO retrieval_events
+                    (org_id, query, results_count, scores, memory_ids,
+                     avg_score, max_score, min_score_threshold, query_time_ms,
+                     project, format)
+                VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9, $10, $11)
+                """,
+                event.org_id,
+                event.query,
+                event.results_count,
+                json.dumps(list(event.scores)),
+                json.dumps(list(event.memory_ids)),
+                event.avg_score,
+                event.max_score,
+                event.min_score_threshold,
+                event.query_time_ms,
+                event.project,
+                event.format,
+            )
+
+    async def record_memory_access(
+        self, org_id: str, memory_id: str
+    ) -> Optional[StoredMemory]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE memories
+                SET access_count = COALESCE(access_count, 0) + 1,
+                    last_accessed_at = now(),
+                    importance_score = (
+                        confidence
+                        * GREATEST(0.1, 1.0 + (upvotes - downvotes) * 0.1)
+                        * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
+                    ),
+                    updated_at = now()
+                WHERE id = $1 AND org_id = $2
+                RETURNING id, org_id, content, context, tags, confidence, source,
+                          project, created_at, updated_at, expires_at, upvotes,
+                          downvotes, meta, importance_score, access_count,
+                          last_accessed_at
+                """,
+                memory_id,
+                org_id,
+            )
+        return _row_to_stored(row) if row else None
+
+    async def list_recent_session_snapshots(
+        self,
+        org_id: str,
+        *,
+        project: Optional[str] = None,
+        exclude_ids: Sequence[str] = (),
+        limit: int = 3,
+    ) -> Sequence[StoredMemory]:
+        where: list[str] = [
+            "org_id = $1",
+            "(expires_at IS NULL OR expires_at > now())",
+            "meta->>'type' = 'session_snapshot'",
+            "created_at > now() - interval '24 hours'",
+        ]
+        params: list[Any] = [org_id]
+
+        if project is not None:
+            params.append(project)
+            where.append(f"project = ${len(params)}")
+        if exclude_ids:
+            params.append(list(exclude_ids))
+            where.append(f"id != ALL(${len(params)})")
+
+        params.append(limit)
+        limit_idx = len(params)
+
+        sql = (
+            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "project, created_at, updated_at, expires_at, upvotes, downvotes, "
+            "meta, importance_score, access_count, last_accessed_at "
+            "FROM memories "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY created_at DESC LIMIT ${limit_idx}"
+        )
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return tuple(_row_to_stored(r) for r in rows)
 
 
 class _BoundConn:

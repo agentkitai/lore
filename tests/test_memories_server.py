@@ -106,10 +106,9 @@ def client(fake_store, mock_auth):
     mock_embedder.embed.return_value = [0.0] * 384
 
     with patch("lore.server.routes.memories.get_store", fake_get_store):
-        with patch("lore.server.routes.memories.get_pool", AsyncMock()):
-            with patch("lore.server.routes.memories.require_role", return_value=lambda: mock_auth):
-                with patch("lore.server.routes.retrieve._get_embedder", return_value=mock_embedder):
-                    yield TestClient(app), fake_store
+        with patch("lore.server.routes.memories.require_role", return_value=lambda: mock_auth):
+            with patch("lore.server.routes.retrieve._get_embedder", return_value=mock_embedder):
+                yield TestClient(app), fake_store
 
 
 class TestMemoryCreate:

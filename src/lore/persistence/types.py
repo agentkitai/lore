@@ -353,3 +353,21 @@ class StoredApiKey:
     revoked_at: Optional[datetime]
     created_at: datetime
     last_used_at: Optional[datetime]
+
+
+# ── Retrieval analytics ───────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class NewRetrievalEvent:
+    org_id: str
+    query: str
+    results_count: int
+    scores: Sequence[float]
+    memory_ids: Sequence[str]
+    avg_score: Optional[float]
+    max_score: Optional[float]
+    min_score_threshold: Optional[float]
+    query_time_ms: Optional[float]
+    project: Optional[str] = None
+    format: Optional[str] = None

@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock
+
 import pytest
 
+from lore.persistence.exceptions import StoreNotFoundError
 from lore.services.memories import (
     create_memory,
     delete_memory,
+    enrich_memory_async,
     get_memory,
     list_memories,
+    record_memory_access,
     update_memory,
     vote_memory,
 )
@@ -66,3 +71,89 @@ async def test_vote(store):
     )
     after = await vote_memory(store, org_id="solo", memory_id=created.id, direction="up")
     assert after.upvotes == 1
+
+
+# ── Enrichment + access tests ──────────────────────────────────────
+
+
+class _FakePipeline:
+    def __init__(self, *_, **__):
+        pass
+
+    def enrich(self, content, context=None):
+        return {"summary": "x"}
+
+
+@pytest.mark.asyncio
+async def test_enrich_memory_async_calls_pipeline_and_persists(store, monkeypatch):
+    monkeypatch.setattr("lore.enrichment.pipeline.EnrichmentPipeline", _FakePipeline)
+    monkeypatch.setattr("lore.enrichment.llm.LLMClient", lambda **_: object())
+
+    created = await create_memory(
+        store, org_id="solo", content="enrich me", embedding=[0.0] * 384
+    )
+    await enrich_memory_async(
+        store, memory_id=created.id, content="enrich me", context=None
+    )
+
+    fetched = await get_memory(store, "solo", created.id)
+    assert fetched is not None
+    assert fetched.meta.get("enrichment") == {"summary": "x"}
+
+
+@pytest.mark.asyncio
+async def test_enrich_memory_async_skips_persist_when_pipeline_returns_none(
+    store, monkeypatch
+):
+    class _NullPipeline:
+        def __init__(self, *_, **__):
+            pass
+
+        def enrich(self, content, context=None):
+            return None
+
+    monkeypatch.setattr("lore.enrichment.pipeline.EnrichmentPipeline", _NullPipeline)
+    monkeypatch.setattr("lore.enrichment.llm.LLMClient", lambda **_: object())
+
+    mock_enrich = AsyncMock()
+    monkeypatch.setattr(store, "enrich_memory_meta", mock_enrich)
+
+    await enrich_memory_async(
+        store, memory_id="fake-id", content="test", context=None
+    )
+
+    mock_enrich.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_enrich_memory_async_swallows_pipeline_error(store, monkeypatch):
+    class _ErrorPipeline:
+        def __init__(self, *_, **__):
+            pass
+
+        def enrich(self, content, context=None):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("lore.enrichment.pipeline.EnrichmentPipeline", _ErrorPipeline)
+    monkeypatch.setattr("lore.enrichment.llm.LLMClient", lambda **_: object())
+
+    # Should not raise
+    result = await enrich_memory_async(
+        store, memory_id="fake-id", content="test", context=None
+    )
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_record_memory_access_returns_updated_row(store):
+    created = await create_memory(
+        store, org_id="solo", content="access me", embedding=[0.0] * 384
+    )
+    updated = await record_memory_access(store, "solo", created.id)
+    assert updated.access_count == 1
+
+
+@pytest.mark.asyncio
+async def test_record_memory_access_raises_not_found(store):
+    with pytest.raises(StoreNotFoundError):
+        await record_memory_access(store, "solo", "00000000-0000-0000-0000-000000000000")

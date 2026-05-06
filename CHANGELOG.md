@@ -14,6 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `Store` protocol grows the `PolicyOps` slice (7 typed methods for retrieval-profile CRUD + key resolution). `PostgresStore` implements all of them.
 - `lore.services.profiles` wraps the PolicyOps store layer. Owns the 60-second resolution cache, `DEFAULT_PROFILES` built-in fallback, k/threshold/max_results/min_score alias logic, and preset-immutability checks. New typed exceptions: `IntegrityError` (unique-constraint), `ProfileImmutableError` (preset modify/delete attempt).
 - Migration `018_profile_extras.sql` adds `k`, `threshold`, `rerank`, `include_graph` columns to `retrieval_profiles` (the existing route code already referenced them; the original 013 migration omitted them).
+- `Store` protocol grows the `WorkspaceOps` slice (9 methods for workspace + workspace_member CRUD) and the `AuthOps` slice (5 methods for API key creation, listing, revocation, and root-key counting). `PostgresStore` implements all 14.
+- `lore.services.workspaces` and `lore.services.keys` wrap the new store slices. The workspaces service owns the `WORKSPACE_ROLES` tuple and a public `has_ws_permission(role, minimum)` rank helper. The keys service owns API key generation (`lore_sk_` + SHA-256), the "can't revoke last root key" rule, and cache invalidation via the new `lore.server.auth.invalidate_key(key_hash)` helper. New typed exception: `LastRootKeyError`.
+- `Store` protocol grows the `AnalyticsOps` slice (3 methods: `record_retrieval_event`, `record_memory_access`, `list_recent_session_snapshots`) plus two `MemoryOps` extensions (`bump_access_counts`, `enrich_memory_meta`). `PostgresStore` implements all 5.
+- `lore.services.snapshots` (new) wraps session-snapshot creation. `lore.services.retrieve` and `lore.services.memories` extended with analytics + enrichment + access-recording helpers. New typed dataclass: `NewRetrievalEvent`.
+- **Bug fix in `routes/snapshots.py`**: the pre-1E INSERT referenced non-existent `tier` and `type` columns directly on the `memories` table; reads via `_fetch_session_snapshots` already queried `meta->>'type'`. The refactor moves both keys into `meta` to match. The endpoint is now functional on the current schema.
 
 ### Internal
 - `routes/memories.py` and `routes/retrieve.py` no longer contain raw SQL. CI guard `scripts/check_routes_no_sql.py` enforces this for migrated routes.
@@ -24,6 +29,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - All 8 profile route handlers (`routes/profiles.py`) refactored to call services exclusively. The cross-route `resolve_profile` import in `routes/retrieve.py` is also gone — retrieve.py now calls the service directly. Inline SQL, `DEFAULT_PROFILES`, the in-memory cache, and the legacy `_resolve_profile` helper removed from the route files. CI guard now covers 8 migrated route files.
 - New contract tests at `tests/persistence/test_contract_profiles.py` (21 tests across the 7 PolicyOps methods).
 - New service tests at `tests/services/test_profiles.py` (~22 tests) and route tests at `tests/server/test_profiles_routes.py` (14 tests with FakeStore mocks).
+- All 13 identity route handlers (10 in `routes/workspaces.py`, 3 in `routes/keys.py`) refactored to call services exclusively. Inline SQL, the `_has_ws_permission`/`WORKSPACE_ROLES` helpers, the `has_ws_col` introspection probe, and inline key generation removed from the route files. CI guard now covers 10 migrated route files.
+- New contract tests at `tests/persistence/test_contract_workspaces.py` (27 tests) and `tests/persistence/test_contract_keys.py` (12 tests).
+- New service tests at `tests/services/test_workspaces.py` (19 tests) and `tests/services/test_keys.py` (~10 tests).
+- New route tests at `tests/server/test_workspaces_routes.py` (14 tests) and `tests/server/test_keys_routes.py` (8 tests).
+- Existing `tests/server/test_keys.py` and `tests/test_workspaces.py` redirected from inline-SQL mocks to service-layer mocks where applicable.
+- All 7 of the remaining inline-SQL helpers in `routes/snapshots.py`, `routes/retrieve.py` (`_record_retrieval_event`, `_bump_access_counts`, `_fetch_session_snapshots`), and `routes/memories.py` (`_enrich_memory`, `record_access`) refactored into services. CI guard now covers 11 migrated route files; `routes/retrieve.py` and `routes/memories.py` are no longer in the SQL allowlist (fully migrated).
+- New contract tests at `tests/persistence/test_contract_analytics.py` (~20 tests).
+- New service tests at `tests/services/test_snapshots.py` (8 tests). Existing `tests/services/test_retrieve.py` and `tests/services/test_memories.py` extended with analytics + enrichment + access tests.
+- New route tests at `tests/server/test_snapshots_routes.py` (5 tests with FakeStore mocks).
+- Existing `tests/test_enrichment_memories.py` and `tests/test_memories_server.py` redirected from inline-SQL mocks to service-layer mocks.
 
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 

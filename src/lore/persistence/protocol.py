@@ -9,7 +9,7 @@ SnapshotOps, AnalyticsOps, PolicyOps, AuthOps, etc.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional, Protocol, Sequence, runtime_checkable
+from typing import Any, Mapping, Optional, Protocol, Sequence, runtime_checkable
 
 from lore.persistence.types import (
     GraphStats,
@@ -22,6 +22,7 @@ from lore.persistence.types import (
     NewMention,
     NewProfile,
     NewRelationship,
+    NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
@@ -94,6 +95,10 @@ class Store(Protocol):
         self, org_id: str, memory_id: str, *, direction: str
     ) -> StoredMemory:
         """direction is 'up' or 'down'. Returns the updated memory."""
+        ...
+
+    async def enrich_memory_meta(self, memory_id: str, enrichment_data: Mapping[str, Any]) -> None:
+        """Merge enrichment_data into the memory's meta JSONB column."""
         ...
 
     # ── GraphOps ─────────────────────────────────────────────────────
@@ -366,4 +371,25 @@ class Store(Protocol):
 
     async def count_active_root_keys(self, org_id: str) -> int:
         """Count active (non-revoked) root-level API keys for an org."""
+        ...
+
+    # ── AnalyticsOps ─────────────────────────────────────────────────
+
+    async def record_retrieval_event(self, event: NewRetrievalEvent) -> None:
+        """Persist a retrieval analytics event row."""
+        ...
+
+    async def record_memory_access(self, org_id: str, memory_id: str) -> Optional[StoredMemory]:
+        """Increment access counters and return the updated memory, or None if absent."""
+        ...
+
+    async def list_recent_session_snapshots(
+        self,
+        org_id: str,
+        *,
+        project: Optional[str] = None,
+        exclude_ids: Sequence[str] = (),
+        limit: int = 3,
+    ) -> Sequence[StoredMemory]:
+        """List the most recent session-snapshot memories for an org, optionally scoped to a project."""
         ...

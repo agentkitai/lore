@@ -6,7 +6,6 @@ Uses the new `memories` table with `content` and `context` columns.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 from typing import Optional
@@ -17,8 +16,9 @@ except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
 from lore.persistence.exceptions import StoreNotFoundError
+from lore.persistence.protocol import Store
 from lore.server.auth import AuthContext, get_auth_context, require_role
-from lore.server.db import get_pool, get_store
+from lore.server.db import get_store
 from lore.server.models import (
     MemoryCreateRequest,
     MemoryCreateResponse,
@@ -30,6 +30,7 @@ from lore.server.models import (
     MemoryUpdateRequest,
 )
 from lore.server.routes._parsers import _parse_meta, _parse_tags
+from lore.services import memories as memories_service
 from lore.services.memories import (
     create_memory as _create_memory,
 )
@@ -81,65 +82,6 @@ def _row_to_response(row: dict) -> MemoryResponse:
     )
 
 
-def _scope_filter(auth: AuthContext) -> tuple[str, list]:
-    """Build WHERE clause for org + project scoping."""
-    if auth.project is not None:
-        return "org_id = $1 AND project = $2", [auth.org_id, auth.project]
-    return "org_id = $1", [auth.org_id]
-
-
-# ── Enrichment helper ─────────────────────────────────────────────
-
-
-async def _enrich_memory(memory_id: str, content: str, context: str | None) -> None:
-    """Fire-and-forget enrichment for a newly created memory."""
-    try:
-        from lore.enrichment.llm import LLMClient
-        from lore.enrichment.pipeline import EnrichmentPipeline
-
-        model = os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
-        client = LLMClient(model=model)
-        pipeline = EnrichmentPipeline(client)
-
-        result = pipeline.enrich(content, context=context)
-        if result is None:
-            return
-
-        # pipeline.enrich() returns a dict with enrichment data
-        enrichment_data = result
-
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """UPDATE memories SET
-                       meta = jsonb_set(COALESCE(meta, '{}'::jsonb), '{enrichment}', $2::jsonb),
-                       updated_at = now()
-                   WHERE id = $1""",
-                memory_id,
-                json.dumps(enrichment_data),
-            )
-
-        # Generate embeddings for semantic retrieval
-        try:
-            from lore.embed import LocalEmbedder
-
-            embedder = LocalEmbedder()
-            embedding_vector = await asyncio.to_thread(embedder.embed, content)
-
-            async with pool.acquire() as embed_conn:
-                await embed_conn.execute(
-                    """UPDATE memories SET embedding = $2::vector WHERE id = $1""",
-                    memory_id,
-                    json.dumps(embedding_vector),
-                )
-            logger.info("Generated embedding for memory %s", memory_id)
-        except Exception as e:
-            logger.warning("Failed to generate embedding for memory %s: %s", memory_id, e)
-
-        logger.info("Enrichment complete for memory %s", memory_id)
-    except Exception:
-        logger.exception("Enrichment failed for memory %s", memory_id)
-
 
 # ── Create ─────────────────────────────────────────────────────────
 
@@ -176,7 +118,9 @@ async def create_memory(
     if enrich is None:
         enrich = os.environ.get("LORE_ENRICHMENT_ENABLED", "").lower() in ("true", "1", "yes")
     if enrich:
-        asyncio.create_task(_enrich_memory(stored.id, stored.content, stored.context))
+        asyncio.create_task(memories_service.enrich_memory_async(
+            store, memory_id=stored.id, content=stored.content, context=stored.context,
+        ))
 
     return MemoryCreateResponse(id=stored.id)
 
@@ -230,36 +174,26 @@ async def search_memories(
 async def record_access(
     memory_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> dict:
     """Record an access event and recompute importance_score."""
-    scope_sql, scope_params = _scope_filter(auth)
+    # Enforce project scoping: a project-scoped key must not access memories
+    # outside its project.
+    if auth.project:
+        existing = await store.get_memory(auth.org_id, memory_id)
+        if existing is None or existing.project != auth.project:
+            raise HTTPException(status_code=404, detail="Memory not found")
 
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            f"""UPDATE memories SET
-                    access_count = COALESCE(access_count, 0) + 1,
-                    last_accessed_at = now(),
-                    importance_score = (
-                        confidence
-                        * GREATEST(0.1, 1.0 + (upvotes - downvotes) * 0.1)
-                        * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
-                    ),
-                    updated_at = now()
-                WHERE id = ${len(scope_params) + 1} AND {scope_sql}
-                RETURNING id, access_count, last_accessed_at, importance_score""",
-            *scope_params,
-            memory_id,
-        )
-
-    if row is None:
+    try:
+        updated = await memories_service.record_memory_access(store, auth.org_id, memory_id)
+    except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")
 
     return {
-        "id": row["id"],
-        "access_count": row["access_count"],
-        "last_accessed_at": row["last_accessed_at"].isoformat() if row["last_accessed_at"] else None,
-        "importance_score": float(row["importance_score"]),
+        "id": updated.id,
+        "access_count": updated.access_count,
+        "last_accessed_at": updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
+        "importance_score": updated.importance_score,
     }
 
 

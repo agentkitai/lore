@@ -21,6 +21,7 @@ MIGRATED_ROUTES = {
     "src/lore/server/routes/profiles.py",
     "src/lore/server/routes/retrieve.py",
     "src/lore/server/routes/review.py",
+    "src/lore/server/routes/snapshots.py",
     "src/lore/server/routes/workspaces.py",
 }
 
@@ -40,21 +41,11 @@ FORBIDDEN_PATTERNS = [
 # Phase 1B–1F). Each string must appear in the 60-char context window around
 # the match (text[match.start()-30 : match.end()+30]).
 ALLOWLIST = {
-    "src/lore/server/routes/retrieve.py": [
-        "pool = await get_pool()",   # analytics + bump_access + session snapshots (profile resolution migrated in 1C)
-        "retrieval_events",          # _record_retrieval_event docstring and INSERT SQL
-        "UPDATE memories\n",         # _bump_access_counts UPDATE SQL (no SET on same line)
-        "len(params)",               # _fetch_session_snapshots SELECT SQL
-    ],
-    "src/lore/server/routes/memories.py": [
-        "pool = await get_pool()",            # _enrich_memory and record_access get_pool calls
-        'conn.execute(\n                """UPDATE memories SET\n',  # _enrich_memory UPDATE SQL
-        "embedding = $2::",                   # _enrich_memory UPDATE embedding SQL
-        "fetchrow",                           # record_access UPDATE SQL (f"""UPDATE via fetchrow)
-        "a memory.",                          # Update/Delete docstrings (not raw SQL)
-    ],
     "src/lore/server/routes/graph/memories.py": [
         "No SQL or get_pool() here.",         # module docstring asserting absence (not actual usage)
+    ],
+    "src/lore/server/routes/memories.py": [
+        "a memory.",                          # Update/Delete docstrings (not raw SQL)
     ],
     "src/lore/server/routes/profiles.py": [
         "a profile",                          # Update/Delete docstrings (not raw SQL)
