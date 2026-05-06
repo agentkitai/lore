@@ -16,6 +16,7 @@ from httpx import ASGITransport, AsyncClient
 from lore.server.app import app
 from lore.server.auth import _reset_oidc_validator
 from lore.server.config import Settings
+from lore.server.db import get_store
 
 
 @pytest_asyncio.fixture
@@ -24,12 +25,17 @@ async def client():
     _key_cache.clear()
     _last_used_updates.clear()
     _reset_oidc_validator()
+
+    mock_store = AsyncMock()
+    app.dependency_overrides[get_store] = lambda: mock_store
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     _key_cache.clear()
     _last_used_updates.clear()
     _reset_oidc_validator()
+    app.dependency_overrides.pop(get_store, None)
 
 
 def _make_mock_pool():
@@ -115,11 +121,10 @@ async def test_jwt_valid_in_dual_mode(client):
     mock_validator.validate = MagicMock(return_value=mock_identity)
 
     settings_patch = Settings(auth_mode="dual", oidc_issuer="https://idp.example.com")
-    mock_pool = _make_mock_pool()
 
     with patch("lore.server.auth.settings", settings_patch), \
          patch("lore.server.auth.get_oidc_validator", return_value=mock_validator), \
-         patch("lore.server.routes.lessons.get_pool", return_value=mock_pool):
+         patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         resp = await client.get(
             "/v1/lessons",
             headers={"Authorization": "Bearer eyJhbGciOiJSUzI1NiJ9.fake.token"},
@@ -197,7 +202,7 @@ async def test_api_key_works_in_dual_mode(client):
 
     with patch("lore.server.auth.settings", settings_patch), \
          patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.lessons.get_pool", return_value=mock_pool):
+         patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         resp = await client.get(
             "/v1/lessons",
             headers={"Authorization": f"Bearer {RAW_KEY}"},
