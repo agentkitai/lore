@@ -7,14 +7,19 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_get_store_raises_before_init():
-    # Ensure clean module state
-    import importlib
-
+    # Save and restore _store directly instead of reloading the module —
+    # importlib.reload() creates new function objects and breaks
+    # dependency_overrides keyed on the old `get_store` reference in routes
+    # that imported it before the reload.
     from lore.server import db as server_db
 
-    importlib.reload(server_db)
-    with pytest.raises(RuntimeError):
-        await server_db.get_store()
+    saved = server_db._store
+    server_db._store = None
+    try:
+        with pytest.raises(RuntimeError):
+            await server_db.get_store()
+    finally:
+        server_db._store = saved
 
 
 @pytest.mark.asyncio

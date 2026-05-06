@@ -9,22 +9,29 @@ from lore.persistence.types import (
     GraphStats,
     MemoryFilter,
     MemoryPatch,
+    NewApiKey,
     NewEntity,
+    NewMember,
     NewMemory,
     NewMention,
     NewProfile,
     NewRelationship,
+    NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
     ResolvedProfile,
     ScoredMemory,
+    StoredApiKey,
     StoredEntity,
+    StoredMember,
     StoredMemory,
     StoredMention,
     StoredProfile,
     StoredRelationship,
+    StoredWorkspace,
     TimelineBucketRow,
+    WorkspacePatch,
 )
 
 
@@ -574,3 +581,330 @@ def test_resolved_profile_slots():
         include_graph=True,
     )
     assert not hasattr(rp, "__dict__")
+
+
+# Identity dataclass tests — Workspace
+
+
+def test_new_workspace_defaults():
+    nw = NewWorkspace(org_id="org_1", name="Acme", slug="acme")
+    assert nw.org_id == "org_1"
+    assert nw.name == "Acme"
+    assert nw.slug == "acme"
+    assert nw.settings == {}
+
+
+def test_new_workspace_all_fields():
+    nw = NewWorkspace(
+        org_id="org_2",
+        name="Beta Corp",
+        slug="beta-corp",
+        settings={"timezone": "UTC", "theme": "dark"},
+    )
+    assert nw.settings == {"timezone": "UTC", "theme": "dark"}
+
+
+def test_new_workspace_frozen():
+    nw = NewWorkspace(org_id="org_1", name="X", slug="x")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        nw.name = "Y"  # type: ignore[misc]
+
+
+def test_new_workspace_slots():
+    nw = NewWorkspace(org_id="org_1", name="X", slug="x")
+    assert not hasattr(nw, "__dict__")
+
+
+def test_stored_workspace_round_trip():
+    now = datetime.now(timezone.utc)
+    sw = StoredWorkspace(
+        id="ws_01",
+        org_id="org_1",
+        name="Acme",
+        slug="acme",
+        settings={"theme": "light"},
+        created_at=now,
+        archived_at=None,
+    )
+    assert sw.id == "ws_01"
+    assert sw.org_id == "org_1"
+    assert sw.slug == "acme"
+    assert sw.settings == {"theme": "light"}
+    assert sw.created_at == now
+    assert sw.archived_at is None
+
+
+def test_stored_workspace_frozen():
+    now = datetime.now(timezone.utc)
+    sw = StoredWorkspace(
+        id="ws_02",
+        org_id="org_1",
+        name="Acme",
+        slug="acme",
+        settings={},
+        created_at=now,
+        archived_at=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        sw.name = "Other"  # type: ignore[misc]
+
+
+def test_stored_workspace_slots():
+    now = datetime.now(timezone.utc)
+    sw = StoredWorkspace(
+        id="ws_03",
+        org_id="org_1",
+        name="Acme",
+        slug="acme",
+        settings={},
+        created_at=now,
+        archived_at=None,
+    )
+    assert not hasattr(sw, "__dict__")
+
+
+def test_workspace_patch_all_none():
+    wp = WorkspacePatch()
+    assert wp.name is None
+    assert wp.settings is None
+
+
+def test_workspace_patch_partial():
+    wp = WorkspacePatch(name="Renamed")
+    assert wp.name == "Renamed"
+    assert wp.settings is None
+
+
+def test_workspace_patch_frozen():
+    wp = WorkspacePatch(name="x")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        wp.name = "y"  # type: ignore[misc]
+
+
+def test_workspace_patch_slots():
+    wp = WorkspacePatch()
+    assert not hasattr(wp, "__dict__")
+
+
+# Identity dataclass tests — Member
+
+
+def test_new_member_defaults():
+    nm = NewMember(workspace_id="ws_01", user_id="usr_01")
+    assert nm.workspace_id == "ws_01"
+    assert nm.user_id == "usr_01"
+    assert nm.role == "writer"
+
+
+def test_new_member_all_fields():
+    nm = NewMember(workspace_id="ws_02", user_id="usr_02", role="admin")
+    assert nm.role == "admin"
+
+
+def test_new_member_frozen():
+    nm = NewMember(workspace_id="ws_01", user_id="usr_01")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        nm.role = "admin"  # type: ignore[misc]
+
+
+def test_new_member_slots():
+    nm = NewMember(workspace_id="ws_01", user_id="usr_01")
+    assert not hasattr(nm, "__dict__")
+
+
+def test_stored_member_round_trip():
+    now = datetime.now(timezone.utc)
+    sm = StoredMember(
+        id="mbr_01",
+        workspace_id="ws_01",
+        user_id="usr_01",
+        role="writer",
+        invited_at=now,
+        accepted_at=None,
+    )
+    assert sm.id == "mbr_01"
+    assert sm.workspace_id == "ws_01"
+    assert sm.user_id == "usr_01"
+    assert sm.role == "writer"
+    assert sm.invited_at == now
+    assert sm.accepted_at is None
+
+
+def test_stored_member_accepted():
+    now = datetime.now(timezone.utc)
+    sm = StoredMember(
+        id="mbr_02",
+        workspace_id="ws_01",
+        user_id=None,
+        role="reader",
+        invited_at=now,
+        accepted_at=now,
+    )
+    assert sm.user_id is None
+    assert sm.accepted_at == now
+
+
+def test_stored_member_frozen():
+    now = datetime.now(timezone.utc)
+    sm = StoredMember(
+        id="mbr_03",
+        workspace_id="ws_01",
+        user_id="usr_01",
+        role="writer",
+        invited_at=now,
+        accepted_at=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        sm.role = "admin"  # type: ignore[misc]
+
+
+def test_stored_member_slots():
+    now = datetime.now(timezone.utc)
+    sm = StoredMember(
+        id="mbr_04",
+        workspace_id="ws_01",
+        user_id="usr_01",
+        role="writer",
+        invited_at=now,
+        accepted_at=None,
+    )
+    assert not hasattr(sm, "__dict__")
+
+
+# Identity dataclass tests — ApiKey
+
+
+def test_new_api_key_defaults():
+    nak = NewApiKey(
+        org_id="org_1",
+        name="My Key",
+        key_hash="abc123",
+        key_prefix="lore_",
+    )
+    assert nak.org_id == "org_1"
+    assert nak.name == "My Key"
+    assert nak.key_hash == "abc123"
+    assert nak.key_prefix == "lore_"
+    assert nak.project is None
+    assert nak.is_root is False
+    assert nak.workspace_id is None
+
+
+def test_new_api_key_all_fields():
+    nak = NewApiKey(
+        org_id="org_2",
+        name="Root Key",
+        key_hash="deadbeef",
+        key_prefix="lore_r_",
+        project="proj_a",
+        is_root=True,
+        workspace_id="ws_01",
+    )
+    assert nak.project == "proj_a"
+    assert nak.is_root is True
+    assert nak.workspace_id == "ws_01"
+
+
+def test_new_api_key_frozen():
+    nak = NewApiKey(
+        org_id="org_1",
+        name="Key",
+        key_hash="h",
+        key_prefix="p_",
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        nak.name = "Other"  # type: ignore[misc]
+
+
+def test_new_api_key_slots():
+    nak = NewApiKey(
+        org_id="org_1",
+        name="Key",
+        key_hash="h",
+        key_prefix="p_",
+    )
+    assert not hasattr(nak, "__dict__")
+
+
+def test_stored_api_key_round_trip():
+    now = datetime.now(timezone.utc)
+    sak = StoredApiKey(
+        id="key_01",
+        org_id="org_1",
+        name="Prod Key",
+        key_hash="abc123",
+        key_prefix="lore_",
+        project=None,
+        is_root=False,
+        workspace_id=None,
+        revoked_at=None,
+        created_at=now,
+        last_used_at=None,
+    )
+    assert sak.id == "key_01"
+    assert sak.org_id == "org_1"
+    assert sak.name == "Prod Key"
+    assert sak.key_hash == "abc123"
+    assert sak.is_root is False
+    assert sak.revoked_at is None
+    assert sak.created_at == now
+    assert sak.last_used_at is None
+
+
+def test_stored_api_key_revoked():
+    now = datetime.now(timezone.utc)
+    sak = StoredApiKey(
+        id="key_02",
+        org_id="org_1",
+        name="Old Key",
+        key_hash="xyz",
+        key_prefix="lore_",
+        project="proj_b",
+        is_root=True,
+        workspace_id="ws_02",
+        revoked_at=now,
+        created_at=now,
+        last_used_at=now,
+    )
+    assert sak.project == "proj_b"
+    assert sak.is_root is True
+    assert sak.workspace_id == "ws_02"
+    assert sak.revoked_at == now
+    assert sak.last_used_at == now
+
+
+def test_stored_api_key_frozen():
+    now = datetime.now(timezone.utc)
+    sak = StoredApiKey(
+        id="key_03",
+        org_id="org_1",
+        name="Key",
+        key_hash="h",
+        key_prefix="p_",
+        project=None,
+        is_root=False,
+        workspace_id=None,
+        revoked_at=None,
+        created_at=now,
+        last_used_at=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        sak.name = "Mutated"  # type: ignore[misc]
+
+
+def test_stored_api_key_slots():
+    now = datetime.now(timezone.utc)
+    sak = StoredApiKey(
+        id="key_04",
+        org_id="org_1",
+        name="Key",
+        key_hash="h",
+        key_prefix="p_",
+        project=None,
+        is_root=False,
+        workspace_id=None,
+        revoked_at=None,
+        created_at=now,
+        last_used_at=None,
+    )
+    assert not hasattr(sak, "__dict__")

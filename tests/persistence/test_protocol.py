@@ -1,4 +1,4 @@
-"""Tests that the Store Protocol declares the MemoryOps, GraphOps, and PolicyOps slices."""
+"""Tests that the Store Protocol declares the MemoryOps, GraphOps, PolicyOps, WorkspaceOps, and AuthOps slices."""
 
 from __future__ import annotations
 
@@ -93,6 +93,56 @@ def test_store_declares_policy_ops():
 
 def test_policy_ops_are_async():
     for name in REQUIRED_POLICY_OPS:
+        method = getattr(Store, name)
+        assert inspect.iscoroutinefunction(method), (
+            f"Store.{name} must be async"
+        )
+
+
+REQUIRED_WORKSPACE_OPS = {
+    "get_workspace",
+    "list_workspaces",
+    "create_workspace",
+    "update_workspace",
+    "archive_workspace",
+    "add_workspace_member",
+    "list_workspace_members",
+    "update_workspace_member_role",
+    "remove_workspace_member",
+}
+
+
+def test_store_declares_workspace_ops():
+    members = {name for name, _ in inspect.getmembers(Store)}
+    missing = REQUIRED_WORKSPACE_OPS - members
+    assert not missing, f"Store missing WorkspaceOps methods: {missing}"
+
+
+def test_workspace_ops_are_async():
+    for name in REQUIRED_WORKSPACE_OPS:
+        method = getattr(Store, name)
+        assert inspect.iscoroutinefunction(method), (
+            f"Store.{name} must be async"
+        )
+
+
+REQUIRED_AUTH_OPS = {
+    "get_api_key",
+    "list_api_keys",
+    "create_api_key",
+    "revoke_api_key",
+    "count_active_root_keys",
+}
+
+
+def test_store_declares_auth_ops():
+    members = {name for name, _ in inspect.getmembers(Store)}
+    missing = REQUIRED_AUTH_OPS - members
+    assert not missing, f"Store missing AuthOps methods: {missing}"
+
+
+def test_auth_ops_are_async():
+    for name in REQUIRED_AUTH_OPS:
         method = getattr(Store, name)
         assert inspect.iscoroutinefunction(method), (
             f"Store.{name} must be async"

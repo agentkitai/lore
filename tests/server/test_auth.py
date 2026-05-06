@@ -15,6 +15,7 @@ pytest.importorskip("httpx")
 from httpx import ASGITransport, AsyncClient
 
 from lore.server.app import app
+from lore.server.db import get_store
 
 
 @pytest_asyncio.fixture
@@ -23,11 +24,17 @@ async def client():
 
     _key_cache.clear()
     _last_used_updates.clear()
+
+    mock_store = AsyncMock()
+    mock_store.list_api_keys = AsyncMock(return_value=[])
+    app.dependency_overrides[get_store] = lambda: mock_store
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     _key_cache.clear()
     _last_used_updates.clear()
+    app.dependency_overrides.pop(get_store, None)
 
 
 def _make_mock_pool_with_key(key_row=None):
@@ -139,8 +146,7 @@ async def test_revoked_key(client):
 async def test_valid_key_sets_context(client):
     row = _valid_key_row(org_id="org-42", project="backend", is_root=False)
     mock_pool, _ = _make_mock_pool_with_key(key_row=row)
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.keys.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool):
         # Use a test endpoint that echoes auth context
         resp = await client.get(
             "/v1/keys",
@@ -159,8 +165,7 @@ async def test_cache_avoids_second_db_lookup(client):
     mock_pool, mock_conn = _make_mock_pool_with_key(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.keys.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool):
         await client.get("/v1/keys", headers=headers)
         await client.get("/v1/keys", headers=headers)
 
@@ -177,8 +182,7 @@ async def test_cache_expires_after_ttl(client):
     # Directly manipulate the cache to simulate expiry
     from lore.server.auth import _key_cache
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.keys.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool):
         # First request — populates cache
         await client.get("/v1/keys", headers=headers)
         assert mock_conn.fetchrow.call_count == 1
@@ -204,8 +208,7 @@ async def test_last_used_at_fires_update(client):
     mock_pool, mock_conn = _make_mock_pool_with_key(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.keys.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool):
         await client.get("/v1/keys", headers=headers)
 
     # Should have scheduled an update

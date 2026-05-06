@@ -22,21 +22,28 @@ from lore.persistence.types import (
     GraphStats,
     MemoryFilter,
     MemoryPatch,
+    NewApiKey,
     NewEntity,
+    NewMember,
     NewMemory,
     NewMention,
     NewProfile,
     NewRelationship,
+    NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
     ScoredMemory,
+    StoredApiKey,
     StoredEntity,
+    StoredMember,
     StoredMemory,
     StoredMention,
     StoredProfile,
     StoredRelationship,
+    StoredWorkspace,
     TimelineBucketRow,
+    WorkspacePatch,
 )
 
 
@@ -146,6 +153,48 @@ def _row_to_profile(row: "asyncpg.Record") -> StoredProfile:
         include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_member(row: "asyncpg.Record") -> StoredMember:
+    return StoredMember(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        user_id=row["user_id"],
+        role=row["role"],
+        invited_at=row["invited_at"],
+        accepted_at=row["accepted_at"],
+    )
+
+
+def _row_to_api_key(row: "asyncpg.Record") -> StoredApiKey:
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        key_hash=row["key_hash"],
+        key_prefix=row["key_prefix"],
+        project=row["project"],
+        is_root=bool(row["is_root"]),
+        workspace_id=row["workspace_id"],
+        revoked_at=row["revoked_at"],
+        created_at=row["created_at"],
+        last_used_at=row["last_used_at"],
+    )
+
+
+def _row_to_workspace(row: "asyncpg.Record") -> StoredWorkspace:
+    settings = row["settings"]
+    if isinstance(settings, str):
+        settings = json.loads(settings)
+    return StoredWorkspace(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        slug=row["slug"],
+        settings=dict(settings or {}),
+        created_at=row["created_at"],
+        archived_at=row["archived_at"],
     )
 
 
@@ -1327,6 +1376,239 @@ class PostgresStore:
                 org_id,
             )
         return _row_to_profile(row) if row else None
+
+    # ── WorkspaceOps ──────────────────────────────────────────────────
+
+    async def get_workspace(
+        self, workspace_id: str, org_id: str
+    ) -> Optional[StoredWorkspace]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, slug, settings, created_at, archived_at
+                FROM workspaces
+                WHERE id = $1 AND org_id = $2
+                """,
+                workspace_id,
+                org_id,
+            )
+        return _row_to_workspace(row) if row else None
+
+    async def list_workspaces(
+        self, org_id: str, *, include_archived: bool = False
+    ) -> Sequence[StoredWorkspace]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, name, slug, settings, created_at, archived_at
+                FROM workspaces
+                WHERE org_id = $1 AND (archived_at IS NULL OR $2::boolean)
+                ORDER BY name
+                """,
+                org_id,
+                include_archived,
+            )
+        return tuple(_row_to_workspace(r) for r in rows)
+
+    async def create_workspace(self, ws: NewWorkspace) -> StoredWorkspace:
+        workspace_id = f"ws_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO workspaces (id, org_id, name, slug, settings)
+                    VALUES ($1, $2, $3, $4, $5::jsonb)
+                    RETURNING id, org_id, name, slug, settings, created_at, archived_at
+                    """,
+                    workspace_id,
+                    ws.org_id,
+                    ws.name,
+                    ws.slug,
+                    json.dumps(dict(ws.settings)),
+                )
+            except asyncpg.UniqueViolationError as e:
+                raise IntegrityError(
+                    f"Workspace slug {ws.slug!r} already exists for org_id={ws.org_id!r}"
+                ) from e
+        return _row_to_workspace(row)
+
+    async def update_workspace(
+        self, workspace_id: str, org_id: str, patch: WorkspacePatch
+    ) -> Optional[StoredWorkspace]:
+        sets: list[str] = []
+        params: list = [workspace_id, org_id]
+
+        if patch.name is not None:
+            params.append(patch.name)
+            sets.append(f"name = ${len(params)}")
+        if patch.settings is not None:
+            params.append(json.dumps(dict(patch.settings)))
+            sets.append(f"settings = ${len(params)}::jsonb")
+
+        if not sets:
+            raise ValueError(
+                "update_workspace called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sql = (
+            "UPDATE workspaces "
+            f"SET {', '.join(sets)} "
+            "WHERE id = $1 AND org_id = $2 "
+            "RETURNING id, org_id, name, slug, settings, created_at, archived_at"
+        )
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+        return _row_to_workspace(row) if row else None
+
+    async def archive_workspace(self, workspace_id: str, org_id: str) -> bool:
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "UPDATE workspaces SET archived_at = now() WHERE id = $1 AND org_id = $2 AND archived_at IS NULL",
+                workspace_id,
+                org_id,
+            )
+        return result.endswith(" 1")
+
+    async def add_workspace_member(self, member: NewMember) -> StoredMember:
+        member_id = f"wsm_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO workspace_members (id, workspace_id, user_id, role)
+                    VALUES ($1, $2, $3, $4)
+                    RETURNING id, workspace_id, user_id, role, invited_at, accepted_at
+                    """,
+                    member_id,
+                    member.workspace_id,
+                    member.user_id,
+                    member.role,
+                )
+            except asyncpg.ForeignKeyViolationError as e:
+                raise IntegrityError(
+                    f"workspace_id {member.workspace_id!r} does not exist"
+                ) from e
+        return _row_to_member(row)
+
+    async def list_workspace_members(
+        self, workspace_id: str
+    ) -> Sequence[StoredMember]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, workspace_id, user_id, role, invited_at, accepted_at
+                FROM workspace_members
+                WHERE workspace_id = $1
+                ORDER BY invited_at
+                """,
+                workspace_id,
+            )
+        return tuple(_row_to_member(r) for r in rows)
+
+    async def update_workspace_member_role(
+        self, workspace_id: str, user_id: str, role: str
+    ) -> Optional[StoredMember]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE workspace_members
+                SET role = $1
+                WHERE workspace_id = $2 AND user_id = $3
+                RETURNING id, workspace_id, user_id, role, invited_at, accepted_at
+                """,
+                role,
+                workspace_id,
+                user_id,
+            )
+        return _row_to_member(row) if row else None
+
+    async def remove_workspace_member(
+        self, workspace_id: str, user_id: str
+    ) -> bool:
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2",
+                workspace_id,
+                user_id,
+            )
+        return result.endswith(" 1")
+
+    # ── AuthOps ───────────────────────────────────────────────────────
+
+    async def get_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, key_hash, key_prefix, project, is_root,
+                       workspace_id, revoked_at, created_at, last_used_at
+                FROM api_keys
+                WHERE id = $1
+                """,
+                key_id,
+            )
+        return _row_to_api_key(row) if row else None
+
+    async def list_api_keys(self, org_id: str) -> Sequence[StoredApiKey]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, name, key_hash, key_prefix, project, is_root,
+                       workspace_id, revoked_at, created_at, last_used_at
+                FROM api_keys
+                WHERE org_id = $1
+                ORDER BY created_at
+                """,
+                org_id,
+            )
+        return tuple(_row_to_api_key(r) for r in rows)
+
+    async def create_api_key(self, key: NewApiKey) -> StoredApiKey:
+        key_id = f"key_{ULID()}"
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO api_keys
+                    (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id, org_id, name, key_hash, key_prefix, project, is_root,
+                          workspace_id, revoked_at, created_at, last_used_at
+                """,
+                key_id,
+                key.org_id,
+                key.name,
+                key.key_hash,
+                key.key_prefix,
+                key.project,
+                key.is_root,
+                key.workspace_id,
+            )
+        return _row_to_api_key(row)
+
+    async def revoke_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE api_keys
+                SET revoked_at = now()
+                WHERE id = $1 AND revoked_at IS NULL
+                RETURNING id, org_id, name, key_hash, key_prefix, project, is_root,
+                          workspace_id, revoked_at, created_at, last_used_at
+                """,
+                key_id,
+            )
+        return _row_to_api_key(row) if row else None
+
+    async def count_active_root_keys(self, org_id: str) -> int:
+        async with self._acquire() as conn:
+            result = await conn.fetchval(
+                """
+                SELECT COUNT(*)::int
+                FROM api_keys
+                WHERE org_id = $1 AND is_root = TRUE AND revoked_at IS NULL
+                """,
+                org_id,
+            )
+        return int(result or 0)
 
 
 class _BoundConn:

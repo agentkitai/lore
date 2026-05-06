@@ -15,21 +15,28 @@ from lore.persistence.types import (
     GraphStats,
     MemoryFilter,
     MemoryPatch,
+    NewApiKey,
     NewEntity,
+    NewMember,
     NewMemory,
     NewMention,
     NewProfile,
     NewRelationship,
+    NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
     ScoredMemory,
+    StoredApiKey,
     StoredEntity,
+    StoredMember,
     StoredMemory,
     StoredMention,
     StoredProfile,
     StoredRelationship,
+    StoredWorkspace,
     TimelineBucketRow,
+    WorkspacePatch,
 )
 
 
@@ -299,4 +306,64 @@ class Store(Protocol):
 
     async def resolve_profile_for_key(self, org_id: str, name: str) -> Optional[StoredProfile]:
         """Resolve the effective profile for an org/name key, falling back to defaults."""
+        ...
+
+    # ── WorkspaceOps ─────────────────────────────────────────────────
+
+    async def get_workspace(self, workspace_id: str, org_id: str) -> Optional[StoredWorkspace]:
+        """Return a workspace by id within an org, or None if absent."""
+        ...
+
+    async def list_workspaces(self, org_id: str, *, include_archived: bool = False) -> Sequence[StoredWorkspace]:
+        """List workspaces for an org; archived ones excluded by default."""
+        ...
+
+    async def create_workspace(self, ws: NewWorkspace) -> StoredWorkspace:
+        """Insert a new workspace; returns the stored row with server-generated id/timestamps."""
+        ...
+
+    async def update_workspace(self, workspace_id: str, org_id: str, patch: WorkspacePatch) -> Optional[StoredWorkspace]:
+        """Apply a patch to a workspace and return the updated row, or None if absent."""
+        ...
+
+    async def archive_workspace(self, workspace_id: str, org_id: str) -> bool:
+        """Mark a workspace as archived; returns True if a row was updated."""
+        ...
+
+    async def add_workspace_member(self, member: NewMember) -> StoredMember:
+        """Add a member to a workspace; returns the stored row with server-generated id/timestamps."""
+        ...
+
+    async def list_workspace_members(self, workspace_id: str) -> Sequence[StoredMember]:
+        """List all members of a workspace, ordered by joined_at."""
+        ...
+
+    async def update_workspace_member_role(self, workspace_id: str, user_id: str, role: str) -> Optional[StoredMember]:
+        """Update a member's role in a workspace; returns the updated row, or None if absent."""
+        ...
+
+    async def remove_workspace_member(self, workspace_id: str, user_id: str) -> bool:
+        """Remove a member from a workspace; returns True if a row was deleted."""
+        ...
+
+    # ── AuthOps ──────────────────────────────────────────────────────
+
+    async def get_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        """Return an API key by id, or None if absent."""
+        ...
+
+    async def list_api_keys(self, org_id: str) -> Sequence[StoredApiKey]:
+        """List all API keys for an org, ordered by created_at DESC."""
+        ...
+
+    async def create_api_key(self, key: NewApiKey) -> StoredApiKey:
+        """Insert a new API key; returns the stored row with server-generated id/timestamps."""
+        ...
+
+    async def revoke_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        """Revoke an API key; returns the updated row, or None if absent."""
+        ...
+
+    async def count_active_root_keys(self, org_id: str) -> int:
+        """Count active (non-revoked) root-level API keys for an org."""
         ...

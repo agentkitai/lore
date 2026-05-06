@@ -15,6 +15,7 @@ from httpx import ASGITransport, AsyncClient
 
 from lore.server.app import app
 from lore.server.auth import ROLE_PERMISSIONS, _map_api_key_role
+from lore.server.db import get_store
 
 
 @pytest_asyncio.fixture
@@ -22,11 +23,17 @@ async def client():
     from lore.server.auth import _key_cache, _last_used_updates
     _key_cache.clear()
     _last_used_updates.clear()
+
+    mock_store = AsyncMock()
+    mock_store.list_api_keys = AsyncMock(return_value=[])
+    app.dependency_overrides[get_store] = lambda: mock_store
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     _key_cache.clear()
     _last_used_updates.clear()
+    app.dependency_overrides.pop(get_store, None)
 
 
 def _make_mock_pool_with_key(key_row=None, fetch_rows=None):
@@ -132,8 +139,7 @@ async def test_admin_can_list_keys(client):
     mock_pool, _ = _make_mock_pool_with_key(key_row=row, fetch_rows=[])
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.keys.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool):
         resp = await client.get("/v1/keys", headers=headers)
     assert resp.status_code == 200
 
@@ -166,7 +172,6 @@ async def test_existing_key_defaults_admin(client):
     mock_pool, _ = _make_mock_pool_with_key(key_row=row, fetch_rows=[])
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
-         patch("lore.server.routes.keys.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_pool", return_value=mock_pool):
         resp = await client.get("/v1/keys", headers=headers)
     assert resp.status_code == 200  # admin can list keys
