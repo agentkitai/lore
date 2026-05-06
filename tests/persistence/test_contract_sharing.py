@@ -18,6 +18,7 @@ from lore.persistence import (
     NewDenyListRule,
     SharingConfigData,
     SharingConfigPatch,
+    SharingStatsData,
     Store,
 )
 
@@ -41,15 +42,18 @@ async def _insert_lesson(
     reputation_score: int = 0,
     created_at: Optional[datetime] = None,
 ) -> str:
-    """Insert a lesson row via raw SQL."""
+    """Insert a lesson (memory) row via raw SQL.
+
+    Writes directly to ``memories`` (the underlying table since migration 009).
+    """
     from ulid import ULID
 
     lesson_id = lesson_id or str(ULID())
     if created_at is None:
         await store._conn.execute(
             """
-            INSERT INTO lessons (id, org_id, problem, resolution, reputation_score)
-            VALUES ($1, $2, 'p', 'r', $3)
+            INSERT INTO memories (id, org_id, content, context, reputation_score)
+            VALUES ($1, $2, 'problem', 'resolution', $3)
             """,
             lesson_id,
             org_id,
@@ -58,8 +62,8 @@ async def _insert_lesson(
     else:
         await store._conn.execute(
             """
-            INSERT INTO lessons (id, org_id, problem, resolution, reputation_score, created_at)
-            VALUES ($1, $2, 'p', 'r', $3, $4)
+            INSERT INTO memories (id, org_id, content, context, reputation_score, created_at, updated_at)
+            VALUES ($1, $2, 'problem', 'resolution', $3, $4, $4)
             """,
             lesson_id,
             org_id,
@@ -368,3 +372,149 @@ async def test_list_audit_events_respects_limit_and_org(store: Store):
 
     results = await store.list_audit_events("org-limit-a", limit=2)
     assert len(results) == 2
+
+
+# ── stats ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_get_stats_empty_org(store: Store):
+    await _ensure_org(store, "org-stats-empty")
+
+    stats = await store.get_sharing_stats("org-stats-empty")
+    assert isinstance(stats, SharingStatsData)
+    assert stats.count_shared == 0
+    assert stats.last_shared is None
+    assert dict(stats.audit_summary) == {}
+
+
+@pytest.mark.asyncio
+async def test_get_stats_aggregates_lessons_and_audit(store: Store):
+    await _ensure_org(store, "org-stats")
+    await _insert_lesson(store, org_id="org-stats")
+    await _insert_lesson(store, org_id="org-stats")
+    await store.record_audit_event(
+        NewAuditEvent(org_id="org-stats", event_type="share", initiated_by="k"),
+    )
+    await store.record_audit_event(
+        NewAuditEvent(org_id="org-stats", event_type="share", initiated_by="k"),
+    )
+    await store.record_audit_event(
+        NewAuditEvent(org_id="org-stats", event_type="rate", initiated_by="k"),
+    )
+
+    stats = await store.get_sharing_stats("org-stats")
+    assert stats.count_shared == 2
+    assert stats.last_shared is not None
+    assert dict(stats.audit_summary) == {"share": 2, "rate": 1}
+
+
+# ── purge ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_purge_returns_predelete_lesson_count_and_clears_tables(store: Store):
+    await _ensure_org(store, "org-purge")
+    await _insert_lesson(store, org_id="org-purge")
+    await _insert_lesson(store, org_id="org-purge")
+    await _insert_lesson(store, org_id="org-purge")
+    await store.upsert_agent_sharing_config(
+        "org-purge", "agent-1", enabled=True, categories=[],
+    )
+    await store.create_deny_rule(NewDenyListRule(org_id="org-purge", pattern="x"))
+    await store.record_audit_event(
+        NewAuditEvent(org_id="org-purge", event_type="share", initiated_by="k"),
+    )
+    # Pre-create a sharing_config row
+    await store.update_sharing_config(
+        "org-purge", SharingConfigPatch(enabled=True),
+    )
+
+    deleted = await store.purge_sharing("org-purge")
+    assert deleted == 3
+
+    # All purge tables should be empty for this org
+    for tbl in (
+        "lessons",
+        "sharing_audit",
+        "deny_list_rules",
+        "agent_sharing_config",
+        "sharing_config",
+    ):
+        cnt = await store._conn.fetchval(
+            f"SELECT COUNT(*) FROM {tbl} WHERE org_id = $1", "org-purge",
+        )
+        assert cnt == 0, f"{tbl} not cleared for org-purge"
+
+
+@pytest.mark.asyncio
+async def test_purge_does_not_affect_other_orgs(store: Store):
+    await _ensure_org(store, "org-keep")
+    await _ensure_org(store, "org-zap")
+    await _insert_lesson(store, org_id="org-keep")
+    await _insert_lesson(store, org_id="org-zap")
+
+    deleted = await store.purge_sharing("org-zap")
+    assert deleted == 1
+
+    cnt = await store._conn.fetchval(
+        "SELECT COUNT(*) FROM lessons WHERE org_id = $1", "org-keep",
+    )
+    assert cnt == 1
+
+
+# ── rate_lesson ───────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_rate_lesson_increments_score_and_writes_audit(store: Store):
+    await _ensure_org(store, "org-rate")
+    lesson_id = await _insert_lesson(
+        store, org_id="org-rate", reputation_score=5,
+    )
+
+    score = await store.rate_lesson(lesson_id, "org-rate", 1, "key-001")
+    assert score == 6
+
+    score = await store.rate_lesson(lesson_id, "org-rate", -1, "key-001")
+    assert score == 5
+
+    # Two rate audit events should have been written
+    rows = await store._conn.fetch(
+        "SELECT event_type, lesson_id, initiated_by FROM sharing_audit "
+        "WHERE org_id = $1 AND event_type = 'rate'",
+        "org-rate",
+    )
+    assert len(rows) == 2
+    for r in rows:
+        assert r["lesson_id"] == lesson_id
+        assert r["initiated_by"] == "key-001"
+
+
+@pytest.mark.asyncio
+async def test_rate_lesson_missing_returns_none_and_no_audit(store: Store):
+    await _ensure_org(store, "org-rate-missing")
+
+    score = await store.rate_lesson("does-not-exist", "org-rate-missing", 1, "k")
+    assert score is None
+
+    cnt = await store._conn.fetchval(
+        "SELECT COUNT(*) FROM sharing_audit WHERE org_id = $1", "org-rate-missing",
+    )
+    assert cnt == 0
+
+
+@pytest.mark.asyncio
+async def test_rate_lesson_wrong_org_returns_none(store: Store):
+    await _ensure_org(store, "org-rate-a")
+    await _ensure_org(store, "org-rate-b")
+    lesson_id = await _insert_lesson(store, org_id="org-rate-a", reputation_score=0)
+
+    score = await store.rate_lesson(lesson_id, "org-rate-b", 1, "k")
+    assert score is None
+
+    # Original lesson reputation unchanged
+    rep = await store._conn.fetchval(
+        "SELECT reputation_score FROM lessons WHERE id = $1", lesson_id,
+    )
+    assert rep == 0

@@ -3279,10 +3279,43 @@ class PostgresStore:
             )
 
     async def get_sharing_stats(self, org_id: str) -> "SharingStatsData":
-        raise NotImplementedError
+        # Note: post-migration 009, "lessons" is a view over "memories";
+        # operate on the base table to keep aggregations correct.
+        async with self._acquire() as conn:
+            count = await conn.fetchval(
+                "SELECT COUNT(*) FROM memories WHERE org_id = $1", org_id,
+            )
+            last = await conn.fetchval(
+                "SELECT MAX(created_at) FROM memories WHERE org_id = $1", org_id,
+            )
+            summary_rows = await conn.fetch(
+                """
+                SELECT event_type, COUNT(*)::int AS cnt
+                FROM sharing_audit
+                WHERE org_id = $1
+                GROUP BY event_type
+                """,
+                org_id,
+            )
+        summary = {r["event_type"]: int(r["cnt"]) for r in summary_rows}
+        return SharingStatsData(
+            count_shared=int(count or 0),
+            last_shared=last,
+            audit_summary=summary,
+        )
 
     async def purge_sharing(self, org_id: str) -> int:
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            async with conn.transaction():
+                deleted_lessons = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE org_id = $1", org_id,
+                )
+                await conn.execute("DELETE FROM memories WHERE org_id = $1", org_id)
+                await conn.execute("DELETE FROM sharing_audit WHERE org_id = $1", org_id)
+                await conn.execute("DELETE FROM deny_list_rules WHERE org_id = $1", org_id)
+                await conn.execute("DELETE FROM agent_sharing_config WHERE org_id = $1", org_id)
+                await conn.execute("DELETE FROM sharing_config WHERE org_id = $1", org_id)
+        return int(deleted_lessons or 0)
 
     async def rate_lesson(
         self,
@@ -3291,7 +3324,36 @@ class PostgresStore:
         delta: int,
         initiated_by: str,
     ) -> "Optional[int]":
-        raise NotImplementedError
+        # Update the base "memories" table (post-migration 009 the "lessons" view
+        # does not support UPDATE ... RETURNING).
+        async with self._acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    """
+                    UPDATE memories
+                    SET reputation_score = reputation_score + $1,
+                        updated_at = now()
+                    WHERE id = $2 AND org_id = $3
+                    RETURNING reputation_score
+                    """,
+                    delta,
+                    lesson_id,
+                    org_id,
+                )
+                if row is None:
+                    return None
+                await conn.execute(
+                    """
+                    INSERT INTO sharing_audit
+                        (id, org_id, event_type, lesson_id, initiated_by)
+                    VALUES ($1, $2, 'rate', $3, $4)
+                    """,
+                    str(ULID()),
+                    org_id,
+                    lesson_id,
+                    initiated_by,
+                )
+        return int(row["reputation_score"])
 
 
 class _BoundConn:
