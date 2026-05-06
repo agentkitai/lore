@@ -1,8 +1,8 @@
 """Contract tests for the RecommendationOps slice of Store.
 
-Covers get_recommendation_config and upsert_recommendation_config.
-record_recommendation_feedback and list_candidate_memories_for_recommendation
-are tested in T4/T5.
+Covers get_recommendation_config, upsert_recommendation_config, and
+record_recommendation_feedback. list_candidate_memories_for_recommendation
+is tested in T5.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 import pytest
 
 from lore.persistence import Store
-from lore.persistence.types import StoredRecommendationConfig
+from lore.persistence.types import NewRecommendationFeedback, StoredRecommendationConfig
 
 # ── get_recommendation_config ──────────────────────────────────────────────────
 
@@ -128,3 +128,81 @@ async def test_upsert_first_call_uses_defaults_when_all_none(store: Store):
     assert result.enabled is True
     assert result.max_suggestions == 3
     assert result.cooldown_minutes == 15
+
+
+# ── record_recommendation_feedback ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_feedback_inserts_row(store: Store):
+    fb = NewRecommendationFeedback(
+        org_id="org_test",
+        memory_id="mem_abc",
+        actor_id="actor_1",
+        feedback="positive",
+    )
+    await store.record_recommendation_feedback(fb)
+
+    count = await store._conn.fetchval(
+        "SELECT COUNT(*) FROM recommendation_feedback WHERE memory_id = $1",
+        "mem_abc",
+    )
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_record_feedback_with_workspace_id(store: Store):
+    fb = NewRecommendationFeedback(
+        org_id="org_test",
+        memory_id="mem_ws",
+        actor_id="actor_2",
+        feedback="negative",
+        workspace_id="ws_xyz",
+    )
+    await store.record_recommendation_feedback(fb)
+
+    row = await store._conn.fetchrow(
+        "SELECT id, signal, context_hash, workspace_id FROM recommendation_feedback WHERE memory_id = $1",
+        "mem_ws",
+    )
+    assert row is not None
+    assert row["workspace_id"] == "ws_xyz"
+
+
+@pytest.mark.asyncio
+async def test_record_feedback_with_signal_and_context_hash(store: Store):
+    fb = NewRecommendationFeedback(
+        org_id="org_test",
+        memory_id="mem_sig",
+        actor_id="actor_3",
+        feedback="positive",
+        signal="auto",
+        context_hash="abc123hash",
+    )
+    await store.record_recommendation_feedback(fb)
+
+    row = await store._conn.fetchrow(
+        "SELECT id, signal, context_hash, workspace_id FROM recommendation_feedback WHERE memory_id = $1",
+        "mem_sig",
+    )
+    assert row is not None
+    assert row["signal"] == "auto"
+    assert row["context_hash"] == "abc123hash"
+
+
+@pytest.mark.asyncio
+async def test_record_feedback_generates_recfb_prefix_id(store: Store):
+    fb = NewRecommendationFeedback(
+        org_id="org_test",
+        memory_id="mem_id_check",
+        actor_id="actor_4",
+        feedback="positive",
+    )
+    await store.record_recommendation_feedback(fb)
+
+    row = await store._conn.fetchrow(
+        "SELECT id, signal, context_hash, workspace_id FROM recommendation_feedback WHERE memory_id = $1",
+        "mem_id_check",
+    )
+    assert row is not None
+    assert row["id"].startswith("recfb_")

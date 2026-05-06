@@ -1802,7 +1802,23 @@ class PostgresStore:
         self,
         feedback: "NewRecommendationFeedback",
     ) -> None:
-        raise NotImplementedError("record_recommendation_feedback implemented in T4")
+        feedback_id = f"recfb_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO recommendation_feedback
+                    (id, org_id, workspace_id, memory_id, actor_id, signal, feedback, context_hash)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                feedback_id,
+                feedback.org_id,
+                feedback.workspace_id,
+                feedback.memory_id,
+                feedback.actor_id,
+                feedback.signal,
+                feedback.feedback,
+                feedback.context_hash,
+            )
 
     async def list_candidate_memories_for_recommendation(
         self,
