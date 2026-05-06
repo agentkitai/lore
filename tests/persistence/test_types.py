@@ -23,6 +23,8 @@ from lore.persistence.types import (
     NewRelationship,
     NewRetentionPolicy,
     NewRetrievalEvent,
+    NewSloAlert,
+    NewSloDefinition,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
@@ -33,6 +35,7 @@ from lore.persistence.types import (
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
+    SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
@@ -45,9 +48,12 @@ from lore.persistence.types import (
     StoredRecommendationConfig,
     StoredRelationship,
     StoredRetentionPolicy,
+    StoredSloAlert,
+    StoredSloDefinition,
     StoredSnapshotMetadata,
     StoredWorkspace,
     TimelineBucketRow,
+    TimeseriesPoint,
     TopQueryRow,
     WorkspacePatch,
 )
@@ -2197,3 +2203,313 @@ def test_stored_drill_result_slots():
         created_at=now,
     )
     assert not hasattr(sdr, "__dict__")
+
+
+# ── SLO slice dataclass tests ─────────────────────────────────────
+
+
+# NewSloDefinition
+
+
+def test_new_slo_definition_defaults():
+    nsd = NewSloDefinition(
+        org_id="org_1",
+        name="p99 latency",
+        metric="p99_latency_ms",
+        operator="lt",
+        threshold=200.0,
+    )
+    assert nsd.org_id == "org_1"
+    assert nsd.name == "p99 latency"
+    assert nsd.metric == "p99_latency_ms"
+    assert nsd.operator == "lt"
+    assert nsd.threshold == 200.0
+    assert nsd.window_minutes == 60
+    assert nsd.enabled is True
+    assert list(nsd.alert_channels) == []
+
+
+def test_new_slo_definition_all_fields():
+    channels = [{"type": "slack", "url": "https://hooks.slack.com/x"}]
+    nsd = NewSloDefinition(
+        org_id="org_2",
+        name="error rate",
+        metric="error_rate",
+        operator="lt",
+        threshold=0.01,
+        window_minutes=30,
+        enabled=False,
+        alert_channels=channels,
+    )
+    assert nsd.window_minutes == 30
+    assert nsd.enabled is False
+    assert list(nsd.alert_channels) == channels
+
+
+def test_new_slo_definition_frozen():
+    nsd = NewSloDefinition(
+        org_id="org_1",
+        name="x",
+        metric="m",
+        operator="lt",
+        threshold=1.0,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        nsd.name = "mutated"  # type: ignore[misc]
+
+
+def test_new_slo_definition_slots():
+    nsd = NewSloDefinition(
+        org_id="org_1",
+        name="x",
+        metric="m",
+        operator="lt",
+        threshold=1.0,
+    )
+    assert not hasattr(nsd, "__dict__")
+
+
+# StoredSloDefinition
+
+
+def test_stored_slo_definition_round_trip():
+    now = datetime.now(timezone.utc)
+    channels = [{"type": "email", "address": "ops@example.com"}]
+    ssd = StoredSloDefinition(
+        id="slo_01",
+        org_id="org_1",
+        name="availability",
+        metric="availability_pct",
+        operator="gt",
+        threshold=99.9,
+        window_minutes=1440,
+        enabled=True,
+        alert_channels=channels,
+        created_at=now,
+        updated_at=now,
+    )
+    assert ssd.id == "slo_01"
+    assert ssd.org_id == "org_1"
+    assert ssd.name == "availability"
+    assert ssd.metric == "availability_pct"
+    assert ssd.operator == "gt"
+    assert ssd.threshold == 99.9
+    assert ssd.window_minutes == 1440
+    assert ssd.enabled is True
+    assert list(ssd.alert_channels) == channels
+    assert ssd.created_at == now
+    assert ssd.updated_at == now
+
+
+def test_stored_slo_definition_frozen():
+    now = datetime.now(timezone.utc)
+    ssd = StoredSloDefinition(
+        id="slo_02",
+        org_id="org_1",
+        name="latency",
+        metric="p99_latency_ms",
+        operator="lt",
+        threshold=300.0,
+        window_minutes=60,
+        enabled=True,
+        alert_channels=[],
+        created_at=now,
+        updated_at=now,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ssd.name = "mutated"  # type: ignore[misc]
+
+
+def test_stored_slo_definition_slots():
+    now = datetime.now(timezone.utc)
+    ssd = StoredSloDefinition(
+        id="slo_03",
+        org_id="org_1",
+        name="latency",
+        metric="p99_latency_ms",
+        operator="lt",
+        threshold=300.0,
+        window_minutes=60,
+        enabled=True,
+        alert_channels=[],
+        created_at=now,
+        updated_at=now,
+    )
+    assert not hasattr(ssd, "__dict__")
+
+
+# SloDefinitionPatch
+
+
+def test_slo_definition_patch_all_none():
+    sdp = SloDefinitionPatch()
+    assert sdp.name is None
+    assert sdp.metric is None
+    assert sdp.operator is None
+    assert sdp.threshold is None
+    assert sdp.window_minutes is None
+    assert sdp.enabled is None
+    assert sdp.alert_channels is None
+
+
+def test_slo_definition_patch_partial():
+    sdp = SloDefinitionPatch(name="renamed", threshold=500.0, enabled=False)
+    assert sdp.name == "renamed"
+    assert sdp.threshold == 500.0
+    assert sdp.enabled is False
+    assert sdp.metric is None
+    assert sdp.operator is None
+
+
+def test_slo_definition_patch_frozen():
+    sdp = SloDefinitionPatch(name="x")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        sdp.name = "y"  # type: ignore[misc]
+
+
+def test_slo_definition_patch_slots():
+    sdp = SloDefinitionPatch()
+    assert not hasattr(sdp, "__dict__")
+
+
+# NewSloAlert
+
+
+def test_new_slo_alert_defaults():
+    nsa = NewSloAlert(
+        org_id="org_1",
+        slo_id="slo_01",
+        metric_value=350.0,
+        threshold=200.0,
+        status="firing",
+    )
+    assert nsa.org_id == "org_1"
+    assert nsa.slo_id == "slo_01"
+    assert nsa.metric_value == 350.0
+    assert nsa.threshold == 200.0
+    assert nsa.status == "firing"
+    assert list(nsa.dispatched_to) == []
+
+
+def test_new_slo_alert_all_fields():
+    channels = [{"type": "pagerduty", "key": "abc"}]
+    nsa = NewSloAlert(
+        org_id="org_2",
+        slo_id="slo_02",
+        metric_value=0.05,
+        threshold=0.01,
+        status="resolved",
+        dispatched_to=channels,
+    )
+    assert nsa.status == "resolved"
+    assert list(nsa.dispatched_to) == channels
+
+
+def test_new_slo_alert_frozen():
+    nsa = NewSloAlert(
+        org_id="org_1",
+        slo_id="slo_01",
+        metric_value=1.0,
+        threshold=0.5,
+        status="firing",
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        nsa.status = "resolved"  # type: ignore[misc]
+
+
+def test_new_slo_alert_slots():
+    nsa = NewSloAlert(
+        org_id="org_1",
+        slo_id="slo_01",
+        metric_value=1.0,
+        threshold=0.5,
+        status="firing",
+    )
+    assert not hasattr(nsa, "__dict__")
+
+
+# StoredSloAlert
+
+
+def test_stored_slo_alert_round_trip():
+    now = datetime.now(timezone.utc)
+    channels = [{"type": "slack", "url": "https://hooks.slack.com/y"}]
+    ssa = StoredSloAlert(
+        id=42,
+        org_id="org_1",
+        slo_id="slo_01",
+        metric_value=350.0,
+        threshold=200.0,
+        status="firing",
+        dispatched_to=channels,
+        created_at=now,
+    )
+    assert ssa.id == 42
+    assert ssa.org_id == "org_1"
+    assert ssa.slo_id == "slo_01"
+    assert ssa.metric_value == 350.0
+    assert ssa.threshold == 200.0
+    assert ssa.status == "firing"
+    assert list(ssa.dispatched_to) == channels
+    assert ssa.created_at == now
+
+
+def test_stored_slo_alert_frozen():
+    now = datetime.now(timezone.utc)
+    ssa = StoredSloAlert(
+        id=1,
+        org_id="org_1",
+        slo_id="slo_01",
+        metric_value=1.0,
+        threshold=0.5,
+        status="firing",
+        dispatched_to=[],
+        created_at=now,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ssa.status = "resolved"  # type: ignore[misc]
+
+
+def test_stored_slo_alert_slots():
+    now = datetime.now(timezone.utc)
+    ssa = StoredSloAlert(
+        id=2,
+        org_id="org_1",
+        slo_id="slo_01",
+        metric_value=1.0,
+        threshold=0.5,
+        status="firing",
+        dispatched_to=[],
+        created_at=now,
+    )
+    assert not hasattr(ssa, "__dict__")
+
+
+# TimeseriesPoint
+
+
+def test_timeseries_point_with_value():
+    now = datetime.now(timezone.utc)
+    tp = TimeseriesPoint(timestamp=now, value=42.5)
+    assert tp.timestamp == now
+    assert tp.value == 42.5
+
+
+def test_timeseries_point_null_value():
+    now = datetime.now(timezone.utc)
+    tp = TimeseriesPoint(timestamp=now, value=None)
+    assert tp.timestamp == now
+    assert tp.value is None
+
+
+def test_timeseries_point_frozen():
+    now = datetime.now(timezone.utc)
+    tp = TimeseriesPoint(timestamp=now, value=1.0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        tp.value = 2.0  # type: ignore[misc]
+
+
+def test_timeseries_point_slots():
+    now = datetime.now(timezone.utc)
+    tp = TimeseriesPoint(timestamp=now, value=0.0)
+    assert not hasattr(tp, "__dict__")

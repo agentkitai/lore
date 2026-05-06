@@ -164,6 +164,8 @@ REQUIRED_ANALYTICS_OPS = {
     "record_memory_access",
     "list_recent_session_snapshots",
     "compute_retrieval_analytics",
+    "compute_metric_value",
+    "compute_metric_timeseries",
 }
 
 
@@ -265,6 +267,31 @@ def test_store_declares_retention_ops():
 
 def test_retention_ops_are_async():
     for name in REQUIRED_RETENTION_OPS:
+        method = getattr(Store, name)
+        assert inspect.iscoroutinefunction(method), (
+            f"Store.{name} must be async"
+        )
+
+
+REQUIRED_SLO_OPS = {
+    "list_slo_definitions",
+    "get_slo_definition",
+    "create_slo_definition",
+    "update_slo_definition",
+    "delete_slo_definition",
+    "list_slo_alerts",
+    "record_slo_alert",
+}
+
+
+def test_store_declares_slo_ops():
+    members = {name for name, _ in inspect.getmembers(Store)}
+    missing = REQUIRED_SLO_OPS - members
+    assert not missing, f"Store missing SloOps methods: {missing}"
+
+
+def test_slo_ops_are_async():
+    for name in REQUIRED_SLO_OPS:
         method = getattr(Store, name)
         assert inspect.iscoroutinefunction(method), (
             f"Store.{name} must be async"

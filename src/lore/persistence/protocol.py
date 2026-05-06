@@ -28,6 +28,8 @@ from lore.persistence.types import (
     NewRelationship,
     NewRetentionPolicy,
     NewRetrievalEvent,
+    NewSloAlert,
+    NewSloDefinition,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
@@ -36,6 +38,7 @@ from lore.persistence.types import (
     RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoredMemory,
+    SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
@@ -48,9 +51,12 @@ from lore.persistence.types import (
     StoredRecommendationConfig,
     StoredRelationship,
     StoredRetentionPolicy,
+    StoredSloAlert,
+    StoredSloDefinition,
     StoredSnapshotMetadata,
     StoredWorkspace,
     TimelineBucketRow,
+    TimeseriesPoint,
     WorkspacePatch,
 )
 
@@ -465,6 +471,14 @@ class Store(Protocol):
         """Compute aggregated retrieval analytics for an org over the given number of days."""
         ...
 
+    async def compute_metric_value(
+        self, *, org_id: str, metric: str, window_minutes: int,
+    ) -> Optional[float]: ...
+
+    async def compute_metric_timeseries(
+        self, *, org_id: str, metric: str, window_hours: int, bucket_minutes: int,
+    ) -> Sequence[TimeseriesPoint]: ...
+
     # ── RecommendationOps ────────────────────────────────────────────
 
     async def get_recommendation_config(
@@ -583,3 +597,23 @@ class Store(Protocol):
     ) -> Sequence[StoredDrillResult]: ...
 
     async def get_latest_drill_result(self, org_id: str) -> Optional[StoredDrillResult]: ...
+
+    # ── SloOps ────────────────────────────────────────────────────────
+
+    async def list_slo_definitions(self, org_id: Optional[str] = None) -> Sequence[StoredSloDefinition]: ...
+
+    async def get_slo_definition(self, slo_id: str, org_id: str) -> Optional[StoredSloDefinition]: ...
+
+    async def create_slo_definition(self, slo: NewSloDefinition) -> StoredSloDefinition: ...
+
+    async def update_slo_definition(
+        self, slo_id: str, org_id: str, patch: SloDefinitionPatch,
+    ) -> Optional[StoredSloDefinition]: ...
+
+    async def delete_slo_definition(self, slo_id: str, org_id: str) -> bool: ...
+
+    async def list_slo_alerts(
+        self, *, slo_id: Optional[str] = None, limit: int = 50,
+    ) -> Sequence[StoredSloAlert]: ...
+
+    async def record_slo_alert(self, alert: NewSloAlert) -> StoredSloAlert: ...

@@ -35,6 +35,8 @@ from lore.persistence.types import (
     NewRelationship,
     NewRetentionPolicy,
     NewRetrievalEvent,
+    NewSloAlert,
+    NewSloDefinition,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
@@ -43,6 +45,7 @@ from lore.persistence.types import (
     RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoredMemory,
+    SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
@@ -55,9 +58,12 @@ from lore.persistence.types import (
     StoredRecommendationConfig,
     StoredRelationship,
     StoredRetentionPolicy,
+    StoredSloAlert,
+    StoredSloDefinition,
     StoredSnapshotMetadata,
     StoredWorkspace,
     TimelineBucketRow,
+    TimeseriesPoint,
     WorkspacePatch,
 )
 
@@ -382,7 +388,49 @@ def _row_to_drill_result(row: "asyncpg.Record") -> StoredDrillResult:
     )
 
 
+def _row_to_slo_definition(row: "asyncpg.Record") -> StoredSloDefinition:
+    ac = row["alert_channels"]
+    if isinstance(ac, str):
+        ac = json.loads(ac) if ac else []
+    return StoredSloDefinition(
+        id=row["id"], org_id=row["org_id"], name=row["name"],
+        metric=row["metric"], operator=row["operator"],
+        threshold=float(row["threshold"]),
+        window_minutes=int(row["window_minutes"]),
+        enabled=bool(row["enabled"]),
+        alert_channels=tuple(ac or ()),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def _row_to_slo_alert(row: "asyncpg.Record") -> StoredSloAlert:
+    dt = row["dispatched_to"]
+    if isinstance(dt, str):
+        dt = json.loads(dt) if dt else []
+    return StoredSloAlert(
+        id=int(row["id"]),
+        org_id=row["org_id"],
+        slo_id=row["slo_id"],
+        metric_value=float(row["metric_value"]),
+        threshold=float(row["threshold"]),
+        status=row["status"],
+        dispatched_to=tuple(dt or ()),
+        created_at=row["created_at"],
+    )
+
+
 _VALID_TRUNCS = frozenset({"hour", "day", "week", "month"})
+
+_METRIC_SQL = {
+    "p50_latency": "percentile_cont(0.50) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+    "p95_latency": "percentile_cont(0.95) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+    "p99_latency": "percentile_cont(0.99) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+    "hit_rate": "(COUNT(*) FILTER (WHERE results_count > 0))::float / GREATEST(COUNT(*), 1) AS value",
+    "retrieval_latency_p95": "percentile_cont(0.95) WITHIN GROUP (ORDER BY query_time_ms) AS value",
+    "retrieval_recall": "(COUNT(*) FILTER (WHERE results_count > 0))::float / GREATEST(COUNT(*), 1) AS value",
+    "uptime_pct": "(COUNT(*) FILTER (WHERE query_time_ms IS NOT NULL))::float / GREATEST(COUNT(*), 1) * 100.0 AS value",
+}
 
 
 class PostgresStore:
@@ -2726,6 +2774,243 @@ class PostgresStore:
                 org_id,
             )
         return _row_to_drill_result(row) if row else None
+
+    # ── SloOps ────────────────────────────────────────────────────────────────
+
+    async def list_slo_definitions(
+        self, org_id: "Optional[str]" = None
+    ) -> "Sequence[StoredSloDefinition]":
+        async with self._acquire() as conn:
+            if org_id is not None:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, org_id, name, metric, operator, threshold,
+                           window_minutes, enabled, alert_channels, created_at, updated_at
+                    FROM slo_definitions
+                    WHERE org_id = $1
+                    ORDER BY created_at DESC
+                    """,
+                    org_id,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT id, org_id, name, metric, operator, threshold,
+                           window_minutes, enabled, alert_channels, created_at, updated_at
+                    FROM slo_definitions
+                    ORDER BY created_at DESC
+                    """
+                )
+        return tuple(_row_to_slo_definition(r) for r in rows)
+
+    async def get_slo_definition(
+        self, slo_id: str, org_id: str
+    ) -> "Optional[StoredSloDefinition]":
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, metric, operator, threshold,
+                       window_minutes, enabled, alert_channels, created_at, updated_at
+                FROM slo_definitions
+                WHERE id = $1 AND org_id = $2
+                """,
+                slo_id,
+                org_id,
+            )
+        return _row_to_slo_definition(row) if row else None
+
+    async def create_slo_definition(
+        self, slo: "NewSloDefinition"
+    ) -> "StoredSloDefinition":
+        slo_id = f"slo_{ULID()}"
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO slo_definitions
+                    (id, org_id, name, metric, operator, threshold,
+                     window_minutes, enabled, alert_channels)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                RETURNING id, org_id, name, metric, operator, threshold,
+                          window_minutes, enabled, alert_channels, created_at, updated_at
+                """,
+                slo_id,
+                slo.org_id,
+                slo.name,
+                slo.metric,
+                slo.operator,
+                slo.threshold,
+                slo.window_minutes,
+                slo.enabled,
+                json.dumps(list(slo.alert_channels)),
+            )
+        return _row_to_slo_definition(row)
+
+    async def update_slo_definition(
+        self,
+        slo_id: str,
+        org_id: str,
+        patch: "SloDefinitionPatch",
+    ) -> "Optional[StoredSloDefinition]":
+        fields: list[str] = []
+        params: list[Any] = []
+
+        if patch.name is not None:
+            params.append(patch.name)
+            fields.append(f"name = ${len(params)}")
+        if patch.metric is not None:
+            params.append(patch.metric)
+            fields.append(f"metric = ${len(params)}")
+        if patch.operator is not None:
+            params.append(patch.operator)
+            fields.append(f"operator = ${len(params)}")
+        if patch.threshold is not None:
+            params.append(patch.threshold)
+            fields.append(f"threshold = ${len(params)}")
+        if patch.window_minutes is not None:
+            params.append(patch.window_minutes)
+            fields.append(f"window_minutes = ${len(params)}")
+        if patch.enabled is not None:
+            params.append(patch.enabled)
+            fields.append(f"enabled = ${len(params)}")
+        if patch.alert_channels is not None:
+            params.append(json.dumps(list(patch.alert_channels)))
+            fields.append(f"alert_channels = ${len(params)}::jsonb")
+
+        if not fields:
+            raise ValueError("update_slo_definition called with empty patch")
+
+        fields.append("updated_at = now()")
+        params.append(slo_id)
+        id_idx = len(params)
+        params.append(org_id)
+        org_idx = len(params)
+
+        sql = (
+            "UPDATE slo_definitions "
+            f"SET {', '.join(fields)} "
+            f"WHERE id = ${id_idx} AND org_id = ${org_idx} "
+            "RETURNING id, org_id, name, metric, operator, threshold, "
+            "window_minutes, enabled, alert_channels, created_at, updated_at"
+        )
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+        return _row_to_slo_definition(row) if row else None
+
+    async def delete_slo_definition(self, slo_id: str, org_id: str) -> bool:
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM slo_definitions WHERE id = $1 AND org_id = $2",
+                slo_id,
+                org_id,
+            )
+        return result.endswith(" 1")
+
+    async def list_slo_alerts(
+        self,
+        *,
+        slo_id: "Optional[str]" = None,
+        limit: int = 50,
+    ) -> "Sequence[StoredSloAlert]":
+        async with self._acquire() as conn:
+            if slo_id is not None:
+                rows = await conn.fetch(
+                    """
+                    SELECT a.id, a.org_id, a.slo_id, a.metric_value, a.threshold,
+                           a.status, a.dispatched_to, a.created_at
+                    FROM slo_alerts a
+                    WHERE a.slo_id = $1
+                    ORDER BY a.created_at DESC
+                    LIMIT $2
+                    """,
+                    slo_id,
+                    limit,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT a.id, a.org_id, a.slo_id, a.metric_value, a.threshold,
+                           a.status, a.dispatched_to, a.created_at
+                    FROM slo_alerts a
+                    ORDER BY a.created_at DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+        return tuple(_row_to_slo_alert(r) for r in rows)
+
+    async def record_slo_alert(self, alert: "NewSloAlert") -> "StoredSloAlert":
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO slo_alerts
+                    (org_id, slo_id, metric_value, threshold, status, dispatched_to)
+                VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                RETURNING id, org_id, slo_id, metric_value, threshold, status, dispatched_to, created_at
+                """,
+                alert.org_id,
+                alert.slo_id,
+                alert.metric_value,
+                alert.threshold,
+                alert.status,
+                json.dumps(list(alert.dispatched_to)),
+            )
+        return _row_to_slo_alert(row)
+
+    async def compute_metric_value(
+        self,
+        *,
+        org_id: str,
+        metric: str,
+        window_minutes: int,
+    ) -> "Optional[float]":
+        if metric not in _METRIC_SQL:
+            raise ValueError(f"Unknown metric: {metric}")
+        metric_sql = _METRIC_SQL[metric]
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {metric_sql} FROM retrieval_events "
+                f"WHERE org_id = $1 AND created_at >= now() - make_interval(mins => $2)",
+                org_id,
+                window_minutes,
+            )
+        if row and row["value"] is not None:
+            return round(float(row["value"]), 4)
+        return None
+
+    async def compute_metric_timeseries(
+        self,
+        *,
+        org_id: str,
+        metric: str,
+        window_hours: int,
+        bucket_minutes: int,
+    ) -> "Sequence[TimeseriesPoint]":
+        if metric not in _METRIC_SQL:
+            raise ValueError(f"Unknown metric: {metric}")
+        metric_sql = _METRIC_SQL[metric]
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                f"""SELECT
+                        date_trunc('hour', created_at) +
+                        (EXTRACT(minute FROM created_at)::int / $3 * $3) * interval '1 minute'
+                        AS bucket,
+                        {metric_sql}
+                    FROM retrieval_events
+                    WHERE org_id = $1
+                      AND created_at >= now() - make_interval(hours => $2)
+                    GROUP BY bucket
+                    ORDER BY bucket""",
+                org_id,
+                window_hours,
+                bucket_minutes,
+            )
+        return tuple(
+            TimeseriesPoint(
+                timestamp=r["bucket"],
+                value=round(float(r["value"]), 4) if r["value"] is not None else None,
+            )
+            for r in rows
+        )
 
 
 class _BoundConn:

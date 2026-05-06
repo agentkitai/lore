@@ -70,6 +70,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New contract tests at `tests/persistence/test_contract_policies.py` (~18 tests across the 10 RetentionOps methods).
 - New service tests at `tests/services/test_policies.py` (12 tests against real Postgres).
 - New route tests at `tests/server/test_policies_routes.py` (15 tests with FakeStore mocks).
+- `Store` protocol grows the `SloOps` slice (7 methods on `slo_definitions` + `slo_alerts`: definition CRUD, alert listing, alert insertion) plus 2 `AnalyticsOps` extensions (`compute_metric_value`, `compute_metric_timeseries`). New typed dataclasses: `NewSloDefinition`, `StoredSloDefinition`, `SloDefinitionPatch`, `NewSloAlert`, `StoredSloAlert`, `TimeseriesPoint`. The metric→SQL mapping (formerly `_metric_sql` in the route) lives in postgres.py.
+- `lore.services.slo` (new) wraps SloOps and the new metric methods. Owns `VALID_METRICS`/`VALID_OPERATORS` validation, the `_check_threshold` pure helper, and the `slo_status` orchestration (list active SLOs → compute metric → check threshold). `test_alert` (fire a test alert for an SLO) and `slo_timeseries` orchestration also moved here.
+- All 8 `routes/slo.py` handlers refactored to call services exclusively. The route file is now ~260 LOC (was 467). CI guard now covers 20 migrated route files. **Known issue preserved**: `list_slos`/`slo_status`/`list_alerts` had no auth/org filter pre-1K (multi-tenancy gap); the refactor preserves that behavior. Documented for follow-up.
+- New contract tests at `tests/persistence/test_contract_slo.py` (20 tests across the 7 SloOps methods + 2 metric extensions).
+- New service tests at `tests/services/test_slo.py` (14 tests).
+- New route tests at `tests/server/test_slo_routes.py` (15 tests with FakeStore mocks).
 
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 
