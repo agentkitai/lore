@@ -61,11 +61,14 @@ async def get_entity(store: Store, entity_id: str) -> Optional[StoredEntity]:
 async def list_topics(
     store: Store,
     *,
+    entity_type: Optional[str] = None,
     min_mentions: int = 3,
     limit: int = 20,
 ) -> Sequence[StoredEntity]:
     """List entities with mention_count >= min_mentions, ordered by mention_count DESC."""
-    return await store.list_entities(min_mentions=min_mentions, limit=limit)
+    return await store.list_entities(
+        entity_type=entity_type, min_mentions=min_mentions, limit=limit
+    )
 
 
 async def get_topic_detail(
