@@ -6,13 +6,12 @@ These tests run against every Store implementation (Phase 1A: Postgres only).
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 
 from lore.persistence import IntegrityError, NewProfile, Store, StoredProfile
 from lore.persistence.types import ProfilePatch
-
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 

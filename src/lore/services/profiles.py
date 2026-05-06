@@ -15,7 +15,6 @@ from lore.persistence import (
 )
 from lore.persistence.exceptions import ProfileImmutableError, StoreNotFoundError
 
-
 # ── Built-in default adaptive retrieval profiles ──────────────────────────────
 # Lifted verbatim from routes/profiles.py:71-82 (pre-refactor source).
 DEFAULT_PROFILES: Mapping[str, Mapping[str, Any]] = {

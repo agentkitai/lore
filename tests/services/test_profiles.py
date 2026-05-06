@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import dataclasses
 import pytest
 
 from lore.persistence import ProfilePatch, StoreNotFoundError
 from lore.persistence.exceptions import ProfileImmutableError
-from lore.persistence.types import ResolvedProfile
 from lore.services.profiles import (
     _cache_clear,
     create_profile,
@@ -174,7 +172,7 @@ async def test_update_profile_empty_patch_raises_value_error(store):
 
 @pytest.mark.asyncio
 async def test_update_profile_by_name_resolves_then_updates(store):
-    row = await _make(store, name="named-update")
+    await _make(store, name="named-update")
     patch = ProfilePatch(recency_bias=99.0)
     updated = await update_profile_by_name(store, _ORG, "named-update", patch)
     assert updated.recency_bias == pytest.approx(99.0)

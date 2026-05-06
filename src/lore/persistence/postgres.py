@@ -30,7 +30,6 @@ from lore.persistence.types import (
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
-    ResolvedProfile,
     ScoredMemory,
     StoredEntity,
     StoredMemory,

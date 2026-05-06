@@ -84,9 +84,9 @@ def mock_auth():
 
 @pytest.fixture
 def client(monkeypatch, mock_auth):
-    from lore.server.routes.profiles import router
-    from lore.server.db import get_store
     from lore.server.auth import get_auth_context
+    from lore.server.db import get_store
+    from lore.server.routes.profiles import router
     from lore.services import profiles as profiles_service
 
     fake_store = FakeStore()
