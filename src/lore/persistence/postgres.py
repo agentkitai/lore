@@ -3166,13 +3166,58 @@ class PostgresStore:
         )
 
     async def list_deny_rules(self, org_id: str) -> "Sequence[DenyListRuleData]":
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, pattern, is_regex, reason, created_at
+                FROM deny_list_rules
+                WHERE org_id = $1
+                ORDER BY created_at
+                """,
+                org_id,
+            )
+        return tuple(
+            DenyListRuleData(
+                id=r["id"],
+                pattern=r["pattern"],
+                is_regex=bool(r["is_regex"]),
+                reason=r["reason"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        )
 
     async def create_deny_rule(self, rule: "NewDenyListRule") -> "DenyListRuleData":
-        raise NotImplementedError
+        rule_id = str(ULID())
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO deny_list_rules (id, org_id, pattern, is_regex, reason)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, pattern, is_regex, reason, created_at
+                """,
+                rule_id,
+                rule.org_id,
+                rule.pattern,
+                rule.is_regex,
+                rule.reason,
+            )
+        return DenyListRuleData(
+            id=row["id"],
+            pattern=row["pattern"],
+            is_regex=bool(row["is_regex"]),
+            reason=row["reason"],
+            created_at=row["created_at"],
+        )
 
     async def delete_deny_rule(self, rule_id: str, org_id: str) -> bool:
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM deny_list_rules WHERE id = $1 AND org_id = $2",
+                rule_id,
+                org_id,
+            )
+        return result.endswith(" 1")
 
     async def list_audit_events(
         self,
@@ -3183,10 +3228,55 @@ class PostgresStore:
         to_date: "Optional[datetime]" = None,
         limit: int = 50,
     ) -> "Sequence[AuditEventData]":
-        raise NotImplementedError
+        where = ["org_id = $1"]
+        params: list[Any] = [org_id]
+        if event_type is not None:
+            params.append(event_type)
+            where.append(f"event_type = ${len(params)}")
+        if from_date is not None:
+            params.append(from_date)
+            where.append(f"created_at >= ${len(params)}")
+        if to_date is not None:
+            params.append(to_date)
+            where.append(f"created_at <= ${len(params)}")
+        params.append(limit)
+        limit_idx = len(params)
+
+        sql = (
+            "SELECT id, event_type, lesson_id, query_text, initiated_by, created_at "
+            "FROM sharing_audit "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY created_at DESC LIMIT ${limit_idx}"
+        )
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return tuple(
+            AuditEventData(
+                id=r["id"],
+                event_type=r["event_type"],
+                lesson_id=r["lesson_id"],
+                query_text=r["query_text"],
+                initiated_by=r["initiated_by"],
+                created_at=r["created_at"],
+            )
+            for r in rows
+        )
 
     async def record_audit_event(self, event: "NewAuditEvent") -> None:
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO sharing_audit
+                    (id, org_id, event_type, lesson_id, query_text, initiated_by)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                str(ULID()),
+                event.org_id,
+                event.event_type,
+                event.lesson_id,
+                event.query_text,
+                event.initiated_by,
+            )
 
     async def get_sharing_stats(self, org_id: str) -> "SharingStatsData":
         raise NotImplementedError

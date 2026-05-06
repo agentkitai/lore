@@ -12,6 +12,10 @@ import pytest
 
 from lore.persistence import (
     AgentSharingConfigData,
+    AuditEventData,
+    DenyListRuleData,
+    NewAuditEvent,
+    NewDenyListRule,
     SharingConfigData,
     SharingConfigPatch,
     Store,
@@ -195,3 +199,172 @@ async def test_upsert_agent_updates_existing_row(store: Store):
 
     assert cfg.enabled is True
     assert list(cfg.categories) == ["a", "b"]
+
+
+# ── deny-list ─────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_and_list_deny_rules(store: Store):
+    await _ensure_org(store, "org-deny")
+
+    r1 = await store.create_deny_rule(
+        NewDenyListRule(org_id="org-deny", pattern="^secret", is_regex=True, reason="r1"),
+    )
+    r2 = await store.create_deny_rule(
+        NewDenyListRule(org_id="org-deny", pattern="literal-string"),
+    )
+
+    assert isinstance(r1, DenyListRuleData)
+    assert r1.pattern == "^secret"
+    assert r1.is_regex is True
+    assert r1.reason == "r1"
+    assert r1.id != r2.id
+    assert r2.is_regex is False
+    assert r2.reason is None
+
+    results = await store.list_deny_rules("org-deny")
+    assert len(results) == 2
+    patterns = {r.pattern for r in results}
+    assert patterns == {"^secret", "literal-string"}
+
+
+@pytest.mark.asyncio
+async def test_list_deny_rules_filters_by_org(store: Store):
+    await _ensure_org(store, "org-d-a")
+    await _ensure_org(store, "org-d-b")
+    await store.create_deny_rule(NewDenyListRule(org_id="org-d-a", pattern="A"))
+    await store.create_deny_rule(NewDenyListRule(org_id="org-d-b", pattern="B"))
+
+    results = await store.list_deny_rules("org-d-a")
+    assert len(results) == 1
+    assert results[0].pattern == "A"
+
+
+@pytest.mark.asyncio
+async def test_delete_deny_rule_removes_row(store: Store):
+    await _ensure_org(store, "org-del-rule")
+    r = await store.create_deny_rule(NewDenyListRule(org_id="org-del-rule", pattern="x"))
+
+    assert await store.delete_deny_rule(r.id, "org-del-rule") is True
+
+    results = await store.list_deny_rules("org-del-rule")
+    assert results == ()
+
+
+@pytest.mark.asyncio
+async def test_delete_deny_rule_missing_returns_false(store: Store):
+    await _ensure_org(store, "org-del-missing")
+
+    assert await store.delete_deny_rule("does-not-exist", "org-del-missing") is False
+
+
+@pytest.mark.asyncio
+async def test_delete_deny_rule_wrong_org_returns_false(store: Store):
+    await _ensure_org(store, "org-wrong-a")
+    await _ensure_org(store, "org-wrong-b")
+    r = await store.create_deny_rule(NewDenyListRule(org_id="org-wrong-a", pattern="x"))
+
+    assert await store.delete_deny_rule(r.id, "org-wrong-b") is False
+    # Still exists for the original org
+    results = await store.list_deny_rules("org-wrong-a")
+    assert len(results) == 1
+
+
+# ── audit events ──────────────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_and_list_audit_events(store: Store):
+    await _ensure_org(store, "org-audit")
+
+    await store.record_audit_event(
+        NewAuditEvent(
+            org_id="org-audit",
+            event_type="share",
+            initiated_by="key-1",
+            lesson_id="lesson-1",
+            query_text=None,
+        ),
+    )
+    await store.record_audit_event(
+        NewAuditEvent(
+            org_id="org-audit",
+            event_type="purge",
+            initiated_by="key-2",
+        ),
+    )
+
+    results = await store.list_audit_events("org-audit")
+    assert len(results) == 2
+    assert all(isinstance(r, AuditEventData) for r in results)
+    types = {r.event_type for r in results}
+    assert types == {"share", "purge"}
+
+
+@pytest.mark.asyncio
+async def test_list_audit_events_filters_by_event_type(store: Store):
+    await _ensure_org(store, "org-audit-filter")
+    await store.record_audit_event(
+        NewAuditEvent(org_id="org-audit-filter", event_type="share", initiated_by="k"),
+    )
+    await store.record_audit_event(
+        NewAuditEvent(org_id="org-audit-filter", event_type="rate", initiated_by="k"),
+    )
+
+    results = await store.list_audit_events("org-audit-filter", event_type="rate")
+    assert len(results) == 1
+    assert results[0].event_type == "rate"
+
+
+@pytest.mark.asyncio
+async def test_list_audit_events_filters_by_date_range(store: Store):
+    from datetime import timedelta, timezone
+
+    await _ensure_org(store, "org-audit-date")
+    # Insert one with explicit created_at via raw SQL
+    now = datetime.now(timezone.utc)
+    old = now - timedelta(days=10)
+    recent = now - timedelta(hours=1)
+
+    from ulid import ULID
+
+    await store._conn.execute(
+        """
+        INSERT INTO sharing_audit (id, org_id, event_type, initiated_by, created_at)
+        VALUES ($1, $2, 'share', 'k', $3)
+        """,
+        str(ULID()),
+        "org-audit-date",
+        old,
+    )
+    await store._conn.execute(
+        """
+        INSERT INTO sharing_audit (id, org_id, event_type, initiated_by, created_at)
+        VALUES ($1, $2, 'share', 'k', $3)
+        """,
+        str(ULID()),
+        "org-audit-date",
+        recent,
+    )
+
+    results = await store.list_audit_events(
+        "org-audit-date", from_date=now - timedelta(days=1),
+    )
+    assert len(results) == 1
+
+
+@pytest.mark.asyncio
+async def test_list_audit_events_respects_limit_and_org(store: Store):
+    await _ensure_org(store, "org-limit-a")
+    await _ensure_org(store, "org-limit-b")
+    for _ in range(3):
+        await store.record_audit_event(
+            NewAuditEvent(org_id="org-limit-a", event_type="share", initiated_by="k"),
+        )
+    await store.record_audit_event(
+        NewAuditEvent(org_id="org-limit-b", event_type="share", initiated_by="k"),
+    )
+
+    results = await store.list_audit_events("org-limit-a", limit=2)
+    assert len(results) == 2
