@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -14,6 +14,7 @@ pytest.importorskip("httpx")
 
 from httpx import ASGITransport, AsyncClient
 
+from lore.persistence.types import StoredApiKey
 from lore.server.app import app
 from lore.server.db import get_store
 
@@ -32,30 +33,30 @@ def _valid_key_row(org_id="org-1", project=None, is_root=True, revoked_at=None):
     }
 
 
-def _make_mock_pool(fetchrow_return=None, fetch_return=None, fetchval_return=None, execute_return=None):
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=fetchrow_return)
-    mock_conn.fetch = AsyncMock(return_value=fetch_return or [])
-    mock_conn.fetchval = AsyncMock(return_value=fetchval_return)
-    mock_conn.execute = AsyncMock(return_value=execute_return or "UPDATE 1")
-
-    # Mock transaction context manager
-    mock_tx = AsyncMock()
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-    mock_tx.__aexit__ = AsyncMock(return_value=False)
-    mock_conn.transaction = MagicMock(return_value=mock_tx)
-
-    mock_pool = AsyncMock()
-    acm = AsyncMock()
-    acm.__aenter__ = AsyncMock(return_value=mock_conn)
-    acm.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.acquire = MagicMock(return_value=acm)
-
-    return mock_pool, mock_conn
+def _row_to_stored_key(row: dict) -> StoredApiKey:
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row.get("name", "test-key"),
+        key_hash=row["key_hash"],
+        key_prefix=row.get("key_prefix", "lore_sk_xx"),
+        project=row.get("project"),
+        is_root=row.get("is_root", False),
+        workspace_id=row.get("workspace_id"),
+        revoked_at=row.get("revoked_at"),
+        created_at=row.get("created_at", datetime.now(timezone.utc)),
+        last_used_at=row.get("last_used_at"),
+        role=row.get("role"),
+    )
 
 
-def _make_mock_store():
-    return AsyncMock()
+def _make_auth_store(key_row=None):
+    """Create a mock store with auth methods configured."""
+    store = AsyncMock()
+    stored = _row_to_stored_key(key_row) if key_row is not None else None
+    store.lookup_api_key_by_hash = AsyncMock(return_value=stored)
+    store.touch_api_key_last_used = AsyncMock(return_value=None)
+    return store
 
 
 @pytest_asyncio.fixture
@@ -66,7 +67,7 @@ async def client():
     _last_used_updates.clear()
     set_rate_limiter(RateLimiter())
 
-    mock_store = _make_mock_store()
+    mock_store = AsyncMock()
     app.dependency_overrides[get_store] = lambda: mock_store
 
     transport = ASGITransport(app=app)
@@ -117,9 +118,9 @@ def _make_stored_api_key(
 async def test_create_key_root_only(client):
     """Non-root key gets 403."""
     row = _valid_key_row(is_root=False)
-    mock_pool, mock_conn = _make_mock_pool(fetchrow_return=row)
+    auth_store = _make_auth_store(key_row=row)
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.post(
             "/v1/keys",
             json={"name": "test"},
@@ -132,11 +133,11 @@ async def test_create_key_root_only(client):
 async def test_create_key_success(client):
     """Root key can create a new key."""
     auth_row = _valid_key_row(is_root=True)
-    mock_pool, mock_conn = _make_mock_pool(fetchrow_return=auth_row)
+    auth_store = _make_auth_store(key_row=auth_row)
 
     stored = _make_stored_api_key(key_id="new-key-id", name="agent-1", project="backend")
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.keys.create_api_key", new=AsyncMock(return_value=(stored, "lore_sk_newrawkey"))):
         resp = await client.post(
             "/v1/keys",
@@ -157,9 +158,9 @@ async def test_create_key_success(client):
 @pytest.mark.asyncio
 async def test_list_keys_root_only(client):
     row = _valid_key_row(is_root=False)
-    mock_pool, _ = _make_mock_pool(fetchrow_return=row)
+    auth_store = _make_auth_store(key_row=row)
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get("/v1/keys", headers=_auth_headers())
     assert resp.status_code == 403
 
@@ -167,7 +168,7 @@ async def test_list_keys_root_only(client):
 @pytest.mark.asyncio
 async def test_list_keys_success(client):
     auth_row = _valid_key_row(is_root=True)
-    mock_pool, mock_conn = _make_mock_pool(fetchrow_return=auth_row)
+    auth_store = _make_auth_store(key_row=auth_row)
 
     now = datetime.now(timezone.utc)
     stored_key = _make_stored_api_key(
@@ -175,7 +176,7 @@ async def test_list_keys_success(client):
         created_at=now, last_used_at=now,
     )
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.keys.list_api_keys", new=AsyncMock(return_value=[stored_key])):
         resp = await client.get("/v1/keys", headers=_auth_headers())
     assert resp.status_code == 200
@@ -192,9 +193,9 @@ async def test_list_keys_success(client):
 @pytest.mark.asyncio
 async def test_revoke_key_root_only(client):
     row = _valid_key_row(is_root=False)
-    mock_pool, _ = _make_mock_pool(fetchrow_return=row)
+    auth_store = _make_auth_store(key_row=row)
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.delete("/v1/keys/some-id", headers=_auth_headers())
     assert resp.status_code == 403
 
@@ -202,11 +203,11 @@ async def test_revoke_key_root_only(client):
 @pytest.mark.asyncio
 async def test_revoke_key_not_found(client):
     auth_row = _valid_key_row(is_root=True)
-    mock_pool, mock_conn = _make_mock_pool(fetchrow_return=auth_row)
+    auth_store = _make_auth_store(key_row=auth_row)
 
     from lore.persistence.exceptions import StoreNotFoundError
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.keys.revoke_api_key", new=AsyncMock(side_effect=StoreNotFoundError("api_keys", "nonexistent"))):
         resp = await client.delete("/v1/keys/nonexistent", headers=_auth_headers())
     assert resp.status_code == 404
@@ -216,11 +217,11 @@ async def test_revoke_key_not_found(client):
 async def test_revoke_last_root_key_blocked(client):
     """Cannot revoke the last active root key."""
     auth_row = _valid_key_row(is_root=True)
-    mock_pool, mock_conn = _make_mock_pool(fetchrow_return=auth_row)
+    auth_store = _make_auth_store(key_row=auth_row)
 
     from lore.persistence.exceptions import LastRootKeyError
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.keys.revoke_api_key", new=AsyncMock(side_effect=LastRootKeyError("Cannot revoke the last root key"))):
         resp = await client.delete("/v1/keys/key-1", headers=_auth_headers())
     assert resp.status_code == 400
@@ -231,9 +232,9 @@ async def test_revoke_last_root_key_blocked(client):
 async def test_revoke_key_success(client):
     """Revoke a non-root key succeeds."""
     auth_row = _valid_key_row(is_root=True)
-    mock_pool, mock_conn = _make_mock_pool(fetchrow_return=auth_row)
+    auth_store = _make_auth_store(key_row=auth_row)
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.keys.revoke_api_key", new=AsyncMock(return_value=None)):
         resp = await client.delete("/v1/keys/key-2", headers=_auth_headers())
     assert resp.status_code == 204
@@ -245,9 +246,9 @@ async def test_revoke_key_invalidates_cache(client):
     # Cache invalidation is handled inside keys_service.revoke_api_key via auth.invalidate_key.
     # This test verifies that a successful revoke returns 204.
     auth_row = _valid_key_row(is_root=True)
-    mock_pool, mock_conn = _make_mock_pool(fetchrow_return=auth_row)
+    auth_store = _make_auth_store(key_row=auth_row)
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.keys.revoke_api_key", new=AsyncMock(return_value=None)):
         resp = await client.delete("/v1/keys/key-2", headers=_auth_headers())
     assert resp.status_code == 204

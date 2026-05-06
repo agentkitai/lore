@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from unittest.mock import AsyncMock, MagicMock, patch
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -13,6 +14,7 @@ pytest.importorskip("httpx")
 
 from httpx import ASGITransport, AsyncClient
 
+from lore.persistence.types import StoredApiKey
 from lore.server.app import app
 from lore.server.auth import ROLE_PERMISSIONS, _map_api_key_role
 from lore.server.db import get_store
@@ -36,20 +38,31 @@ async def client():
     app.dependency_overrides.pop(get_store, None)
 
 
-def _make_mock_pool_with_key(key_row=None, fetch_rows=None):
-    """Create a mock pool."""
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=key_row)
-    mock_conn.fetch = AsyncMock(return_value=fetch_rows or [])
-    mock_conn.fetchval = AsyncMock(return_value=0)
-    mock_conn.execute = AsyncMock()
+def _row_to_stored_key(row: dict) -> StoredApiKey:
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row.get("name", "test-key"),
+        key_hash=row["key_hash"],
+        key_prefix=row.get("key_prefix", "lore_sk_xx"),
+        project=row.get("project"),
+        is_root=row.get("is_root", False),
+        workspace_id=row.get("workspace_id"),
+        revoked_at=row.get("revoked_at"),
+        created_at=row.get("created_at", datetime.now(timezone.utc)),
+        last_used_at=row.get("last_used_at"),
+        role=row.get("role"),
+    )
 
-    mock_pool = AsyncMock()
-    acm = AsyncMock()
-    acm.__aenter__ = AsyncMock(return_value=mock_conn)
-    acm.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.acquire = MagicMock(return_value=acm)
-    return mock_pool, mock_conn
+
+def _make_auth_store(key_row=None):
+    """Create a mock store configured for auth lookups."""
+    store = AsyncMock()
+    stored = _row_to_stored_key(key_row) if key_row is not None else None
+    store.lookup_api_key_by_hash = AsyncMock(return_value=stored)
+    store.touch_api_key_last_used = AsyncMock(return_value=None)
+    store.list_api_keys = AsyncMock(return_value=[])
+    return store
 
 
 RAW_KEY = "lore_sk_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
@@ -101,10 +114,10 @@ class TestRoleMapping:
 async def test_reader_cannot_create_lesson(client):
     """Reader role gets 403 on POST /v1/lessons."""
     row = _key_row(role="reader", is_root=False)
-    mock_pool, _ = _make_mock_pool_with_key(key_row=row)
+    auth_store = _make_auth_store(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.post(
             "/v1/lessons",
             json={"problem": "test", "resolution": "test"},
@@ -121,10 +134,10 @@ async def test_reader_cannot_create_lesson(client):
 async def test_writer_cannot_manage_keys(client):
     """Writer role gets 403 on GET /v1/keys."""
     row = _key_row(role="writer", is_root=False)
-    mock_pool, _ = _make_mock_pool_with_key(key_row=row)
+    auth_store = _make_auth_store(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get("/v1/keys", headers=headers)
     assert resp.status_code == 403
 
@@ -136,10 +149,10 @@ async def test_writer_cannot_manage_keys(client):
 async def test_admin_can_list_keys(client):
     """Admin role can access key management."""
     row = _key_row(role="admin", is_root=True)
-    mock_pool, _ = _make_mock_pool_with_key(key_row=row, fetch_rows=[])
+    auth_store = _make_auth_store(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get("/v1/keys", headers=headers)
     assert resp.status_code == 200
 
@@ -151,12 +164,12 @@ async def test_admin_can_list_keys(client):
 async def test_reader_can_list_lessons(client):
     """Reader role can access GET /v1/lessons."""
     row = _key_row(role="reader", is_root=False)
-    mock_pool, _ = _make_mock_pool_with_key(key_row=row)
+    auth_store = _make_auth_store(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
     # lessons route now goes through get_store (already overridden in the
     # client fixture via app.dependency_overrides[get_store])
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         resp = await client.get("/v1/lessons", headers=headers)
     assert resp.status_code == 200
@@ -169,9 +182,9 @@ async def test_reader_can_list_lessons(client):
 async def test_existing_key_defaults_admin(client):
     """API keys without explicit role column default to admin (backward compat)."""
     row = _key_row(role=None, is_root=True)
-    mock_pool, _ = _make_mock_pool_with_key(key_row=row, fetch_rows=[])
+    auth_store = _make_auth_store(key_row=row)
     headers = {"Authorization": f"Bearer {RAW_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get("/v1/keys", headers=headers)
     assert resp.status_code == 200  # admin can list keys

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,6 +14,7 @@ pytest.importorskip("httpx")
 
 from httpx import ASGITransport, AsyncClient
 
+from lore.persistence.types import StoredApiKey
 from lore.server.app import app
 from lore.server.auth import _reset_oidc_validator
 from lore.server.config import Settings
@@ -38,19 +40,30 @@ async def client():
     app.dependency_overrides.pop(get_store, None)
 
 
-def _make_mock_pool():
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=None)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.fetchval = AsyncMock(return_value=0)
-    mock_conn.execute = AsyncMock()
+def _row_to_stored_key(row: dict) -> StoredApiKey:
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row.get("name", "test-key"),
+        key_hash=row["key_hash"],
+        key_prefix=row.get("key_prefix", "lore_sk_xx"),
+        project=row.get("project"),
+        is_root=row.get("is_root", False),
+        workspace_id=row.get("workspace_id"),
+        revoked_at=row.get("revoked_at"),
+        created_at=row.get("created_at", datetime.now(timezone.utc)),
+        last_used_at=row.get("last_used_at"),
+        role=row.get("role"),
+    )
 
-    mock_pool = AsyncMock()
-    acm = AsyncMock()
-    acm.__aenter__ = AsyncMock(return_value=mock_conn)
-    acm.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.acquire = MagicMock(return_value=acm)
-    return mock_pool
+
+def _make_auth_store(key_row=None):
+    """Create a mock store configured for auth lookups."""
+    store = AsyncMock()
+    stored = _row_to_stored_key(key_row) if key_row is not None else None
+    store.lookup_api_key_by_hash = AsyncMock(return_value=stored)
+    store.touch_api_key_last_used = AsyncMock(return_value=None)
+    return store
 
 
 RAW_KEY = "lore_sk_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"
@@ -75,11 +88,11 @@ def _valid_key_row():
 @pytest.mark.asyncio
 async def test_api_key_rejected_in_oidc_required_mode(client):
     """API keys are rejected when AUTH_MODE=oidc-required."""
-    mock_pool = _make_mock_pool()
+    auth_store = _make_auth_store()
     settings_patch = Settings(auth_mode="oidc-required", oidc_issuer="https://idp.example.com")
 
     with patch("lore.server.auth.settings", settings_patch), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool):
+         patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/lessons",
             headers={"Authorization": f"Bearer {RAW_KEY}"},
@@ -187,21 +200,12 @@ async def test_jwt_invalid_returns_401(client):
 async def test_api_key_works_in_dual_mode(client):
     """API keys still work in dual mode (backward compat)."""
     row = _valid_key_row()
-    mock_pool = _make_mock_pool()
-    mock_conn = AsyncMock()
-    mock_conn.fetchrow = AsyncMock(return_value=row)
-    mock_conn.fetch = AsyncMock(return_value=[])
-    mock_conn.fetchval = AsyncMock(return_value=0)
-    mock_conn.execute = AsyncMock()
-    acm = AsyncMock()
-    acm.__aenter__ = AsyncMock(return_value=mock_conn)
-    acm.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.acquire = MagicMock(return_value=acm)
+    auth_store = _make_auth_store(key_row=row)
 
     settings_patch = Settings(auth_mode="dual", oidc_issuer="https://idp.example.com")
 
     with patch("lore.server.auth.settings", settings_patch), \
-         patch("lore.server.auth.get_pool", return_value=mock_pool), \
+         patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         resp = await client.get(
             "/v1/lessons",

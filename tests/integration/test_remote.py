@@ -13,7 +13,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import pytest_asyncio
@@ -25,6 +25,7 @@ from httpx import ASGITransport, AsyncClient
 
 from lore.persistence import ExportedMemory, StoredMemory
 from lore.persistence.exceptions import StoreNotFoundError
+from lore.persistence.types import StoredApiKey
 from lore.server.app import app
 from lore.server.auth import _key_cache, _last_used_updates
 from lore.server.db import get_store
@@ -114,39 +115,46 @@ def _lesson_row(
     return base
 
 
-def _make_mock_pool(
+def _row_to_stored_key(row: Dict[str, Any]) -> StoredApiKey:
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row.get("name", "test-key"),
+        key_hash=row["key_hash"],
+        key_prefix=row.get("key_prefix", "lore_sk_xx"),
+        project=row.get("project"),
+        is_root=row.get("is_root", False),
+        workspace_id=row.get("workspace_id"),
+        revoked_at=row.get("revoked_at"),
+        created_at=row.get("created_at", datetime.now(timezone.utc)),
+        last_used_at=row.get("last_used_at"),
+        role=row.get("role"),
+    )
+
+
+def _make_auth_store(
     key_row: Optional[Dict[str, Any]] = None,
-    fetchrow_side_effect: Optional[list] = None,
-    fetch_return: Optional[list] = None,
-    fetchval_return: Any = None,
-    execute_return: str = "DELETE 1",
-) -> tuple:
-    """Create a mock asyncpg pool."""
-    mock_conn = AsyncMock()
+    key_rows_by_hash: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> AsyncMock:
+    """Create a mock store configured for auth lookups.
 
-    if fetchrow_side_effect is not None:
-        mock_conn.fetchrow = AsyncMock(side_effect=fetchrow_side_effect)
+    - If ``key_row`` is provided, every lookup_api_key_by_hash call returns it
+      (translated to StoredApiKey).
+    - If ``key_rows_by_hash`` is provided, looks up by the hash argument.
+    - If neither is provided, lookup returns None (invalid_api_key).
+    """
+    store = AsyncMock()
+    if key_rows_by_hash is not None:
+        async def _lookup(key_hash: str):
+            row = key_rows_by_hash.get(key_hash)
+            return _row_to_stored_key(row) if row is not None else None
+        store.lookup_api_key_by_hash = AsyncMock(side_effect=_lookup)
     elif key_row is not None:
-        mock_conn.fetchrow = AsyncMock(return_value=key_row)
+        store.lookup_api_key_by_hash = AsyncMock(return_value=_row_to_stored_key(key_row))
     else:
-        mock_conn.fetchrow = AsyncMock(return_value=None)
-
-    mock_conn.fetch = AsyncMock(return_value=fetch_return or [])
-    mock_conn.fetchval = AsyncMock(return_value=fetchval_return)
-    mock_conn.execute = AsyncMock(return_value=execute_return)
-
-    mock_tx = AsyncMock()
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-    mock_tx.__aexit__ = AsyncMock(return_value=False)
-    mock_conn.transaction = MagicMock(return_value=mock_tx)
-
-    mock_pool = AsyncMock()
-    acm = AsyncMock()
-    acm.__aenter__ = AsyncMock(return_value=mock_conn)
-    acm.__aexit__ = AsyncMock(return_value=False)
-    mock_pool.acquire = MagicMock(return_value=acm)
-
-    return mock_pool, mock_conn
+        store.lookup_api_key_by_hash = AsyncMock(return_value=None)
+    store.touch_api_key_last_used = AsyncMock(return_value=None)
+    return store
 
 
 @pytest_asyncio.fixture
@@ -173,7 +181,7 @@ async def client():
 @pytest.mark.asyncio
 async def test_full_flow_publish_query_verify(client: AsyncClient) -> None:
     """Full flow: create a lesson, then retrieve it and verify fields match."""
-    mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
+    auth_store = _make_auth_store(key_row=ROOT_KEY_ROW)
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
     _stored = StoredMemory(
@@ -184,7 +192,7 @@ async def test_full_flow_publish_query_verify(client: AsyncClient) -> None:
         access_count=0, last_accessed_at=None, importance_score=1.0,
     )
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.lessons.create", new=AsyncMock(return_value="lesson-flow-001")), \
          patch("lore.services.lessons.get", new=AsyncMock(return_value=_stored)):
         # Step 1: Publish
@@ -226,15 +234,15 @@ async def test_project_scoping_isolation(client: AsyncClient) -> None:
     headers_a = {"Authorization": f"Bearer {PROJECT_A_KEY}"}
     headers_b = {"Authorization": f"Bearer {PROJECT_B_KEY}"}
 
-    # Key A creates a lesson (project-a), Key B tries to get it → 404
-    mock_pool, _ = _make_mock_pool(
-        fetchrow_side_effect=[
-            PROJECT_A_KEY_ROW,  # auth for Key A (cached after)
-            PROJECT_B_KEY_ROW,  # auth for Key B (cached after)
-        ],
+    # Map each key's hash to its row so auth resolves correctly per request.
+    auth_store = _make_auth_store(
+        key_rows_by_hash={
+            PROJECT_A_KEY_HASH: PROJECT_A_KEY_ROW,
+            PROJECT_B_KEY_HASH: PROJECT_B_KEY_ROW,
+        },
     )
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.lessons.create", new=AsyncMock(return_value="lesson-proj-a-001")), \
          patch("lore.services.lessons.get", new=AsyncMock(side_effect=StoreNotFoundError("memories", "lesson-proj-a-001"))):
         # Key A publishes
@@ -263,11 +271,11 @@ async def test_project_scoping_isolation(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_revoked_key_rejected(client: AsyncClient) -> None:
     """Revoked key gets 401 immediately."""
-    mock_pool, _ = _make_mock_pool(key_row=REVOKED_KEY_ROW)
+    auth_store = _make_auth_store(key_row=REVOKED_KEY_ROW)
 
     headers = {"Authorization": f"Bearer {REVOKED_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get("/v1/lessons", headers=headers)
 
     assert resp.status_code == 401
@@ -283,7 +291,7 @@ async def test_upvote_downvote_round_trip(client: AsyncClient) -> None:
     """Upvote then downvote and verify counts update."""
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
-    mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
+    auth_store = _make_auth_store(key_row=ROOT_KEY_ROW)
 
     _after_upvote = StoredMemory(
         id="lesson-vote-001", org_id=ORG_ID, content="test problem",
@@ -300,7 +308,7 @@ async def test_upvote_downvote_round_trip(client: AsyncClient) -> None:
         access_count=0, last_accessed_at=None, importance_score=1.0,
     )
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.lessons.update", new=AsyncMock(side_effect=[_after_upvote, _after_downvote])):
         # Upvote
         resp1 = await client.patch(
@@ -332,7 +340,7 @@ async def test_export_import_between_contexts(client: AsyncClient) -> None:
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
     # Export mock
-    export_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
+    export_auth_store = _make_auth_store(key_row=ROOT_KEY_ROW)
 
     _exported_mems = [
         ExportedMemory(
@@ -351,7 +359,7 @@ async def test_export_import_between_contexts(client: AsyncClient) -> None:
         ),
     ]
 
-    with patch("lore.server.auth.get_pool", return_value=export_pool), \
+    with patch("lore.server.auth.get_store", return_value=export_auth_store), \
          patch("lore.services.lessons.export", new=AsyncMock(return_value=_exported_mems)):
         export_resp = await client.post("/v1/lessons/export", headers=headers)
 
@@ -360,9 +368,9 @@ async def test_export_import_between_contexts(client: AsyncClient) -> None:
     assert len(exported) == 2
 
     # Import the exported lessons
-    import_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
+    import_auth_store = _make_auth_store(key_row=ROOT_KEY_ROW)
 
-    with patch("lore.server.auth.get_pool", return_value=import_pool), \
+    with patch("lore.server.auth.get_store", return_value=import_auth_store), \
          patch("lore.services.lessons.import_lessons", new=AsyncMock(return_value=2)):
         import_resp = await client.post(
             "/v1/lessons/import",
@@ -393,9 +401,9 @@ async def test_rate_limit_exceeded(client: AsyncClient) -> None:
     set_rate_limiter(RateLimiter(max_requests=3, window_seconds=60))
 
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
-    mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW, fetchval_return=0, fetch_return=[])
+    auth_store = _make_auth_store(key_row=ROOT_KEY_ROW)
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         # First 3 requests should succeed
         for _ in range(3):
@@ -418,17 +426,15 @@ async def test_rate_limit_independent_per_key(client: AsyncClient) -> None:
     headers_a = {"Authorization": f"Bearer {PROJECT_A_KEY}"}
     headers_b = {"Authorization": f"Bearer {PROJECT_B_KEY}"}
 
-    # Auth is cached after first lookup per key, so only 2 fetchrow calls for auth
-    mock_pool, _ = _make_mock_pool(
-        fetchrow_side_effect=[
-            PROJECT_A_KEY_ROW,  # auth for Key A (cached after)
-            PROJECT_B_KEY_ROW,  # auth for Key B (cached after)
-        ],
-        fetchval_return=0,
-        fetch_return=[],
+    # Auth is cached after first lookup per key.
+    auth_store = _make_auth_store(
+        key_rows_by_hash={
+            PROJECT_A_KEY_HASH: PROJECT_A_KEY_ROW,
+            PROJECT_B_KEY_HASH: PROJECT_B_KEY_ROW,
+        },
     )
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.lessons.list_lessons", new=AsyncMock(return_value=(0, []))):
         # Key A: 2 requests OK
         for _ in range(2):
@@ -487,10 +493,10 @@ async def test_body_too_large_returns_413(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_consistent_error_shape_404(client: AsyncClient) -> None:
     """404 responses have consistent JSON shape."""
-    mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
+    auth_store = _make_auth_store(key_row=ROOT_KEY_ROW)
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool), \
+    with patch("lore.server.auth.get_store", return_value=auth_store), \
          patch("lore.services.lessons.get", new=AsyncMock(side_effect=StoreNotFoundError("memories", "nonexistent"))):
         resp = await client.get("/v1/lessons/nonexistent", headers=headers)
 
@@ -503,10 +509,10 @@ async def test_consistent_error_shape_404(client: AsyncClient) -> None:
 @pytest.mark.asyncio
 async def test_consistent_error_shape_422(client: AsyncClient) -> None:
     """422 validation errors have consistent JSON shape."""
-    mock_pool, _ = _make_mock_pool(key_row=ROOT_KEY_ROW)
+    auth_store = _make_auth_store(key_row=ROOT_KEY_ROW)
     headers = {"Authorization": f"Bearer {ROOT_KEY}"}
 
-    with patch("lore.server.auth.get_pool", return_value=mock_pool):
+    with patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.post(
             "/v1/lessons",
             headers=headers,
