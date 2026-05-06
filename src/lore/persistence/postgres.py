@@ -19,6 +19,7 @@ from ulid import ULID
 
 from lore.persistence.exceptions import BackendUnavailableError, IntegrityError, StoreNotFoundError
 from lore.persistence.types import (
+    ExportedMemory,
     GraphStats,
     MemoryFilter,
     MemoryPatch,
@@ -474,6 +475,95 @@ class PostgresStore:
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return [_row_to_stored(r) for r in rows]
+
+    async def list_memories_paginated(
+        self,
+        filter: "MemoryFilter",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, Sequence[StoredMemory]]:
+        """Two-query paginated list: COUNT(*) then SELECT with LIMIT/OFFSET."""
+        where: list[str] = ["org_id = $1"]
+        params: list[Any] = [filter.org_id]
+
+        if filter.project is not None:
+            params.append(filter.project)
+            where.append(f"project = ${len(params)}")
+        if filter.type is not None:
+            params.append(filter.type)
+            where.append(f"meta->>'type' = ${len(params)}")
+        if filter.tier is not None:
+            params.append(filter.tier)
+            where.append(f"meta->>'tier' = ${len(params)}")
+        if filter.tags:
+            params.append(json.dumps(list(filter.tags)))
+            where.append(f"tags @> ${len(params)}::jsonb")
+        if filter.since is not None:
+            params.append(filter.since)
+            where.append(f"created_at >= ${len(params)}")
+        if filter.text_query is not None:
+            params.append(f"%{filter.text_query}%")
+            idx = len(params)
+            where.append(f"(content ILIKE ${idx} OR context ILIKE ${idx})")
+        if filter.min_reputation is not None:
+            params.append(filter.min_reputation)
+            where.append(f"reputation_score >= ${len(params)}")
+        if not filter.include_expired:
+            where.append("(expires_at IS NULL OR expires_at > now())")
+
+        where_sql = " AND ".join(where)
+
+        params.append(limit)
+        limit_idx = len(params)
+        params.append(offset)
+        offset_idx = len(params)
+
+        count_sql = f"SELECT COUNT(*) FROM memories WHERE {where_sql}"
+        select_sql = (
+            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "project, created_at, updated_at, expires_at, upvotes, downvotes, "
+            "meta, importance_score, access_count, last_accessed_at "
+            f"FROM memories WHERE {where_sql} "
+            f"ORDER BY created_at DESC "
+            f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
+        )
+
+        # COUNT uses only the WHERE params (no limit/offset)
+        count_params = params[: offset_idx - 2]
+
+        async with self._acquire() as conn:
+            total = await conn.fetchval(count_sql, *count_params)
+            rows = await conn.fetch(select_sql, *params)
+
+        return (int(total), tuple(_row_to_stored(r) for r in rows))
+
+    async def list_memories_with_embeddings(
+        self,
+        filter: "MemoryFilter",
+    ) -> Sequence[ExportedMemory]:
+        """Not yet implemented — see T4."""
+        raise NotImplementedError("list_memories_with_embeddings implemented in T4/T5")
+
+    async def upsert_memory_with_embedding(
+        self,
+        *,
+        memory_id: str,
+        org_id: str,
+        content: str,
+        context: Optional[str],
+        tags: Sequence[str],
+        confidence: float,
+        source: Optional[str],
+        project: Optional[str],
+        embedding: Optional[Sequence[float]],
+        expires_at: Optional[datetime],
+        upvotes: int,
+        downvotes: int,
+        meta: Mapping[str, Any],
+    ) -> bool:
+        """Not yet implemented — see T5."""
+        raise NotImplementedError("upsert_memory_with_embedding implemented in T4/T5")
 
     async def recall_by_embedding(
         self, params: "RecallParams"
