@@ -1,4 +1,4 @@
-"""Contract tests for list_memories_paginated (Phase 1H — T3).
+"""Contract tests for list_memories_paginated and list_memories_with_embeddings (Phase 1H — T3/T4).
 
 Tests run against every Store implementation (currently Postgres only).
 """
@@ -235,3 +235,87 @@ async def test_list_paginated_combined_filters(store: Store) -> None:
 
     assert total == 1
     assert rows[0].id == match.id
+
+
+# ---------------------------------------------------------------------------
+# T4-1: full shape — 2 memories with non-null embeddings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_with_embeddings_returns_full_shape(store: Store) -> None:
+    """list_memories_with_embeddings returns ExportedMemory with decoded embeddings."""
+    vec = [0.1] * 384
+    await store.insert_memory(NewMemory(org_id="solo", content="embed-1", embedding=vec))
+    await store.insert_memory(NewMemory(org_id="solo", content="embed-2", embedding=vec))
+
+    rows = await store.list_memories_with_embeddings(MemoryFilter(org_id="solo"))
+
+    assert len(rows) == 2
+    for row in rows:
+        assert row.embedding is not None
+        assert isinstance(row.embedding, list)
+        assert len(row.embedding) == 384
+        assert all(isinstance(v, float) for v in row.embedding)
+
+
+# ---------------------------------------------------------------------------
+# T4-2: null embedding is surfaced as None
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_with_embeddings_handles_null_embedding(store: Store) -> None:
+    """A NULL embedding column is returned as None (not an empty list)."""
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="no-embed", embedding=[0.1] * 384)
+    )
+    # Raw SQL: NULL out the embedding after insert
+    await store._conn.execute(  # type: ignore[attr-defined]
+        "UPDATE memories SET embedding = NULL WHERE id = $1", m.id
+    )
+
+    rows = await store.list_memories_with_embeddings(MemoryFilter(org_id="solo"))
+
+    assert len(rows) == 1
+    assert rows[0].embedding is None
+
+
+# ---------------------------------------------------------------------------
+# T4-3: org isolation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_with_embeddings_org_isolation(store: Store) -> None:
+    """Memories from org_a are not visible when filtering by org_b."""
+    await store.insert_memory(
+        NewMemory(org_id="org_a", content="belongs to a", embedding=[0.1] * 384)
+    )
+
+    rows = await store.list_memories_with_embeddings(MemoryFilter(org_id="org_b"))
+
+    assert len(rows) == 0
+
+
+# ---------------------------------------------------------------------------
+# T4-4: project filter
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_with_embeddings_project_filter(store: Store) -> None:
+    """project filter returns only memories matching that project."""
+    m1 = await store.insert_memory(
+        NewMemory(org_id="solo", content="proj-x item", project="proj-x", embedding=[0.1] * 384)
+    )
+    await store.insert_memory(
+        NewMemory(org_id="solo", content="proj-y item", project="proj-y", embedding=[0.2] * 384)
+    )
+
+    rows = await store.list_memories_with_embeddings(
+        MemoryFilter(org_id="solo", project="proj-x")
+    )
+
+    assert len(rows) == 1
+    assert rows[0].id == m1.id
