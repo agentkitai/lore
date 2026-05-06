@@ -167,6 +167,22 @@ def _row_to_member(row: "asyncpg.Record") -> StoredMember:
     )
 
 
+def _row_to_api_key(row: "asyncpg.Record") -> StoredApiKey:
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        key_hash=row["key_hash"],
+        key_prefix=row["key_prefix"],
+        project=row["project"],
+        is_root=bool(row["is_root"]),
+        workspace_id=row["workspace_id"],
+        revoked_at=row["revoked_at"],
+        created_at=row["created_at"],
+        last_used_at=row["last_used_at"],
+    )
+
+
 def _row_to_workspace(row: "asyncpg.Record") -> StoredWorkspace:
     settings = row["settings"]
     if isinstance(settings, str):
@@ -1520,10 +1536,31 @@ class PostgresStore:
     # ── AuthOps ───────────────────────────────────────────────────────
 
     async def get_api_key(self, key_id: str) -> Optional[StoredApiKey]:
-        raise NotImplementedError("get_api_key implemented in T7")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, key_hash, key_prefix, project, is_root,
+                       workspace_id, revoked_at, created_at, last_used_at
+                FROM api_keys
+                WHERE id = $1
+                """,
+                key_id,
+            )
+        return _row_to_api_key(row) if row else None
 
     async def list_api_keys(self, org_id: str) -> Sequence[StoredApiKey]:
-        raise NotImplementedError("list_api_keys implemented in T7")
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, name, key_hash, key_prefix, project, is_root,
+                       workspace_id, revoked_at, created_at, last_used_at
+                FROM api_keys
+                WHERE org_id = $1
+                ORDER BY created_at
+                """,
+                org_id,
+            )
+        return tuple(_row_to_api_key(r) for r in rows)
 
     async def create_api_key(self, key: NewApiKey) -> StoredApiKey:
         raise NotImplementedError("create_api_key implemented in T8")
