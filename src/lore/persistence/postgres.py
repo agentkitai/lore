@@ -636,7 +636,25 @@ class PostgresStore:
         meta: "Mapping[str, Any]",
         confidence: float,
     ) -> bool:
-        raise NotImplementedError("import_extracted_memory implemented in T5")
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                """
+                INSERT INTO memories
+                    (id, org_id, content, context, tags, source, meta, confidence,
+                     created_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, now(), now())
+                ON CONFLICT (id) DO NOTHING
+                """,
+                memory_id,
+                org_id,
+                content,
+                context,
+                json.dumps(list(tags)),
+                source,
+                json.dumps(dict(meta)),
+                confidence,
+            )
+        return result.endswith(" 1")
 
     # ── GraphOps: upsert_entity, get_entity ────────────────────────
 

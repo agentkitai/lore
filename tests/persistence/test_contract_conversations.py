@@ -198,3 +198,104 @@ async def test_fail_job_silent_on_missing_id(store: Store):
         error="irrelevant",
         processing_time_ms=0,
     )
+
+
+# ── import_extracted_memory ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_import_inserts_when_id_is_new(store: Store):
+    memory_id = "mem_import_new_001"
+    result = await store.import_extracted_memory(
+        memory_id=memory_id,
+        org_id="solo",
+        content="test content",
+        context="test context",
+        tags=["tag1"],
+        source="test",
+        meta={},
+        confidence=0.9,
+    )
+    assert result is True
+
+    fetched = await store.get_memory("solo", memory_id)
+    assert fetched is not None
+    assert fetched.id == memory_id
+
+
+@pytest.mark.asyncio
+async def test_import_returns_false_on_conflict(store: Store):
+    memory_id = "mem_import_dup_001"
+    kwargs = dict(
+        memory_id=memory_id,
+        org_id="solo",
+        content="test content",
+        context="test context",
+        tags=[],
+        source="test",
+        meta={},
+        confidence=0.8,
+    )
+    first = await store.import_extracted_memory(**kwargs)
+    assert first is True
+
+    second = await store.import_extracted_memory(**kwargs)
+    assert second is False
+
+
+@pytest.mark.asyncio
+async def test_import_preserves_specified_id(store: Store):
+    memory_id = "mem_import_id_001"
+    result = await store.import_extracted_memory(
+        memory_id=memory_id,
+        org_id="solo",
+        content="some content",
+        context="some context",
+        tags=[],
+        source="test",
+        meta={},
+        confidence=0.7,
+    )
+    assert result is True
+
+    fetched = await store.get_memory("solo", memory_id)
+    assert fetched is not None
+    assert fetched.id == memory_id
+
+
+@pytest.mark.asyncio
+async def test_import_jsonb_roundtrip_for_tags_and_meta(store: Store):
+    memory_id = "mem_import_jsonb_001"
+    await store.import_extracted_memory(
+        memory_id=memory_id,
+        org_id="solo",
+        content="content",
+        context="context",
+        tags=["a", "b"],
+        source="test",
+        meta={"foo": "bar"},
+        confidence=0.5,
+    )
+
+    fetched = await store.get_memory("solo", memory_id)
+    assert fetched is not None
+    assert set(fetched.tags) == {"a", "b"}
+    assert fetched.meta == {"foo": "bar"}
+
+
+@pytest.mark.asyncio
+async def test_import_org_isolation_distinct_from_get(store: Store):
+    memory_id = "mem_import_org_001"
+    await store.import_extracted_memory(
+        memory_id=memory_id,
+        org_id="org_a",
+        content="content",
+        context="context",
+        tags=[],
+        source="test",
+        meta={},
+        confidence=0.6,
+    )
+
+    result = await store.get_memory("org_b", memory_id)
+    assert result is None
