@@ -22,21 +22,28 @@ from lore.persistence.types import (
     GraphStats,
     MemoryFilter,
     MemoryPatch,
+    NewApiKey,
     NewEntity,
     NewMemory,
     NewMention,
+    NewMember,
     NewProfile,
     NewRelationship,
+    NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
     ScoredMemory,
+    StoredApiKey,
     StoredEntity,
     StoredMemory,
     StoredMention,
+    StoredMember,
     StoredProfile,
     StoredRelationship,
+    StoredWorkspace,
     TimelineBucketRow,
+    WorkspacePatch,
 )
 
 
@@ -146,6 +153,21 @@ def _row_to_profile(row: "asyncpg.Record") -> StoredProfile:
         include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_workspace(row: "asyncpg.Record") -> StoredWorkspace:
+    settings = row["settings"]
+    if isinstance(settings, str):
+        settings = json.loads(settings)
+    return StoredWorkspace(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        slug=row["slug"],
+        settings=dict(settings or {}),
+        created_at=row["created_at"],
+        archived_at=row["archived_at"],
     )
 
 
@@ -1327,6 +1349,85 @@ class PostgresStore:
                 org_id,
             )
         return _row_to_profile(row) if row else None
+
+    # ── WorkspaceOps ──────────────────────────────────────────────────
+
+    async def get_workspace(
+        self, workspace_id: str, org_id: str
+    ) -> Optional[StoredWorkspace]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, name, slug, settings, created_at, archived_at
+                FROM workspaces
+                WHERE id = $1 AND org_id = $2
+                """,
+                workspace_id,
+                org_id,
+            )
+        return _row_to_workspace(row) if row else None
+
+    async def list_workspaces(
+        self, org_id: str, *, include_archived: bool = False
+    ) -> Sequence[StoredWorkspace]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, org_id, name, slug, settings, created_at, archived_at
+                FROM workspaces
+                WHERE org_id = $1 AND (archived_at IS NULL OR $2::boolean)
+                ORDER BY name
+                """,
+                org_id,
+                include_archived,
+            )
+        return tuple(_row_to_workspace(r) for r in rows)
+
+    async def create_workspace(self, ws: NewWorkspace) -> StoredWorkspace:
+        raise NotImplementedError("create_workspace implemented in T5")
+
+    async def update_workspace(
+        self, workspace_id: str, org_id: str, patch: WorkspacePatch
+    ) -> Optional[StoredWorkspace]:
+        raise NotImplementedError("update_workspace implemented in T5")
+
+    async def archive_workspace(self, workspace_id: str, org_id: str) -> bool:
+        raise NotImplementedError("archive_workspace implemented in T5")
+
+    async def add_workspace_member(self, member: NewMember) -> StoredMember:
+        raise NotImplementedError("add_workspace_member implemented in T6")
+
+    async def list_workspace_members(
+        self, workspace_id: str
+    ) -> Sequence[StoredMember]:
+        raise NotImplementedError("list_workspace_members implemented in T6")
+
+    async def update_workspace_member_role(
+        self, workspace_id: str, user_id: str, role: str
+    ) -> Optional[StoredMember]:
+        raise NotImplementedError("update_workspace_member_role implemented in T6")
+
+    async def remove_workspace_member(
+        self, workspace_id: str, user_id: str
+    ) -> bool:
+        raise NotImplementedError("remove_workspace_member implemented in T6")
+
+    # ── AuthOps ───────────────────────────────────────────────────────
+
+    async def get_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        raise NotImplementedError("get_api_key implemented in T7")
+
+    async def list_api_keys(self, org_id: str) -> Sequence[StoredApiKey]:
+        raise NotImplementedError("list_api_keys implemented in T7")
+
+    async def create_api_key(self, key: NewApiKey) -> StoredApiKey:
+        raise NotImplementedError("create_api_key implemented in T8")
+
+    async def revoke_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        raise NotImplementedError("revoke_api_key implemented in T8")
+
+    async def count_active_root_keys(self, org_id: str) -> int:
+        raise NotImplementedError("count_active_root_keys implemented in T8")
 
 
 class _BoundConn:
