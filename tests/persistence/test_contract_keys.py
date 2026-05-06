@@ -154,3 +154,119 @@ async def test_list_api_keys_includes_revoked(store: Store):
 
     active = next(r for r in results if r.name == "active-key")
     assert active.revoked_at is None
+
+
+# ── create_api_key tests ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_round_trip(store: Store):
+    from lore.persistence.types import NewApiKey
+
+    await _ensure_org(store, "org-create")
+    new_key = NewApiKey(
+        org_id="org-create",
+        name="created-key",
+        key_hash="hash-create",
+        key_prefix="lore_sk_cr",
+    )
+    created = await store.create_api_key(new_key)
+
+    assert created.id.startswith("key_")
+    assert created.org_id == "org-create"
+    assert created.name == "created-key"
+    assert created.key_hash == "hash-create"
+    assert created.key_prefix == "lore_sk_cr"
+    assert created.project is None
+    assert created.is_root is False
+    assert created.workspace_id is None
+    assert created.revoked_at is None
+    assert isinstance(created.created_at, datetime)
+
+    # Round-trip via get_api_key
+    fetched = await store.get_api_key(created.id)
+    assert fetched is not None
+    assert fetched.id == created.id
+    assert fetched.key_hash == "hash-create"
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_with_workspace_id(store: Store):
+    from lore.persistence.types import NewApiKey
+
+    await _ensure_org(store, "org-ws")
+    new_key = NewApiKey(
+        org_id="org-ws",
+        name="ws-key",
+        key_hash="hash-ws",
+        key_prefix="lore_sk_ws",
+        project="proj-ws",
+        is_root=True,
+        workspace_id="ws_xyz",
+    )
+    created = await store.create_api_key(new_key)
+
+    assert created.workspace_id == "ws_xyz"
+    assert created.is_root is True
+    assert created.project == "proj-ws"
+
+    fetched = await store.get_api_key(created.id)
+    assert fetched is not None
+    assert fetched.workspace_id == "ws_xyz"
+
+
+# ── revoke_api_key tests ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_revoke_active_key_returns_updated_row(store: Store):
+    key_id = await _insert_api_key(store, org_id="org-rev2", name="to-revoke")
+
+    result = await store.revoke_api_key(key_id)
+
+    assert result is not None
+    assert result.id == key_id
+    assert result.revoked_at is not None
+    assert isinstance(result.revoked_at, datetime)
+
+
+@pytest.mark.asyncio
+async def test_revoke_already_revoked_returns_none(store: Store):
+    key_id = await _insert_api_key(
+        store, org_id="org-rev3", name="already-revoked", revoked=True
+    )
+
+    result = await store.revoke_api_key(key_id)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_revoke_missing_key_returns_none(store: Store):
+    result = await store.revoke_api_key("key_nonexistent")
+    assert result is None
+
+
+# ── count_active_root_keys tests ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_count_active_root_keys(store: Store):
+    # 1 root active, 1 root revoked, 1 non-root active => count == 1
+    await _insert_api_key(store, org_id="org-count", name="root-active", is_root=True)
+    await _insert_api_key(
+        store, org_id="org-count", name="root-revoked", is_root=True, revoked=True
+    )
+    await _insert_api_key(store, org_id="org-count", name="non-root-active", is_root=False)
+
+    count = await store.count_active_root_keys("org-count")
+    assert count == 1
+
+
+@pytest.mark.asyncio
+async def test_count_active_root_keys_other_org(store: Store):
+    # Keys under org_a; query org_b => 0
+    await _insert_api_key(store, org_id="org_a2", name="root-a", is_root=True)
+
+    count = await store.count_active_root_keys("org_b2")
+    assert count == 0

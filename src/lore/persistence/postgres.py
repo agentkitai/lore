@@ -1563,13 +1563,52 @@ class PostgresStore:
         return tuple(_row_to_api_key(r) for r in rows)
 
     async def create_api_key(self, key: NewApiKey) -> StoredApiKey:
-        raise NotImplementedError("create_api_key implemented in T8")
+        key_id = f"key_{ULID()}"
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO api_keys
+                    (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id, org_id, name, key_hash, key_prefix, project, is_root,
+                          workspace_id, revoked_at, created_at, last_used_at
+                """,
+                key_id,
+                key.org_id,
+                key.name,
+                key.key_hash,
+                key.key_prefix,
+                key.project,
+                key.is_root,
+                key.workspace_id,
+            )
+        return _row_to_api_key(row)
 
     async def revoke_api_key(self, key_id: str) -> Optional[StoredApiKey]:
-        raise NotImplementedError("revoke_api_key implemented in T8")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE api_keys
+                SET revoked_at = now()
+                WHERE id = $1 AND revoked_at IS NULL
+                RETURNING id, org_id, name, key_hash, key_prefix, project, is_root,
+                          workspace_id, revoked_at, created_at, last_used_at
+                """,
+                key_id,
+            )
+        return _row_to_api_key(row) if row else None
 
     async def count_active_root_keys(self, org_id: str) -> int:
-        raise NotImplementedError("count_active_root_keys implemented in T8")
+        async with self._acquire() as conn:
+            result = await conn.fetchval(
+                """
+                SELECT COUNT(*)::int
+                FROM api_keys
+                WHERE org_id = $1 AND is_root = TRUE AND revoked_at IS NULL
+                """,
+                org_id,
+            )
+        return int(result or 0)
 
 
 class _BoundConn:
