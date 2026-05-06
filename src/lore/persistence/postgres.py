@@ -1646,7 +1646,28 @@ class PostgresStore:
     async def record_memory_access(
         self, org_id: str, memory_id: str
     ) -> Optional[StoredMemory]:
-        raise NotImplementedError("record_memory_access implemented in T4")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE memories
+                SET access_count = COALESCE(access_count, 0) + 1,
+                    last_accessed_at = now(),
+                    importance_score = (
+                        confidence
+                        * GREATEST(0.1, 1.0 + (upvotes - downvotes) * 0.1)
+                        * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
+                    ),
+                    updated_at = now()
+                WHERE id = $1 AND org_id = $2
+                RETURNING id, org_id, content, context, tags, confidence, source,
+                          project, created_at, updated_at, expires_at, upvotes,
+                          downvotes, meta, importance_score, access_count,
+                          last_accessed_at
+                """,
+                memory_id,
+                org_id,
+            )
+        return _row_to_stored(row) if row else None
 
     async def list_recent_session_snapshots(
         self,
@@ -1656,7 +1677,35 @@ class PostgresStore:
         exclude_ids: Sequence[str] = (),
         limit: int = 3,
     ) -> Sequence[StoredMemory]:
-        raise NotImplementedError("list_recent_session_snapshots implemented in T4")
+        where: list[str] = [
+            "org_id = $1",
+            "(expires_at IS NULL OR expires_at > now())",
+            "meta->>'type' = 'session_snapshot'",
+            "created_at > now() - interval '24 hours'",
+        ]
+        params: list[Any] = [org_id]
+
+        if project is not None:
+            params.append(project)
+            where.append(f"project = ${len(params)}")
+        if exclude_ids:
+            params.append(list(exclude_ids))
+            where.append(f"id != ALL(${len(params)})")
+
+        params.append(limit)
+        limit_idx = len(params)
+
+        sql = (
+            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "project, created_at, updated_at, expires_at, upvotes, downvotes, "
+            "meta, importance_score, access_count, last_accessed_at "
+            "FROM memories "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY created_at DESC LIMIT ${limit_idx}"
+        )
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return tuple(_row_to_stored(r) for r in rows)
 
 
 class _BoundConn:

@@ -1,6 +1,7 @@
 """Contract tests for the AnalyticsOps slice of Store.
 
-Covers record_retrieval_event and bump_access_counts.
+Covers record_retrieval_event, bump_access_counts, record_memory_access,
+and list_recent_session_snapshots.
 These tests run against every Store implementation (Phase 1E: Postgres only).
 """
 
@@ -9,6 +10,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from ulid import ULID
 
 from lore.persistence import Store
 from lore.persistence.types import NewMemory, NewRetrievalEvent
@@ -190,3 +192,153 @@ async def test_bump_access_counts_org_isolation(store: Store):
     after = await store.get_memory("org-bac4", memory_id)
     assert after is not None
     assert after.access_count == 0
+
+
+# ── snapshot seed helper ───────────────────────────────────────────────────────
+
+
+async def _insert_snapshot_memory(
+    store,
+    *,
+    memory_id: str | None = None,
+    org_id: str = "solo",
+    project: str | None = None,
+    meta: dict | None = None,
+    created_at_sql: str | None = None,
+    content: str = "snap",
+) -> str:
+    """Insert a memory row directly via raw SQL and return its id."""
+    await _ensure_org(store, org_id)
+    mid = memory_id or f"mem_{ULID()}"
+    meta_dict = meta if meta is not None else {"type": "session_snapshot"}
+    embedding_json = json.dumps(_vec(0))
+    if created_at_sql is not None:
+        await store._conn.execute(
+            """
+            INSERT INTO memories
+                (id, org_id, content, context, tags, confidence, source,
+                 project, embedding, meta, created_at)
+            VALUES ($1, $2, $3, '', '[]'::jsonb, 0.8, NULL, $4, $5::vector, $6::jsonb,
+                    """ + created_at_sql + """)
+            """,
+            mid, org_id, content, project, embedding_json, json.dumps(meta_dict),
+        )
+    else:
+        await store._conn.execute(
+            """
+            INSERT INTO memories
+                (id, org_id, content, context, tags, confidence, source,
+                 project, embedding, meta)
+            VALUES ($1, $2, $3, '', '[]'::jsonb, 0.8, NULL, $4, $5::vector, $6::jsonb)
+            """,
+            mid, org_id, content, project, embedding_json, json.dumps(meta_dict),
+        )
+    return mid
+
+
+# ── record_memory_access tests ─────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_memory_access_increments_and_returns_row(store: Store):
+    memory_id = await _insert_memory(store, org_id="org-rma1")
+
+    result = await store.record_memory_access("org-rma1", memory_id)
+
+    assert result is not None
+    assert result.id == memory_id
+    assert result.access_count == 1
+    assert result.last_accessed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_record_memory_access_returns_none_when_missing(store: Store):
+    result = await store.record_memory_access("org-rma2", "mem_nonexistent")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_record_memory_access_org_isolation(store: Store):
+    memory_id = await _insert_memory(store, org_id="org-a")
+
+    # Call under wrong org — should return None
+    result = await store.record_memory_access("org-b", memory_id)
+    assert result is None
+
+    # Original row should be unchanged
+    original = await store.get_memory("org-a", memory_id)
+    assert original is not None
+    assert original.access_count == 0
+
+
+# ── list_recent_session_snapshots tests ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_recent_session_snapshots_returns_recent(store: Store):
+    await _insert_snapshot_memory(store, org_id="org-snap1")
+
+    results = await store.list_recent_session_snapshots("org-snap1")
+
+    assert len(results) == 1
+    assert results[0].meta.get("type") == "session_snapshot"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_session_snapshots_excludes_old(store: Store):
+    # Insert a snapshot that is 25 hours old — should be excluded
+    await _insert_snapshot_memory(
+        store,
+        org_id="org-snap2",
+        created_at_sql="now() - interval '25 hours'",
+    )
+
+    results = await store.list_recent_session_snapshots("org-snap2")
+    assert len(results) == 0
+
+
+@pytest.mark.asyncio
+async def test_list_recent_session_snapshots_filters_project(store: Store):
+    await _insert_snapshot_memory(store, org_id="org-snap3", project="proj-a", content="snap-a")
+    await _insert_snapshot_memory(store, org_id="org-snap3", project="proj-b", content="snap-b")
+
+    results = await store.list_recent_session_snapshots("org-snap3", project="proj-a")
+
+    assert len(results) == 1
+    assert results[0].content == "snap-a"
+
+
+@pytest.mark.asyncio
+async def test_list_recent_session_snapshots_excludes_ids(store: Store):
+    id1 = await _insert_snapshot_memory(store, org_id="org-snap4", content="snap-1")
+    id2 = await _insert_snapshot_memory(store, org_id="org-snap4", content="snap-2")
+    id3 = await _insert_snapshot_memory(store, org_id="org-snap4", content="snap-3")
+
+    results = await store.list_recent_session_snapshots("org-snap4", exclude_ids=[id2])
+
+    returned_ids = {r.id for r in results}
+    assert id2 not in returned_ids
+    assert id1 in returned_ids
+    assert id3 in returned_ids
+
+
+@pytest.mark.asyncio
+async def test_list_recent_session_snapshots_respects_limit(store: Store):
+    for i in range(5):
+        await _insert_snapshot_memory(store, org_id="org-snap5", content=f"snap-{i}")
+
+    results = await store.list_recent_session_snapshots("org-snap5", limit=2)
+    assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_recent_session_snapshots_skips_non_snapshot_memories(store: Store):
+    # Insert a regular memory (no meta.type='session_snapshot')
+    await _insert_memory(store, org_id="org-snap6", content="regular memory")
+    # Insert a proper snapshot
+    await _insert_snapshot_memory(store, org_id="org-snap6", content="the snapshot")
+
+    results = await store.list_recent_session_snapshots("org-snap6")
+
+    assert len(results) == 1
+    assert results[0].content == "the snapshot"
