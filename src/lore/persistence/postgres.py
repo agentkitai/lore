@@ -23,6 +23,7 @@ from lore.persistence.types import (
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewConversationJob,
     NewEntity,
     NewMember,
     NewMemory,
@@ -38,6 +39,7 @@ from lore.persistence.types import (
     RecommendationCandidate,
     ScoredMemory,
     StoredApiKey,
+    StoredConversationJob,
     StoredEntity,
     StoredMember,
     StoredMemory,
@@ -241,6 +243,33 @@ def _row_to_recommendation_config(row: "asyncpg.Record") -> StoredRecommendation
         max_suggestions=int(row["max_suggestions"]),
         cooldown_minutes=int(row["cooldown_minutes"]),
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_conversation_job(row: "asyncpg.Record") -> StoredConversationJob:
+    memory_ids_raw = row["memory_ids"]
+    if isinstance(memory_ids_raw, str):
+        memory_ids = tuple(json.loads(memory_ids_raw or "[]"))
+    elif memory_ids_raw is None:
+        memory_ids = ()
+    else:
+        memory_ids = tuple(memory_ids_raw)
+    return StoredConversationJob(
+        id=row["id"],
+        org_id=row["org_id"],
+        status=row["status"],
+        message_count=row["message_count"] or 0,
+        messages_json=row["messages_json"] or "[]",
+        user_id=row["user_id"],
+        session_id=row["session_id"],
+        project=row["project"],
+        memory_ids=memory_ids,
+        memories_extracted=row["memories_extracted"] or 0,
+        duplicates_skipped=row["duplicates_skipped"] or 0,
+        error=row["error"],
+        processing_time_ms=row["processing_time_ms"] or 0,
+        created_at=row["created_at"],
+        completed_at=row["completed_at"],
     )
 
 
@@ -595,6 +624,19 @@ class PostgresStore:
             raise StoreNotFoundError("memories", memory_id)
         return _row_to_stored(row)
 
+    async def import_extracted_memory(
+        self,
+        *,
+        memory_id: str,
+        org_id: str,
+        content: str,
+        context: str,
+        tags: "Sequence[str]",
+        source: str,
+        meta: "Mapping[str, Any]",
+        confidence: float,
+    ) -> bool:
+        raise NotImplementedError("import_extracted_memory implemented in T5")
 
     # ── GraphOps: upsert_entity, get_entity ────────────────────────
 
@@ -1868,6 +1910,75 @@ class PostgresStore:
                 limit,
             )
         return tuple(_row_to_recommendation_candidate(r) for r in rows)
+
+    # ── ConversationOps ────────────────────────────────────────────────
+
+    async def create_conversation_job(self, job: NewConversationJob) -> StoredConversationJob:
+        job_id = str(ULID())
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO conversation_jobs
+                    (id, org_id, status, message_count, messages_json,
+                     user_id, session_id, project, created_at)
+                VALUES ($1, $2, 'accepted', $3, $4, $5, $6, $7, now())
+                RETURNING id, org_id, status, message_count, messages_json,
+                          user_id, session_id, project, memory_ids,
+                          memories_extracted, duplicates_skipped, error,
+                          processing_time_ms, created_at, completed_at
+                """,
+                job_id,
+                job.org_id,
+                job.message_count,
+                job.messages_json,
+                job.user_id,
+                job.session_id,
+                job.project,
+            )
+        return _row_to_conversation_job(row)
+
+    async def get_conversation_job(
+        self, job_id: str, org_id: str
+    ) -> Optional[StoredConversationJob]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, status, message_count, messages_json,
+                       user_id, session_id, project, memory_ids,
+                       memories_extracted, duplicates_skipped, error,
+                       processing_time_ms, created_at, completed_at
+                FROM conversation_jobs
+                WHERE id = $1 AND org_id = $2
+                """,
+                job_id,
+                org_id,
+            )
+        return _row_to_conversation_job(row) if row else None
+
+    async def mark_conversation_job_processing(
+        self, job_id: str
+    ) -> Optional[StoredConversationJob]:
+        raise NotImplementedError("mark_conversation_job_processing implemented in T4")
+
+    async def complete_conversation_job(
+        self,
+        job_id: str,
+        *,
+        memory_ids: "Sequence[str]",
+        memories_extracted: int,
+        duplicates_skipped: int,
+        processing_time_ms: int,
+    ) -> None:
+        raise NotImplementedError("complete_conversation_job implemented in T4")
+
+    async def fail_conversation_job(
+        self,
+        job_id: str,
+        *,
+        error: str,
+        processing_time_ms: int,
+    ) -> None:
+        raise NotImplementedError("fail_conversation_job implemented in T4")
 
 
 class _BoundConn:
