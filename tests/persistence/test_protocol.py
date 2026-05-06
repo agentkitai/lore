@@ -1,4 +1,4 @@
-"""Tests that the Store Protocol declares the MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps, and RecommendationOps slices."""
+"""Tests that the Store Protocol declares the MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps, RecommendationOps, and ConversationOps slices."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ REQUIRED_MEMORY_OPS = {
     "bump_access_counts",
     "vote_memory",
     "enrich_memory_meta",
+    "import_extracted_memory",
 }
 
 REQUIRED_GRAPH_OPS = {
@@ -188,6 +189,29 @@ def test_store_declares_recommendation_ops():
 
 def test_recommendation_ops_are_async():
     for name in REQUIRED_RECOMMENDATION_OPS:
+        method = getattr(Store, name)
+        assert inspect.iscoroutinefunction(method), (
+            f"Store.{name} must be async"
+        )
+
+
+REQUIRED_CONVERSATION_OPS = {
+    "create_conversation_job",
+    "get_conversation_job",
+    "mark_conversation_job_processing",
+    "complete_conversation_job",
+    "fail_conversation_job",
+}
+
+
+def test_store_declares_conversation_ops():
+    members = {name for name, _ in inspect.getmembers(Store)}
+    missing = REQUIRED_CONVERSATION_OPS - members
+    assert not missing, f"Store missing ConversationOps methods: {missing}"
+
+
+def test_conversation_ops_are_async():
+    for name in REQUIRED_CONVERSATION_OPS:
         method = getattr(Store, name)
         assert inspect.iscoroutinefunction(method), (
             f"Store.{name} must be async"

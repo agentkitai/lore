@@ -410,3 +410,35 @@ class NewRecommendationFeedback:
     workspace_id: Optional[str] = None
     signal: str = "manual"
     context_hash: Optional[str] = None
+
+
+# ── Conversations slice dataclasses ───
+
+
+@dataclass(frozen=True, slots=True)
+class NewConversationJob:
+    org_id: str
+    message_count: int
+    messages_json: str  # JSON-serialized list of {"role","content"} dicts
+    user_id: Optional[str] = None
+    session_id: Optional[str] = None
+    project: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredConversationJob:
+    id: str
+    org_id: str
+    status: str
+    message_count: int
+    messages_json: str
+    user_id: Optional[str]
+    session_id: Optional[str]
+    project: Optional[str]
+    memory_ids: Sequence[str]
+    memories_extracted: int
+    duplicates_skipped: int
+    error: Optional[str]
+    processing_time_ms: int
+    created_at: datetime
+    completed_at: Optional[datetime]

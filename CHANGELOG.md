@@ -23,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `lore.services.recommendations` (new) owns engine orchestration via `_CandidatesAdapter` (the engine's `Store`-with-`.list()` interface), config get/upsert returning a flat dict, feedback validation (`positive`/`negative` only), and the no-context / no-candidates / engine-error fallback paths. The route layer becomes a thin shell.
 - Migration `019_recommendation_config_null_safe_unique.sql` replaces the original `UNIQUE(workspace_id, agent_id)` with a COALESCE-based expression index. The standard SQL UNIQUE treats NULL != NULL, which meant ON CONFLICT for the global (NULL, NULL) scope never fired. The expression index makes (NULL, NULL) count as one row.
 - **Bug fix in `routes/recommendations.py`**: the pre-1F `update_config` handler used a string-replace hack (`sql.replace(" WHERE ", ", updated_at = now() WHERE ", 1)`) to inject `updated_at` into a dynamically-built SET clause. The new `Store.upsert_recommendation_config` uses a clean `INSERT … ON CONFLICT … RETURNING` with the `updated_at` set inline.
+- `Store` protocol grows the `ConversationOps` slice (5 methods: `create_conversation_job`, `get_conversation_job`, `mark_conversation_job_processing`, `complete_conversation_job`, `fail_conversation_job`) plus one `MemoryOps` extension (`import_extracted_memory` — idempotent INSERT … ON CONFLICT (id) DO NOTHING used by the conversation extraction flow). New typed dataclasses: `NewConversationJob`, `StoredConversationJob`.
+- `lore.services.conversations` (new) owns the background-task orchestration in `process_job_async` (mark processing → run `ConversationExtractor` → import extracted memories → mark complete/failed). The legacy in-process `Lore`/`MemoryStore` extraction driver stays as-is; `_get_server_lore` moves from the route into the service module.
+- After Phase 1G, the CI guard covers 13 migrated route files. The route files still on inline SQL — and slated for future phases — are: `sharing.py` (13 get_pool calls), `lessons.py` (10), `slo.py` (9), `policies.py` (9), `topics.py` (3), `recent.py` (2), `audit.py` (2), and `analytics.py` (2). The `lore/server/auth.py` middleware (key lookup + `last_used_at` update) is also still on inline SQL.
 
 ### Internal
 - `routes/memories.py` and `routes/retrieve.py` no longer contain raw SQL. CI guard `scripts/check_routes_no_sql.py` enforces this for migrated routes.
@@ -46,6 +49,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - New service tests at `tests/services/test_snapshots.py` (8 tests). Existing `tests/services/test_retrieve.py` and `tests/services/test_memories.py` extended with analytics + enrichment + access tests.
 - New route tests at `tests/server/test_snapshots_routes.py` (5 tests with FakeStore mocks).
 - Existing `tests/test_enrichment_memories.py` and `tests/test_memories_server.py` redirected from inline-SQL mocks to service-layer mocks.
+- Both `routes/conversations.py` handlers (POST/GET) refactored to call services exclusively. The legacy `_process_job` background helper and `_get_server_lore` constructor moved to `lore/services/conversations.py`. The route file is now ~85 LOC (was 228). CI guard coverage grows to 13 migrated route files.
+- New contract tests at `tests/persistence/test_contract_conversations.py` (17 tests across the 5 ConversationOps methods + the `import_extracted_memory` extension).
+- New service tests at `tests/services/test_conversations.py` (11 tests) and route tests at `tests/server/test_conversations_routes.py` (7 tests with FakeStore mocks).
+- Existing `tests/test_conversation_server.py` redirected from `FakeConn`/`FakePool`+`get_pool` patches to `FakeStore`+`get_store` dependency override and a service-level `process_job_async` mock.
 
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 
