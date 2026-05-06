@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Mapping, Optional, Sequence
+from typing import Any, Literal, Mapping, Optional, Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,3 +201,75 @@ class PendingRelationshipRow:
     target_name: str
     target_entity_type: str
     target_mentions: int
+
+
+# Profile slice dataclasses
+
+
+@dataclass(frozen=True, slots=True)
+class NewProfile:
+    org_id: str
+    name: str
+    semantic_weight: float = 1.0
+    graph_weight: float = 1.0
+    recency_bias: float = 30.0
+    tier_filters: Optional[Sequence[str]] = None
+    min_score: float = 0.3
+    max_results: int = 10
+    is_preset: bool = False
+    k: Optional[int] = None
+    threshold: Optional[float] = None
+    rerank: bool = False
+    include_graph: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class StoredProfile:
+    id: str
+    org_id: str
+    name: str
+    semantic_weight: float
+    graph_weight: float
+    recency_bias: float
+    tier_filters: Optional[Sequence[str]]
+    min_score: float
+    max_results: int
+    is_preset: bool
+    k: Optional[int]
+    threshold: Optional[float]
+    rerank: bool
+    include_graph: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ProfilePatch:
+    name: Optional[str] = None
+    semantic_weight: Optional[float] = None
+    graph_weight: Optional[float] = None
+    recency_bias: Optional[float] = None
+    tier_filters: Optional[Sequence[str]] = None
+    min_score: Optional[float] = None
+    max_results: Optional[int] = None
+    is_preset: Optional[bool] = None
+    k: Optional[int] = None
+    threshold: Optional[float] = None
+    rerank: Optional[bool] = None
+    include_graph: Optional[bool] = None
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedProfile:
+    name: str
+    source: Literal["stored", "default"]
+    semantic_weight: float
+    graph_weight: float
+    recency_bias: float
+    min_score: float
+    max_results: int
+    tier_filters: Optional[Sequence[str]]
+    k: Optional[int]
+    threshold: Optional[float]
+    rerank: bool
+    include_graph: bool
