@@ -46,3 +46,7 @@ class IntegrityError(StoreError):
 
 class ProfileImmutableError(LoreError):
     """Raised when caller attempts to modify or delete a preset profile."""
+
+
+class LastRootKeyError(LoreError):
+    """Cannot revoke the last active root API key for an org."""

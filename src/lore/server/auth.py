@@ -79,6 +79,11 @@ _last_used_updates: Dict[str, float] = {}
 LAST_USED_DEBOUNCE_SECONDS = 60.0
 
 
+def invalidate_key(key_hash: str) -> None:
+    """Remove a key_hash from the in-process cache (called on revoke)."""
+    _key_cache.pop(key_hash, None)
+
+
 # ── OIDC validator (lazy init) ─────────────────────────────────────
 
 _oidc_validator = None
