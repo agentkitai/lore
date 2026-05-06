@@ -1,4 +1,8 @@
-"""Tests that the Store Protocol declares the MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps, RecommendationOps, ConversationOps, and AuditOps slices."""
+"""Tests that the Store Protocol declares all required operation slices.
+
+Covers: MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps,
+RecommendationOps, ConversationOps, AuditOps, and RetentionOps.
+"""
 
 from __future__ import annotations
 
@@ -233,6 +237,34 @@ def test_store_declares_audit_ops():
 
 def test_audit_ops_are_async():
     for name in REQUIRED_AUDIT_OPS:
+        method = getattr(Store, name)
+        assert inspect.iscoroutinefunction(method), (
+            f"Store.{name} must be async"
+        )
+
+
+REQUIRED_RETENTION_OPS = {
+    "list_retention_policies",
+    "get_retention_policy",
+    "create_retention_policy",
+    "update_retention_policy",
+    "delete_retention_policy",
+    "get_latest_snapshot_for_policy",
+    "count_snapshots_for_policy",
+    "record_drill_result",
+    "list_drill_results_for_policy",
+    "get_latest_drill_result",
+}
+
+
+def test_store_declares_retention_ops():
+    members = {name for name, _ in inspect.getmembers(Store)}
+    missing = REQUIRED_RETENTION_OPS - members
+    assert not missing, f"Store missing RetentionOps methods: {missing}"
+
+
+def test_retention_ops_are_async():
+    for name in REQUIRED_RETENTION_OPS:
         method = getattr(Store, name)
         assert inspect.iscoroutinefunction(method), (
             f"Store.{name} must be async"

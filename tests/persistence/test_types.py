@@ -13,6 +13,7 @@ from lore.persistence.types import (
     MemoryPatch,
     NewApiKey,
     NewConversationJob,
+    NewDrillResult,
     NewEntity,
     NewMember,
     NewMemory,
@@ -20,6 +21,7 @@ from lore.persistence.types import (
     NewProfile,
     NewRecommendationFeedback,
     NewRelationship,
+    NewRetentionPolicy,
     NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
@@ -27,12 +29,14 @@ from lore.persistence.types import (
     RecallParams,
     RecommendationCandidate,
     ResolvedProfile,
+    RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
+    StoredDrillResult,
     StoredEntity,
     StoredMember,
     StoredMemory,
@@ -40,6 +44,8 @@ from lore.persistence.types import (
     StoredProfile,
     StoredRecommendationConfig,
     StoredRelationship,
+    StoredRetentionPolicy,
+    StoredSnapshotMetadata,
     StoredWorkspace,
     TimelineBucketRow,
     TopQueryRow,
@@ -1784,3 +1790,410 @@ def test_retrieval_analytics_result_slots():
         daily_stats=[],
     )
     assert not hasattr(rar, "__dict__")
+
+
+# ── Retention slice dataclass tests ──────────────────────────────────
+
+
+# NewRetentionPolicy
+
+
+def test_new_retention_policy_defaults():
+    nrp = NewRetentionPolicy(org_id="org_1", name="default-policy")
+    assert nrp.org_id == "org_1"
+    assert nrp.name == "default-policy"
+    assert nrp.retention_window == {"working": 3600, "short": 604800, "long": None}
+    assert nrp.snapshot_schedule is None
+    assert nrp.encryption_required is False
+    assert nrp.max_snapshots == 50
+    assert nrp.is_active is True
+
+
+def test_new_retention_policy_all_fields():
+    nrp = NewRetentionPolicy(
+        org_id="org_2",
+        name="strict-policy",
+        retention_window={"working": 1800, "short": 86400, "long": 2592000},
+        snapshot_schedule="0 2 * * *",
+        encryption_required=True,
+        max_snapshots=100,
+        is_active=False,
+    )
+    assert nrp.retention_window == {"working": 1800, "short": 86400, "long": 2592000}
+    assert nrp.snapshot_schedule == "0 2 * * *"
+    assert nrp.encryption_required is True
+    assert nrp.max_snapshots == 100
+    assert nrp.is_active is False
+
+
+def test_new_retention_policy_frozen():
+    nrp = NewRetentionPolicy(org_id="org_1", name="policy")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        nrp.name = "mutated"  # type: ignore[misc]
+
+
+def test_new_retention_policy_slots():
+    nrp = NewRetentionPolicy(org_id="org_1", name="policy")
+    assert not hasattr(nrp, "__dict__")
+
+
+# StoredRetentionPolicy
+
+
+def test_stored_retention_policy_round_trip():
+    now = datetime.now(timezone.utc)
+    srp = StoredRetentionPolicy(
+        id="pol_01",
+        org_id="org_1",
+        name="default-policy",
+        retention_window={"working": 3600, "short": 604800, "long": None},
+        snapshot_schedule=None,
+        encryption_required=False,
+        max_snapshots=50,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    assert srp.id == "pol_01"
+    assert srp.org_id == "org_1"
+    assert srp.name == "default-policy"
+    assert srp.retention_window["working"] == 3600
+    assert srp.snapshot_schedule is None
+    assert srp.encryption_required is False
+    assert srp.max_snapshots == 50
+    assert srp.is_active is True
+    assert srp.created_at == now
+    assert srp.updated_at == now
+
+
+def test_stored_retention_policy_frozen():
+    now = datetime.now(timezone.utc)
+    srp = StoredRetentionPolicy(
+        id="pol_02",
+        org_id="org_1",
+        name="policy",
+        retention_window={},
+        snapshot_schedule=None,
+        encryption_required=False,
+        max_snapshots=50,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        srp.name = "mutated"  # type: ignore[misc]
+
+
+def test_stored_retention_policy_slots():
+    now = datetime.now(timezone.utc)
+    srp = StoredRetentionPolicy(
+        id="pol_03",
+        org_id="org_1",
+        name="policy",
+        retention_window={},
+        snapshot_schedule=None,
+        encryption_required=False,
+        max_snapshots=50,
+        is_active=True,
+        created_at=now,
+        updated_at=now,
+    )
+    assert not hasattr(srp, "__dict__")
+
+
+# RetentionPolicyPatch
+
+
+def test_retention_policy_patch_all_none():
+    rpp = RetentionPolicyPatch()
+    assert rpp.name is None
+    assert rpp.retention_window is None
+    assert rpp.snapshot_schedule is None
+    assert rpp.encryption_required is None
+    assert rpp.max_snapshots is None
+    assert rpp.is_active is None
+
+
+def test_retention_policy_patch_partial():
+    rpp = RetentionPolicyPatch(name="renamed", max_snapshots=25, is_active=False)
+    assert rpp.name == "renamed"
+    assert rpp.max_snapshots == 25
+    assert rpp.is_active is False
+    assert rpp.retention_window is None
+    assert rpp.snapshot_schedule is None
+    assert rpp.encryption_required is None
+
+
+def test_retention_policy_patch_frozen():
+    rpp = RetentionPolicyPatch(name="x")
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rpp.name = "y"  # type: ignore[misc]
+
+
+def test_retention_policy_patch_slots():
+    rpp = RetentionPolicyPatch()
+    assert not hasattr(rpp, "__dict__")
+
+
+# StoredSnapshotMetadata
+
+
+def test_stored_snapshot_metadata_all_fields():
+    now = datetime.now(timezone.utc)
+    ssm = StoredSnapshotMetadata(
+        id="snap_01",
+        org_id="org_1",
+        policy_id="pol_01",
+        name="daily-snap",
+        path="/backups/daily-snap.db",
+        size_bytes=1024000,
+        memory_count=500,
+        encrypted=True,
+        created_at=now,
+    )
+    assert ssm.id == "snap_01"
+    assert ssm.org_id == "org_1"
+    assert ssm.policy_id == "pol_01"
+    assert ssm.name == "daily-snap"
+    assert ssm.path == "/backups/daily-snap.db"
+    assert ssm.size_bytes == 1024000
+    assert ssm.memory_count == 500
+    assert ssm.encrypted is True
+    assert ssm.created_at == now
+
+
+def test_stored_snapshot_metadata_optional_nulls():
+    now = datetime.now(timezone.utc)
+    ssm = StoredSnapshotMetadata(
+        id="snap_02",
+        org_id="org_1",
+        policy_id=None,
+        name="manual-snap",
+        path="/backups/manual.db",
+        size_bytes=None,
+        memory_count=None,
+        encrypted=False,
+        created_at=now,
+    )
+    assert ssm.policy_id is None
+    assert ssm.size_bytes is None
+    assert ssm.memory_count is None
+    assert ssm.encrypted is False
+
+
+def test_stored_snapshot_metadata_frozen():
+    now = datetime.now(timezone.utc)
+    ssm = StoredSnapshotMetadata(
+        id="snap_03",
+        org_id="org_1",
+        policy_id=None,
+        name="snap",
+        path="/backups/snap.db",
+        size_bytes=None,
+        memory_count=None,
+        encrypted=False,
+        created_at=now,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ssm.name = "mutated"  # type: ignore[misc]
+
+
+def test_stored_snapshot_metadata_slots():
+    now = datetime.now(timezone.utc)
+    ssm = StoredSnapshotMetadata(
+        id="snap_04",
+        org_id="org_1",
+        policy_id=None,
+        name="snap",
+        path="/backups/snap.db",
+        size_bytes=None,
+        memory_count=None,
+        encrypted=False,
+        created_at=now,
+    )
+    assert not hasattr(ssm, "__dict__")
+
+
+# NewDrillResult
+
+
+def test_new_drill_result_defaults():
+    now = datetime.now(timezone.utc)
+    ndr = NewDrillResult(
+        org_id="org_1",
+        snapshot_id="snap_01",
+        snapshot_name="daily-snap",
+        started_at=now,
+        completed_at=None,
+        recovery_time_ms=None,
+        memories_restored=None,
+        status="running",
+    )
+    assert ndr.org_id == "org_1"
+    assert ndr.snapshot_id == "snap_01"
+    assert ndr.snapshot_name == "daily-snap"
+    assert ndr.started_at == now
+    assert ndr.completed_at is None
+    assert ndr.recovery_time_ms is None
+    assert ndr.memories_restored is None
+    assert ndr.status == "running"
+    assert ndr.error is None
+
+
+def test_new_drill_result_all_fields():
+    now = datetime.now(timezone.utc)
+    ndr = NewDrillResult(
+        org_id="org_2",
+        snapshot_id=None,
+        snapshot_name="manual-snap",
+        started_at=now,
+        completed_at=now,
+        recovery_time_ms=1500,
+        memories_restored=250,
+        status="success",
+        error=None,
+    )
+    assert ndr.snapshot_id is None
+    assert ndr.completed_at == now
+    assert ndr.recovery_time_ms == 1500
+    assert ndr.memories_restored == 250
+    assert ndr.status == "success"
+
+
+def test_new_drill_result_with_error():
+    now = datetime.now(timezone.utc)
+    ndr = NewDrillResult(
+        org_id="org_1",
+        snapshot_id="snap_05",
+        snapshot_name="bad-snap",
+        started_at=now,
+        completed_at=now,
+        recovery_time_ms=None,
+        memories_restored=None,
+        status="failed",
+        error="Snapshot file not found",
+    )
+    assert ndr.status == "failed"
+    assert ndr.error == "Snapshot file not found"
+
+
+def test_new_drill_result_frozen():
+    now = datetime.now(timezone.utc)
+    ndr = NewDrillResult(
+        org_id="org_1",
+        snapshot_id=None,
+        snapshot_name="snap",
+        started_at=now,
+        completed_at=None,
+        recovery_time_ms=None,
+        memories_restored=None,
+        status="running",
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ndr.status = "success"  # type: ignore[misc]
+
+
+def test_new_drill_result_slots():
+    now = datetime.now(timezone.utc)
+    ndr = NewDrillResult(
+        org_id="org_1",
+        snapshot_id=None,
+        snapshot_name="snap",
+        started_at=now,
+        completed_at=None,
+        recovery_time_ms=None,
+        memories_restored=None,
+        status="running",
+    )
+    assert not hasattr(ndr, "__dict__")
+
+
+# StoredDrillResult
+
+
+def test_stored_drill_result_all_fields():
+    now = datetime.now(timezone.utc)
+    sdr = StoredDrillResult(
+        id="drill_01",
+        org_id="org_1",
+        snapshot_id="snap_01",
+        snapshot_name="daily-snap",
+        started_at=now,
+        completed_at=now,
+        recovery_time_ms=2000,
+        memories_restored=300,
+        status="success",
+        error=None,
+        created_at=now,
+    )
+    assert sdr.id == "drill_01"
+    assert sdr.org_id == "org_1"
+    assert sdr.snapshot_id == "snap_01"
+    assert sdr.snapshot_name == "daily-snap"
+    assert sdr.started_at == now
+    assert sdr.completed_at == now
+    assert sdr.recovery_time_ms == 2000
+    assert sdr.memories_restored == 300
+    assert sdr.status == "success"
+    assert sdr.error is None
+    assert sdr.created_at == now
+
+
+def test_stored_drill_result_optional_nulls():
+    now = datetime.now(timezone.utc)
+    sdr = StoredDrillResult(
+        id="drill_02",
+        org_id="org_1",
+        snapshot_id=None,
+        snapshot_name="orphan-snap",
+        started_at=now,
+        completed_at=None,
+        recovery_time_ms=None,
+        memories_restored=None,
+        status="failed",
+        error="timeout",
+        created_at=now,
+    )
+    assert sdr.snapshot_id is None
+    assert sdr.completed_at is None
+    assert sdr.recovery_time_ms is None
+    assert sdr.memories_restored is None
+    assert sdr.status == "failed"
+    assert sdr.error == "timeout"
+
+
+def test_stored_drill_result_frozen():
+    now = datetime.now(timezone.utc)
+    sdr = StoredDrillResult(
+        id="drill_03",
+        org_id="org_1",
+        snapshot_id=None,
+        snapshot_name="snap",
+        started_at=now,
+        completed_at=None,
+        recovery_time_ms=None,
+        memories_restored=None,
+        status="running",
+        error=None,
+        created_at=now,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        sdr.status = "success"  # type: ignore[misc]
+
+
+def test_stored_drill_result_slots():
+    now = datetime.now(timezone.utc)
+    sdr = StoredDrillResult(
+        id="drill_04",
+        org_id="org_1",
+        snapshot_id=None,
+        snapshot_name="snap",
+        started_at=now,
+        completed_at=None,
+        recovery_time_ms=None,
+        memories_restored=None,
+        status="running",
+        error=None,
+        created_at=now,
+    )
+    assert not hasattr(sdr, "__dict__")
