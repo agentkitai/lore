@@ -1384,15 +1384,63 @@ class PostgresStore:
         return tuple(_row_to_workspace(r) for r in rows)
 
     async def create_workspace(self, ws: NewWorkspace) -> StoredWorkspace:
-        raise NotImplementedError("create_workspace implemented in T5")
+        workspace_id = f"ws_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                row = await conn.fetchrow(
+                    """
+                    INSERT INTO workspaces (id, org_id, name, slug, settings)
+                    VALUES ($1, $2, $3, $4, $5::jsonb)
+                    RETURNING id, org_id, name, slug, settings, created_at, archived_at
+                    """,
+                    workspace_id,
+                    ws.org_id,
+                    ws.name,
+                    ws.slug,
+                    json.dumps(dict(ws.settings)),
+                )
+            except asyncpg.UniqueViolationError as e:
+                raise IntegrityError(
+                    f"Workspace slug {ws.slug!r} already exists for org_id={ws.org_id!r}"
+                ) from e
+        return _row_to_workspace(row)
 
     async def update_workspace(
         self, workspace_id: str, org_id: str, patch: WorkspacePatch
     ) -> Optional[StoredWorkspace]:
-        raise NotImplementedError("update_workspace implemented in T5")
+        sets: list[str] = []
+        params: list = [workspace_id, org_id]
+
+        if patch.name is not None:
+            params.append(patch.name)
+            sets.append(f"name = ${len(params)}")
+        if patch.settings is not None:
+            params.append(json.dumps(dict(patch.settings)))
+            sets.append(f"settings = ${len(params)}::jsonb")
+
+        if not sets:
+            raise ValueError(
+                "update_workspace called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sql = (
+            "UPDATE workspaces "
+            f"SET {', '.join(sets)} "
+            "WHERE id = $1 AND org_id = $2 "
+            "RETURNING id, org_id, name, slug, settings, created_at, archived_at"
+        )
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+        return _row_to_workspace(row) if row else None
 
     async def archive_workspace(self, workspace_id: str, org_id: str) -> bool:
-        raise NotImplementedError("archive_workspace implemented in T5")
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "UPDATE workspaces SET archived_at = now() WHERE id = $1 AND org_id = $2 AND archived_at IS NULL",
+                workspace_id,
+                org_id,
+            )
+        return result.endswith(" 1")
 
     async def add_workspace_member(self, member: NewMember) -> StoredMember:
         raise NotImplementedError("add_workspace_member implemented in T6")
