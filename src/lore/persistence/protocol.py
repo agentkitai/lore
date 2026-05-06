@@ -21,12 +21,14 @@ from lore.persistence.types import (
     NewMemory,
     NewMention,
     NewProfile,
+    NewRecommendationFeedback,
     NewRelationship,
     NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
+    RecommendationCandidate,
     ScoredMemory,
     StoredApiKey,
     StoredEntity,
@@ -34,6 +36,7 @@ from lore.persistence.types import (
     StoredMemory,
     StoredMention,
     StoredProfile,
+    StoredRecommendationConfig,
     StoredRelationship,
     StoredWorkspace,
     TimelineBucketRow,
@@ -392,4 +395,40 @@ class Store(Protocol):
         limit: int = 3,
     ) -> Sequence[StoredMemory]:
         """List the most recent session-snapshot memories for an org, optionally scoped to a project."""
+        ...
+
+    # ── RecommendationOps ────────────────────────────────────────────
+
+    async def get_recommendation_config(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Optional[StoredRecommendationConfig]:
+        """Return the recommendation config for the given workspace/agent scope, or None if absent."""
+        ...
+
+    async def upsert_recommendation_config(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        aggressiveness: Optional[float] = None,
+        enabled: Optional[bool] = None,
+        max_suggestions: Optional[int] = None,
+        cooldown_minutes: Optional[int] = None,
+    ) -> StoredRecommendationConfig:
+        """Insert or update the recommendation config for the given scope; returns the stored row."""
+        ...
+
+    async def record_recommendation_feedback(
+        self, feedback: NewRecommendationFeedback,
+    ) -> None:
+        """Persist a recommendation feedback row (thumbs-up/down, dismissed, etc.)."""
+        ...
+
+    async def list_candidate_memories_for_recommendation(
+        self, org_id: str, *, limit: int = 500,
+    ) -> Sequence[RecommendationCandidate]:
+        """List memory candidates for the recommendation engine, ordered by recency."""
         ...

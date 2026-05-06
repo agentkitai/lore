@@ -15,12 +15,14 @@ from lore.persistence.types import (
     NewMemory,
     NewMention,
     NewProfile,
+    NewRecommendationFeedback,
     NewRelationship,
     NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
+    RecommendationCandidate,
     ResolvedProfile,
     ScoredMemory,
     StoredApiKey,
@@ -29,6 +31,7 @@ from lore.persistence.types import (
     StoredMemory,
     StoredMention,
     StoredProfile,
+    StoredRecommendationConfig,
     StoredRelationship,
     StoredWorkspace,
     TimelineBucketRow,
@@ -990,3 +993,206 @@ def test_new_retrieval_event_slots():
         query_time_ms=None,
     )
     assert not hasattr(nre, "__dict__")
+
+
+# ── RecommendationCandidate ───────────────────────────────────────
+
+
+def test_recommendation_candidate_defaults():
+    now = datetime.now(timezone.utc)
+    rc = RecommendationCandidate(
+        id="mem_01",
+        content="some content",
+        embedding=[0.1] * 384,
+        metadata={"type": "lesson"},
+        created_at=now,
+        access_count=0,
+        last_accessed_at=None,
+    )
+    assert rc.id == "mem_01"
+    assert rc.content == "some content"
+    assert len(rc.embedding) == 384
+    assert rc.metadata == {"type": "lesson"}
+    assert rc.created_at == now
+    assert rc.access_count == 0
+    assert rc.last_accessed_at is None
+
+
+def test_recommendation_candidate_all_fields():
+    now = datetime.now(timezone.utc)
+    earlier = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    rc = RecommendationCandidate(
+        id="mem_02",
+        content="another memory",
+        embedding=[0.5] * 512,
+        metadata={"project": "proj_a", "score": 0.9},
+        created_at=earlier,
+        access_count=7,
+        last_accessed_at=now,
+    )
+    assert rc.id == "mem_02"
+    assert len(rc.embedding) == 512
+    assert rc.metadata["project"] == "proj_a"
+    assert rc.access_count == 7
+    assert rc.last_accessed_at == now
+
+
+def test_recommendation_candidate_frozen():
+    now = datetime.now(timezone.utc)
+    rc = RecommendationCandidate(
+        id="mem_03",
+        content="frozen test",
+        embedding=[0.0],
+        metadata={},
+        created_at=now,
+        access_count=0,
+        last_accessed_at=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        rc.content = "mutated"  # type: ignore[misc]
+
+
+def test_recommendation_candidate_slots():
+    now = datetime.now(timezone.utc)
+    rc = RecommendationCandidate(
+        id="mem_04",
+        content="slots test",
+        embedding=[0.0],
+        metadata={},
+        created_at=now,
+        access_count=0,
+        last_accessed_at=None,
+    )
+    assert not hasattr(rc, "__dict__")
+
+
+# ── StoredRecommendationConfig ────────────────────────────────────
+
+
+def test_stored_recommendation_config_defaults():
+    now = datetime.now(timezone.utc)
+    src = StoredRecommendationConfig(
+        id="cfg_01",
+        workspace_id=None,
+        agent_id=None,
+        aggressiveness=0.5,
+        enabled=True,
+        max_suggestions=3,
+        cooldown_minutes=60,
+        updated_at=now,
+    )
+    assert src.id == "cfg_01"
+    assert src.workspace_id is None
+    assert src.agent_id is None
+    assert src.aggressiveness == 0.5
+    assert src.enabled is True
+    assert src.max_suggestions == 3
+    assert src.cooldown_minutes == 60
+    assert src.updated_at == now
+
+
+def test_stored_recommendation_config_all_fields():
+    now = datetime.now(timezone.utc)
+    src = StoredRecommendationConfig(
+        id="cfg_02",
+        workspace_id="ws_01",
+        agent_id="agent_01",
+        aggressiveness=0.9,
+        enabled=False,
+        max_suggestions=10,
+        cooldown_minutes=30,
+        updated_at=now,
+    )
+    assert src.workspace_id == "ws_01"
+    assert src.agent_id == "agent_01"
+    assert src.aggressiveness == 0.9
+    assert src.enabled is False
+    assert src.max_suggestions == 10
+    assert src.cooldown_minutes == 30
+
+
+def test_stored_recommendation_config_frozen():
+    now = datetime.now(timezone.utc)
+    src = StoredRecommendationConfig(
+        id="cfg_03",
+        workspace_id=None,
+        agent_id=None,
+        aggressiveness=0.5,
+        enabled=True,
+        max_suggestions=3,
+        cooldown_minutes=60,
+        updated_at=now,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        src.enabled = False  # type: ignore[misc]
+
+
+def test_stored_recommendation_config_slots():
+    now = datetime.now(timezone.utc)
+    src = StoredRecommendationConfig(
+        id="cfg_04",
+        workspace_id=None,
+        agent_id=None,
+        aggressiveness=0.5,
+        enabled=True,
+        max_suggestions=3,
+        cooldown_minutes=60,
+        updated_at=now,
+    )
+    assert not hasattr(src, "__dict__")
+
+
+# ── NewRecommendationFeedback ─────────────────────────────────────
+
+
+def test_new_recommendation_feedback_defaults():
+    nrf = NewRecommendationFeedback(
+        org_id="org_1",
+        memory_id="mem_01",
+        actor_id="usr_01",
+        feedback="positive",
+    )
+    assert nrf.org_id == "org_1"
+    assert nrf.memory_id == "mem_01"
+    assert nrf.actor_id == "usr_01"
+    assert nrf.feedback == "positive"
+    assert nrf.workspace_id is None
+    assert nrf.signal == "manual"
+    assert nrf.context_hash is None
+
+
+def test_new_recommendation_feedback_all_fields():
+    nrf = NewRecommendationFeedback(
+        org_id="org_2",
+        memory_id="mem_02",
+        actor_id="usr_02",
+        feedback="negative",
+        workspace_id="ws_01",
+        signal="implicit",
+        context_hash="abc123",
+    )
+    assert nrf.feedback == "negative"
+    assert nrf.workspace_id == "ws_01"
+    assert nrf.signal == "implicit"
+    assert nrf.context_hash == "abc123"
+
+
+def test_new_recommendation_feedback_frozen():
+    nrf = NewRecommendationFeedback(
+        org_id="org_1",
+        memory_id="mem_01",
+        actor_id="usr_01",
+        feedback="positive",
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        nrf.feedback = "negative"  # type: ignore[misc]
+
+
+def test_new_recommendation_feedback_slots():
+    nrf = NewRecommendationFeedback(
+        org_id="org_1",
+        memory_id="mem_01",
+        actor_id="usr_01",
+        feedback="positive",
+    )
+    assert not hasattr(nrf, "__dict__")

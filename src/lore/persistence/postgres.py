@@ -28,12 +28,14 @@ from lore.persistence.types import (
     NewMemory,
     NewMention,
     NewProfile,
+    NewRecommendationFeedback,
     NewRelationship,
     NewRetrievalEvent,
     NewWorkspace,
     PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
+    RecommendationCandidate,
     ScoredMemory,
     StoredApiKey,
     StoredEntity,
@@ -41,6 +43,7 @@ from lore.persistence.types import (
     StoredMemory,
     StoredMention,
     StoredProfile,
+    StoredRecommendationConfig,
     StoredRelationship,
     StoredWorkspace,
     TimelineBucketRow,
@@ -196,6 +199,48 @@ def _row_to_workspace(row: "asyncpg.Record") -> StoredWorkspace:
         settings=dict(settings or {}),
         created_at=row["created_at"],
         archived_at=row["archived_at"],
+    )
+
+
+def _row_to_recommendation_candidate(row: "asyncpg.Record") -> RecommendationCandidate:
+    meta = row["meta"]
+    if isinstance(meta, str):
+        meta = json.loads(meta) if meta else {}
+    elif meta is None:
+        meta = {}
+    embedding = row["embedding"]
+    # asyncpg returns pgvector as a string '[0.1,0.2,...]' unless a codec is registered.
+    # The recommendation engine accepts whatever shape is passed (the pre-1F route
+    # passed it through unmodified). If it's a string, parse it; if it's already a
+    # list, pass through.
+    if isinstance(embedding, str):
+        # pgvector text format: '[0.1,0.2,...]'
+        stripped = embedding.strip("[]")
+        if stripped:
+            embedding = [float(x) for x in stripped.split(",")]
+        else:
+            embedding = []
+    return RecommendationCandidate(
+        id=row["id"],
+        content=row["content"] or "",
+        embedding=embedding if embedding is not None else [],
+        metadata=dict(meta or {}),
+        created_at=row["created_at"],
+        access_count=row["access_count"] or 0,
+        last_accessed_at=row["last_accessed_at"],
+    )
+
+
+def _row_to_recommendation_config(row: "asyncpg.Record") -> StoredRecommendationConfig:
+    return StoredRecommendationConfig(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        agent_id=row["agent_id"],
+        aggressiveness=float(row["aggressiveness"]),
+        enabled=bool(row["enabled"]),
+        max_suggestions=int(row["max_suggestions"]),
+        cooldown_minutes=int(row["cooldown_minutes"]),
+        updated_at=row["updated_at"],
     )
 
 
@@ -1716,6 +1761,113 @@ class PostgresStore:
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return tuple(_row_to_stored(r) for r in rows)
+
+    # ── RecommendationOps ─────────────────────────────────────────────
+
+    async def get_recommendation_config(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Optional[StoredRecommendationConfig]:
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, workspace_id, agent_id, aggressiveness, enabled,
+                       max_suggestions, cooldown_minutes, updated_at
+                FROM recommendation_config
+                WHERE workspace_id IS NOT DISTINCT FROM $1
+                  AND agent_id IS NOT DISTINCT FROM $2
+                LIMIT 1
+                """,
+                workspace_id,
+                agent_id,
+            )
+        return _row_to_recommendation_config(row) if row else None
+
+    async def upsert_recommendation_config(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        aggressiveness: Optional[float] = None,
+        enabled: Optional[bool] = None,
+        max_suggestions: Optional[int] = None,
+        cooldown_minutes: Optional[int] = None,
+    ) -> StoredRecommendationConfig:
+        config_id = f"reccfg_{ULID()}"
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO recommendation_config
+                    (id, workspace_id, agent_id, aggressiveness, enabled,
+                     max_suggestions, cooldown_minutes, updated_at)
+                VALUES ($1, $2, $3,
+                        COALESCE($4::real, 0.5),
+                        COALESCE($5::boolean, TRUE),
+                        COALESCE($6::integer, 3),
+                        COALESCE($7::integer, 15),
+                        now())
+                ON CONFLICT (COALESCE(workspace_id, '__null__'), COALESCE(agent_id, '__null__')) DO UPDATE
+                SET aggressiveness   = COALESCE($4::real,    recommendation_config.aggressiveness),
+                    enabled          = COALESCE($5::boolean, recommendation_config.enabled),
+                    max_suggestions  = COALESCE($6::integer, recommendation_config.max_suggestions),
+                    cooldown_minutes = COALESCE($7::integer, recommendation_config.cooldown_minutes),
+                    updated_at       = now()
+                RETURNING id, workspace_id, agent_id, aggressiveness, enabled,
+                          max_suggestions, cooldown_minutes, updated_at
+                """,
+                config_id,
+                workspace_id,
+                agent_id,
+                aggressiveness,
+                enabled,
+                max_suggestions,
+                cooldown_minutes,
+            )
+        return _row_to_recommendation_config(row)
+
+    async def record_recommendation_feedback(
+        self,
+        feedback: "NewRecommendationFeedback",
+    ) -> None:
+        feedback_id = f"recfb_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO recommendation_feedback
+                    (id, org_id, workspace_id, memory_id, actor_id, signal, feedback, context_hash)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,
+                feedback_id,
+                feedback.org_id,
+                feedback.workspace_id,
+                feedback.memory_id,
+                feedback.actor_id,
+                feedback.signal,
+                feedback.feedback,
+                feedback.context_hash,
+            )
+
+    async def list_candidate_memories_for_recommendation(
+        self,
+        org_id: str,
+        *,
+        limit: int = 500,
+    ) -> "Sequence[RecommendationCandidate]":
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, content, embedding, meta, created_at, access_count, last_accessed_at
+                FROM memories
+                WHERE org_id = $1 AND embedding IS NOT NULL
+                ORDER BY importance_score DESC NULLS LAST
+                LIMIT $2
+                """,
+                org_id,
+                limit,
+            )
+        return tuple(_row_to_recommendation_candidate(r) for r in rows)
 
 
 class _BoundConn:
