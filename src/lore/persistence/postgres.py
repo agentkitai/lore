@@ -1239,10 +1239,76 @@ class PostgresStore:
     async def update_profile(
         self, profile_id: str, patch: ProfilePatch
     ) -> Optional[StoredProfile]:
-        raise NotImplementedError("update_profile implemented in T6")
+        # Build dynamic SET clause from non-None patch fields
+        sets: list[str] = []
+        params: list = [profile_id]
+
+        if patch.name is not None:
+            params.append(patch.name)
+            sets.append(f"name = ${len(params)}")
+        if patch.semantic_weight is not None:
+            params.append(patch.semantic_weight)
+            sets.append(f"semantic_weight = ${len(params)}")
+        if patch.graph_weight is not None:
+            params.append(patch.graph_weight)
+            sets.append(f"graph_weight = ${len(params)}")
+        if patch.recency_bias is not None:
+            params.append(patch.recency_bias)
+            sets.append(f"recency_bias = ${len(params)}")
+        if patch.tier_filters is not None:
+            params.append(list(patch.tier_filters))
+            sets.append(f"tier_filters = ${len(params)}")
+        if patch.min_score is not None:
+            params.append(patch.min_score)
+            sets.append(f"min_score = ${len(params)}")
+        if patch.max_results is not None:
+            params.append(patch.max_results)
+            sets.append(f"max_results = ${len(params)}")
+        if patch.is_preset is not None:
+            params.append(patch.is_preset)
+            sets.append(f"is_preset = ${len(params)}")
+        if patch.k is not None:
+            params.append(patch.k)
+            sets.append(f"k = ${len(params)}")
+        if patch.threshold is not None:
+            params.append(patch.threshold)
+            sets.append(f"threshold = ${len(params)}")
+        if patch.rerank is not None:
+            params.append(patch.rerank)
+            sets.append(f"rerank = ${len(params)}")
+        if patch.include_graph is not None:
+            params.append(patch.include_graph)
+            sets.append(f"include_graph = ${len(params)}")
+
+        if not sets:
+            raise ValueError(
+                "update_profile called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sets.append("updated_at = now()")
+        sql = (
+            "UPDATE retrieval_profiles "
+            f"SET {', '.join(sets)} "
+            "WHERE id = $1 "
+            "RETURNING id, org_id, name, "
+            "semantic_weight, graph_weight, recency_bias, "
+            "tier_filters, min_score, max_results, is_preset, "
+            "k, threshold, rerank, include_graph, "
+            "created_at, updated_at"
+        )
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+        return _row_to_profile(row) if row else None
 
     async def delete_profile(self, profile_id: str, org_id: str) -> bool:
-        raise NotImplementedError("delete_profile implemented in T6")
+        async with self._acquire() as conn:
+            result = await conn.execute(
+                "DELETE FROM retrieval_profiles WHERE id = $1 AND org_id = $2",
+                profile_id,
+                org_id,
+            )
+        # asyncpg returns "DELETE n"
+        return result.endswith(" 1")
 
     async def resolve_profile_for_key(
         self, org_id: str, name: str

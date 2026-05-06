@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import pytest
 
 from lore.persistence import IntegrityError, NewProfile, Store, StoredProfile
+from lore.persistence.types import ProfilePatch
 
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -308,3 +309,121 @@ async def test_list_profiles_org_isolation(store: Store):
     assert unique_name not in names
     for r in results:
         assert r.org_id == "__global__"
+
+
+# ── update_profile tests ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_update_profile_single_field(store: Store):
+    created = await store.create_profile(
+        NewProfile(
+            org_id="org-up1",
+            name=f"up-single-{uuid.uuid4().hex[:8]}",
+            semantic_weight=0.8,
+            graph_weight=0.5,
+            recency_bias=14.0,
+            min_score=0.25,
+        )
+    )
+
+    patch = ProfilePatch(min_score=0.7)
+    result = await store.update_profile(created.id, patch)
+
+    assert result is not None
+    assert isinstance(result, StoredProfile)
+    assert result.id == created.id
+    assert result.min_score == pytest.approx(0.7)
+    # updated_at must be strictly greater (Postgres now() advances per-statement)
+    assert result.updated_at >= created.updated_at
+
+
+@pytest.mark.asyncio
+async def test_update_profile_multiple_fields(store: Store):
+    created = await store.create_profile(
+        NewProfile(
+            org_id="org-up2",
+            name=f"up-multi-{uuid.uuid4().hex[:8]}",
+            semantic_weight=0.8,
+            graph_weight=0.5,
+            recency_bias=14.0,
+            k=None,
+            threshold=None,
+        )
+    )
+
+    patch = ProfilePatch(
+        tier_filters=("episodic", "semantic"),
+        k=20,
+        threshold=0.65,
+    )
+    result = await store.update_profile(created.id, patch)
+
+    assert result is not None
+    assert tuple(result.tier_filters) == ("episodic", "semantic")
+    assert result.k == 20
+    assert result.threshold == pytest.approx(0.65)
+
+
+@pytest.mark.asyncio
+async def test_update_profile_returns_none_when_missing(store: Store):
+    patch = ProfilePatch(min_score=0.5)
+    result = await store.update_profile("prof_does_not_exist", patch)
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_update_profile_empty_patch_raises(store: Store):
+    with pytest.raises(ValueError):
+        await store.update_profile("prof_any", ProfilePatch())
+
+
+# ── delete_profile tests ───────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_existing(store: Store):
+    created = await store.create_profile(
+        NewProfile(
+            org_id="org-del1",
+            name=f"del-existing-{uuid.uuid4().hex[:8]}",
+            semantic_weight=0.8,
+            graph_weight=0.5,
+            recency_bias=14.0,
+        )
+    )
+
+    deleted = await store.delete_profile(created.id, "org-del1")
+    assert deleted is True
+
+    # Subsequent get returns None
+    fetched = await store.get_profile(created.id)
+    assert fetched is None
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_nonexistent(store: Store):
+    result = await store.delete_profile("prof_does_not_exist", "org-any")
+    assert result is False
+
+
+@pytest.mark.asyncio
+async def test_delete_profile_org_isolation(store: Store):
+    created = await store.create_profile(
+        NewProfile(
+            org_id="org_a",
+            name=f"del-iso-{uuid.uuid4().hex[:8]}",
+            semantic_weight=0.8,
+            graph_weight=0.5,
+            recency_bias=14.0,
+        )
+    )
+
+    # Attempt delete with org_b — should return False
+    result = await store.delete_profile(created.id, "org_b")
+    assert result is False
+
+    # Profile still accessible under org_a
+    fetched = await store.get_profile(created.id)
+    assert fetched is not None
+    assert fetched.org_id == "org_a"
