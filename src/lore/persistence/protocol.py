@@ -16,6 +16,7 @@ from lore.persistence.types import (
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewConversationJob,
     NewEntity,
     NewMember,
     NewMemory,
@@ -31,6 +32,7 @@ from lore.persistence.types import (
     RecommendationCandidate,
     ScoredMemory,
     StoredApiKey,
+    StoredConversationJob,
     StoredEntity,
     StoredMember,
     StoredMemory,
@@ -102,6 +104,21 @@ class Store(Protocol):
 
     async def enrich_memory_meta(self, memory_id: str, enrichment_data: Mapping[str, Any]) -> None:
         """Merge enrichment_data into the memory's meta JSONB column."""
+        ...
+
+    async def import_extracted_memory(
+        self,
+        *,
+        memory_id: str,
+        org_id: str,
+        content: str,
+        context: str,
+        tags: Sequence[str],
+        source: str,
+        meta: Mapping[str, Any],
+        confidence: float,
+    ) -> bool:
+        """Insert a pre-extracted memory with a caller-supplied id; returns True if inserted, False if duplicate."""
         ...
 
     # ── GraphOps ─────────────────────────────────────────────────────
@@ -431,4 +448,44 @@ class Store(Protocol):
         self, org_id: str, *, limit: int = 500,
     ) -> Sequence[RecommendationCandidate]:
         """List memory candidates for the recommendation engine, ordered by recency."""
+        ...
+
+    # ── ConversationOps ──────────────────────────────────────────────
+
+    async def create_conversation_job(self, job: NewConversationJob) -> StoredConversationJob:
+        """Insert a new conversation processing job; returns the stored row with server-generated id/timestamps."""
+        ...
+
+    async def get_conversation_job(
+        self, job_id: str, org_id: str,
+    ) -> Optional[StoredConversationJob]:
+        """Return a conversation job by id within an org, or None if absent."""
+        ...
+
+    async def mark_conversation_job_processing(
+        self, job_id: str,
+    ) -> Optional[StoredConversationJob]:
+        """Transition a job to processing status; returns the updated row, or None if absent."""
+        ...
+
+    async def complete_conversation_job(
+        self,
+        job_id: str,
+        *,
+        memory_ids: Sequence[str],
+        memories_extracted: int,
+        duplicates_skipped: int,
+        processing_time_ms: int,
+    ) -> None:
+        """Mark a job completed and record its extraction results."""
+        ...
+
+    async def fail_conversation_job(
+        self,
+        job_id: str,
+        *,
+        error: str,
+        processing_time_ms: int,
+    ) -> None:
+        """Mark a job failed and record the error message."""
         ...
