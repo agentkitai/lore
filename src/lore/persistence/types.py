@@ -273,3 +273,83 @@ class ResolvedProfile:
     threshold: Optional[float]
     rerank: bool
     include_graph: bool
+
+
+# Identity slice dataclasses
+
+
+# ── Workspace ─────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class NewWorkspace:
+    org_id: str
+    name: str
+    slug: str
+    settings: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class StoredWorkspace:
+    id: str
+    org_id: str
+    name: str
+    slug: str
+    settings: Mapping[str, Any]
+    created_at: datetime
+    archived_at: Optional[datetime]
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspacePatch:
+    name: Optional[str] = None
+    settings: Optional[Mapping[str, Any]] = None
+
+
+# ── Workspace member ──────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class NewMember:
+    workspace_id: str
+    user_id: str
+    role: str = "writer"
+
+
+@dataclass(frozen=True, slots=True)
+class StoredMember:
+    id: str
+    workspace_id: str
+    user_id: Optional[str]
+    role: str
+    invited_at: datetime
+    accepted_at: Optional[datetime]
+
+
+# ── API key ────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class NewApiKey:
+    org_id: str
+    name: str
+    key_hash: str
+    key_prefix: str
+    project: Optional[str] = None
+    is_root: bool = False
+    workspace_id: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
+class StoredApiKey:
+    id: str
+    org_id: str
+    name: str
+    key_hash: str
+    key_prefix: str
+    project: Optional[str]
+    is_root: bool
+    workspace_id: Optional[str]
+    revoked_at: Optional[datetime]
+    created_at: datetime
+    last_used_at: Optional[datetime]
