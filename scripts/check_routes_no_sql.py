@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 
 MIGRATED_ROUTES = {
+    "src/lore/server/routes/analytics.py",
+    "src/lore/server/routes/audit.py",
     "src/lore/server/routes/conversations.py",
     "src/lore/server/routes/graph/entities.py",
     "src/lore/server/routes/graph/memories.py",
@@ -21,10 +23,12 @@ MIGRATED_ROUTES = {
     "src/lore/server/routes/lessons.py",
     "src/lore/server/routes/memories.py",
     "src/lore/server/routes/profiles.py",
+    "src/lore/server/routes/recent.py",
     "src/lore/server/routes/recommendations.py",
     "src/lore/server/routes/retrieve.py",
     "src/lore/server/routes/review.py",
     "src/lore/server/routes/snapshots.py",
+    "src/lore/server/routes/topics.py",
     "src/lore/server/routes/workspaces.py",
 }
 
