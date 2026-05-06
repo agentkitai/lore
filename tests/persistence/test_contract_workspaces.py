@@ -310,11 +310,11 @@ async def test_list_members_returns_only_targeted_workspace(store: Store):
 async def test_list_members_ordered_by_invited_at(store: Store):
     ws_id = await _insert_workspace(store, org_id="org-mem-order", name="Order WS", slug="mem-order-ws")
     # Insert members with slight delay to ensure ordering
-    m1 = await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_first", role="writer"))
+    await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_first", role="writer"))
     await asyncio.sleep(0.01)
-    m2 = await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_second", role="reader"))
+    await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_second", role="reader"))
     await asyncio.sleep(0.01)
-    m3 = await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_third", role="admin"))
+    await store.add_workspace_member(NewMember(workspace_id=ws_id, user_id="user_third", role="admin"))
 
     result = await store.list_workspace_members(ws_id)
     assert len(result) == 3

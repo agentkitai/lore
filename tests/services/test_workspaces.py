@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 
-from lore.persistence import IntegrityError, StoreNotFoundError
+from lore.persistence import IntegrityError, StoreNotFoundError, WorkspacePatch
 from lore.services.workspaces import (
     WORKSPACE_ROLES,
     add_member,
@@ -15,13 +15,11 @@ from lore.services.workspaces import (
     get_workspace,
     has_ws_permission,
     list_members,
-    list_workspaces,
     remove_member,
     replace_workspace,
     update_member_role,
     update_workspace,
 )
-from lore.persistence import WorkspacePatch
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

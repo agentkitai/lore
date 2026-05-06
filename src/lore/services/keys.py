@@ -14,7 +14,6 @@ from lore.persistence import (
 from lore.persistence.exceptions import LastRootKeyError, StoreNotFoundError
 from lore.server import auth
 
-
 RAW_KEY_PREFIX = "lore_sk_"
 _KEY_PREFIX_LEN = 12  # length of stored key_prefix (lore_sk_ + 4 hex chars)
 

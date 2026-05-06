@@ -13,7 +13,6 @@ pytest.importorskip("fastapi")
 pytest.importorskip("httpx")
 
 from httpx import ASGITransport, AsyncClient
-from unittest.mock import AsyncMock
 
 from lore.server.app import app
 from lore.server.db import get_store

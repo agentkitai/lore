@@ -12,8 +12,7 @@ from lore.persistence import (
     StoredWorkspace,
     WorkspacePatch,
 )
-from lore.persistence.exceptions import IntegrityError, StoreNotFoundError
-
+from lore.persistence.exceptions import StoreNotFoundError
 
 # ── Role hierarchy ────────────────────────────────────────────────
 WORKSPACE_ROLES: tuple[str, ...] = ("viewer", "member", "admin", "owner")
