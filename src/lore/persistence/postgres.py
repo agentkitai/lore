@@ -3023,17 +3023,108 @@ class PostgresStore:
     # ── SharingOps ────────────────────────────────────────────────────────────
 
     async def get_or_init_sharing_config(self, org_id: str) -> "SharingConfigData":
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT enabled, human_review_enabled, rate_limit_per_hour,
+                       volume_alert_threshold, updated_at
+                FROM sharing_config
+                WHERE org_id = $1
+                """,
+                org_id,
+            )
+            if row is None:
+                cfg_id = str(ULID())
+                await conn.execute(
+                    "INSERT INTO sharing_config (id, org_id) VALUES ($1, $2) "
+                    "ON CONFLICT (org_id) DO NOTHING",
+                    cfg_id,
+                    org_id,
+                )
+                return SharingConfigData(
+                    enabled=False,
+                    human_review_enabled=False,
+                    rate_limit_per_hour=100,
+                    volume_alert_threshold=1000,
+                    updated_at=None,
+                )
+        return SharingConfigData(
+            enabled=bool(row["enabled"]),
+            human_review_enabled=bool(row["human_review_enabled"]),
+            rate_limit_per_hour=int(row["rate_limit_per_hour"]),
+            volume_alert_threshold=int(row["volume_alert_threshold"]),
+            updated_at=row["updated_at"],
+        )
 
     async def update_sharing_config(
         self, org_id: str, patch: "SharingConfigPatch",
     ) -> "SharingConfigData":
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT id FROM sharing_config WHERE org_id = $1", org_id,
+            )
+            if existing is None:
+                await conn.execute(
+                    "INSERT INTO sharing_config (id, org_id) VALUES ($1, $2)",
+                    str(ULID()),
+                    org_id,
+                )
+
+            set_parts = ["updated_at = now()"]
+            params: list[Any] = [org_id]
+            for field_name in (
+                "enabled",
+                "human_review_enabled",
+                "rate_limit_per_hour",
+                "volume_alert_threshold",
+            ):
+                val = getattr(patch, field_name)
+                if val is not None:
+                    params.append(val)
+                    set_parts.append(f"{field_name} = ${len(params)}")
+
+            row = await conn.fetchrow(
+                f"UPDATE sharing_config SET {', '.join(set_parts)} "
+                "WHERE org_id = $1 "
+                "RETURNING enabled, human_review_enabled, rate_limit_per_hour, "
+                "volume_alert_threshold, updated_at",
+                *params,
+            )
+        return SharingConfigData(
+            enabled=bool(row["enabled"]),
+            human_review_enabled=bool(row["human_review_enabled"]),
+            rate_limit_per_hour=int(row["rate_limit_per_hour"]),
+            volume_alert_threshold=int(row["volume_alert_threshold"]),
+            updated_at=row["updated_at"],
+        )
 
     async def list_agent_sharing_configs(
         self, org_id: str,
     ) -> "Sequence[AgentSharingConfigData]":
-        raise NotImplementedError
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT agent_id, enabled, categories, updated_at
+                FROM agent_sharing_config
+                WHERE org_id = $1
+                ORDER BY agent_id
+                """,
+                org_id,
+            )
+        results = []
+        for r in rows:
+            cats = r["categories"]
+            if isinstance(cats, str):
+                cats = json.loads(cats) if cats else []
+            results.append(
+                AgentSharingConfigData(
+                    agent_id=r["agent_id"],
+                    enabled=bool(r["enabled"]),
+                    categories=tuple(cats or ()),
+                    updated_at=r["updated_at"],
+                )
+            )
+        return tuple(results)
 
     async def upsert_agent_sharing_config(
         self,
@@ -3043,7 +3134,36 @@ class PostgresStore:
         enabled: bool,
         categories: "Sequence[str]",
     ) -> "AgentSharingConfigData":
-        raise NotImplementedError
+        now = datetime.now(timezone.utc)
+        cats_json = json.dumps(list(categories))
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO agent_sharing_config
+                    (id, org_id, agent_id, enabled, categories, updated_at)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+                ON CONFLICT (org_id, agent_id) DO UPDATE SET
+                    enabled = COALESCE($4, agent_sharing_config.enabled),
+                    categories = COALESCE($5::jsonb, agent_sharing_config.categories),
+                    updated_at = $6
+                RETURNING agent_id, enabled, categories, updated_at
+                """,
+                str(ULID()),
+                org_id,
+                agent_id,
+                enabled,
+                cats_json,
+                now,
+            )
+        cats = row["categories"]
+        if isinstance(cats, str):
+            cats = json.loads(cats) if cats else []
+        return AgentSharingConfigData(
+            agent_id=row["agent_id"],
+            enabled=bool(row["enabled"]),
+            categories=tuple(cats or ()),
+            updated_at=row["updated_at"],
+        )
 
     async def list_deny_rules(self, org_id: str) -> "Sequence[DenyListRuleData]":
         raise NotImplementedError
