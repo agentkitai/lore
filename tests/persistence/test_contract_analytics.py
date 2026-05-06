@@ -15,7 +15,6 @@ from ulid import ULID
 from lore.persistence import Store
 from lore.persistence.types import NewMemory, NewRetrievalEvent
 
-
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 

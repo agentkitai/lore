@@ -2,6 +2,7 @@
 """Tests for the retrieve service (without analytics — that's left at the route)."""
 
 from __future__ import annotations
+
 from unittest.mock import AsyncMock
 
 import pytest
@@ -10,8 +11,8 @@ from lore.services.memories import create_memory
 from lore.services.retrieve import (
     RetrieveOutput,
     bump_access_counts,
-    record_retrieval_event,
     recent_session_snapshots,
+    record_retrieval_event,
     retrieve,
 )
 
