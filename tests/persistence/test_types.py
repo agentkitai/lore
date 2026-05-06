@@ -10,6 +10,7 @@ from lore.persistence.types import (
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewConversationJob,
     NewEntity,
     NewMember,
     NewMemory,
@@ -26,6 +27,7 @@ from lore.persistence.types import (
     ResolvedProfile,
     ScoredMemory,
     StoredApiKey,
+    StoredConversationJob,
     StoredEntity,
     StoredMember,
     StoredMemory,
@@ -1196,3 +1198,161 @@ def test_new_recommendation_feedback_slots():
         feedback="positive",
     )
     assert not hasattr(nrf, "__dict__")
+
+
+# ── NewConversationJob ────────────────────────────────────────────
+
+
+def test_new_conversation_job_defaults():
+    ncj = NewConversationJob(
+        org_id="org_1",
+        message_count=3,
+        messages_json='[{"role":"user","content":"hello"}]',
+    )
+    assert ncj.org_id == "org_1"
+    assert ncj.message_count == 3
+    assert ncj.messages_json == '[{"role":"user","content":"hello"}]'
+    assert ncj.user_id is None
+    assert ncj.session_id is None
+    assert ncj.project is None
+
+
+def test_new_conversation_job_all_fields():
+    ncj = NewConversationJob(
+        org_id="org_2",
+        message_count=5,
+        messages_json='[{"role":"assistant","content":"hi"}]',
+        user_id="usr_01",
+        session_id="sess_01",
+        project="proj_alpha",
+    )
+    assert ncj.user_id == "usr_01"
+    assert ncj.session_id == "sess_01"
+    assert ncj.project == "proj_alpha"
+
+
+def test_new_conversation_job_frozen():
+    ncj = NewConversationJob(
+        org_id="org_1",
+        message_count=1,
+        messages_json="[]",
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        ncj.org_id = "other"  # type: ignore[misc]
+
+
+def test_new_conversation_job_slots():
+    ncj = NewConversationJob(
+        org_id="org_1",
+        message_count=1,
+        messages_json="[]",
+    )
+    assert not hasattr(ncj, "__dict__")
+
+
+# ── StoredConversationJob ─────────────────────────────────────────
+
+
+def test_stored_conversation_job_all_fields():
+    now = datetime.now(timezone.utc)
+    scj = StoredConversationJob(
+        id="conv_01",
+        org_id="org_1",
+        status="completed",
+        message_count=4,
+        messages_json='[{"role":"user","content":"hello"}]',
+        user_id="usr_01",
+        session_id="sess_01",
+        project="proj_alpha",
+        memory_ids=["mem_01", "mem_02"],
+        memories_extracted=2,
+        duplicates_skipped=1,
+        error=None,
+        processing_time_ms=42,
+        created_at=now,
+        completed_at=now,
+    )
+    assert scj.id == "conv_01"
+    assert scj.org_id == "org_1"
+    assert scj.status == "completed"
+    assert scj.message_count == 4
+    assert scj.user_id == "usr_01"
+    assert scj.session_id == "sess_01"
+    assert scj.project == "proj_alpha"
+    assert list(scj.memory_ids) == ["mem_01", "mem_02"]
+    assert scj.memories_extracted == 2
+    assert scj.duplicates_skipped == 1
+    assert scj.error is None
+    assert scj.processing_time_ms == 42
+    assert scj.completed_at == now
+
+
+def test_stored_conversation_job_optional_nulls():
+    now = datetime.now(timezone.utc)
+    scj = StoredConversationJob(
+        id="conv_02",
+        org_id="org_2",
+        status="pending",
+        message_count=2,
+        messages_json="[]",
+        user_id=None,
+        session_id=None,
+        project=None,
+        memory_ids=[],
+        memories_extracted=0,
+        duplicates_skipped=0,
+        error=None,
+        processing_time_ms=0,
+        created_at=now,
+        completed_at=None,
+    )
+    assert scj.user_id is None
+    assert scj.session_id is None
+    assert scj.project is None
+    assert scj.error is None
+    assert scj.completed_at is None
+
+
+def test_stored_conversation_job_frozen():
+    now = datetime.now(timezone.utc)
+    scj = StoredConversationJob(
+        id="conv_03",
+        org_id="org_1",
+        status="pending",
+        message_count=1,
+        messages_json="[]",
+        user_id=None,
+        session_id=None,
+        project=None,
+        memory_ids=[],
+        memories_extracted=0,
+        duplicates_skipped=0,
+        error=None,
+        processing_time_ms=0,
+        created_at=now,
+        completed_at=None,
+    )
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        scj.status = "completed"  # type: ignore[misc]
+
+
+def test_stored_conversation_job_slots():
+    now = datetime.now(timezone.utc)
+    scj = StoredConversationJob(
+        id="conv_04",
+        org_id="org_1",
+        status="pending",
+        message_count=1,
+        messages_json="[]",
+        user_id=None,
+        session_id=None,
+        project=None,
+        memory_ids=[],
+        memories_extracted=0,
+        duplicates_skipped=0,
+        error=None,
+        processing_time_ms=0,
+        created_at=now,
+        completed_at=None,
+    )
+    assert not hasattr(scj, "__dict__")
