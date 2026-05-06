@@ -6,27 +6,24 @@ import logging
 from typing import Any, Dict, List, Optional
 
 try:
-    from fastapi import APIRouter, Depends, HTTPException
+    from fastapi import APIRouter, Depends, HTTPException, Response
 except ImportError:
     raise ImportError("FastAPI is required.")
 
 from pydantic import BaseModel
 
+from lore.persistence import Store, StoredMember, StoredWorkspace, WorkspacePatch
+from lore.persistence.exceptions import IntegrityError, StoreNotFoundError
 from lore.server.auth import AuthContext, get_auth_context, require_role
-from lore.server.db import get_pool
+from lore.server.db import get_store
+from lore.services import workspaces as workspaces_service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/workspaces", tags=["workspaces"])
 
-# Workspace-level role hierarchy: viewer < member < admin < owner
-WORKSPACE_ROLES = ("viewer", "member", "admin", "owner")
-_ROLE_RANK = {r: i for i, r in enumerate(WORKSPACE_ROLES)}
 
-
-def _has_ws_permission(role: str, minimum: str) -> bool:
-    """Check if *role* meets the *minimum* required workspace role."""
-    return _ROLE_RANK.get(role, -1) >= _ROLE_RANK.get(minimum, 999)
+# ── Request / response models ─────────────────────────────────────
 
 
 class WorkspaceCreateRequest(BaseModel):
@@ -55,6 +52,10 @@ class MemberAddRequest(BaseModel):
     role: str = "member"
 
 
+class MemberRoleUpdateRequest(BaseModel):
+    role: str = "member"
+
+
 class MemberResponse(BaseModel):
     id: str
     workspace_id: str
@@ -64,114 +65,97 @@ class MemberResponse(BaseModel):
     accepted_at: Optional[str] = None
 
 
-def _ts(val) -> Optional[str]:
-    if val is None:
-        return None
-    from datetime import datetime
-    if isinstance(val, datetime):
-        return val.isoformat()
-    return str(val)
+# ── Serialisation helpers ─────────────────────────────────────────
+
+
+def _to_workspace_response(w: StoredWorkspace) -> WorkspaceResponse:
+    return WorkspaceResponse(
+        id=w.id,
+        org_id=w.org_id,
+        name=w.name,
+        slug=w.slug,
+        settings=dict(w.settings),
+        created_at=w.created_at.isoformat() if w.created_at else None,
+        archived_at=w.archived_at.isoformat() if w.archived_at else None,
+    )
+
+
+def _to_member_response(m: StoredMember) -> MemberResponse:
+    return MemberResponse(
+        id=m.id,
+        workspace_id=m.workspace_id,
+        user_id=m.user_id,
+        role=m.role,
+        invited_at=m.invited_at.isoformat() if m.invited_at else None,
+        accepted_at=m.accepted_at.isoformat() if m.accepted_at else None,
+    )
+
+
+def _patch_from_update_body(body: WorkspaceUpdateRequest) -> WorkspacePatch:
+    return WorkspacePatch(name=body.name, settings=body.settings)
+
+
+# ── Handlers ──────────────────────────────────────────────────────
 
 
 @router.post("", response_model=WorkspaceResponse, status_code=201)
 async def create_workspace(
     body: WorkspaceCreateRequest,
     auth: AuthContext = Depends(require_role("admin")),
+    store: Store = Depends(get_store),
 ) -> WorkspaceResponse:
-    from ulid import ULID
-    ws_id = str(ULID())
-    import json
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        try:
-            row = await conn.fetchrow(
-                """INSERT INTO workspaces (id, org_id, name, slug, settings)
-                   VALUES ($1, $2, $3, $4, $5::jsonb) RETURNING *""",
-                ws_id, auth.org_id, body.name, body.slug,
-                json.dumps(body.settings),
-            )
-        except Exception as e:
-            if "unique" in str(e).lower():
-                raise HTTPException(409, f"Workspace slug '{body.slug}' already exists")
-            raise
-    return WorkspaceResponse(
-        id=row["id"], org_id=row["org_id"], name=row["name"],
-        slug=row["slug"], settings=row["settings"] or {},
-        created_at=_ts(row["created_at"]),
-    )
+    try:
+        ws = await workspaces_service.create_workspace(
+            store,
+            org_id=auth.org_id,
+            name=body.name,
+            slug=body.slug,
+            settings=body.settings,
+        )
+    except IntegrityError:
+        raise HTTPException(409, f"Workspace slug '{body.slug}' already exists")
+    return _to_workspace_response(ws)
 
 
 @router.get("", response_model=List[WorkspaceResponse])
 async def list_workspaces(
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> List[WorkspaceResponse]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM workspaces WHERE org_id = $1 AND archived_at IS NULL ORDER BY name",
-            auth.org_id,
-        )
-    return [
-        WorkspaceResponse(
-            id=r["id"], org_id=r["org_id"], name=r["name"],
-            slug=r["slug"], settings=r["settings"] or {},
-            created_at=_ts(r["created_at"]),
-        )
-        for r in rows
-    ]
+    workspaces = await workspaces_service.list_workspaces(store, auth.org_id)
+    return [_to_workspace_response(w) for w in workspaces]
 
 
 @router.get("/{workspace_id}", response_model=WorkspaceResponse)
 async def get_workspace(
     workspace_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> WorkspaceResponse:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT * FROM workspaces WHERE id = $1 AND org_id = $2",
-            workspace_id, auth.org_id,
-        )
-    if not row:
+    try:
+        ws = await workspaces_service.get_workspace(store, workspace_id, auth.org_id)
+    except StoreNotFoundError:
         raise HTTPException(404, "Workspace not found")
-    return WorkspaceResponse(
-        id=row["id"], org_id=row["org_id"], name=row["name"],
-        slug=row["slug"], settings=row["settings"] or {},
-        created_at=_ts(row["created_at"]),
-        archived_at=_ts(row["archived_at"]),
-    )
+    return _to_workspace_response(ws)
 
 
 @router.patch("/{workspace_id}", response_model=WorkspaceResponse)
 async def update_workspace(
     workspace_id: str,
-    body: Dict[str, Any],
+    body: WorkspaceUpdateRequest,
     auth: AuthContext = Depends(require_role("admin")),
+    store: Store = Depends(get_store),
 ) -> WorkspaceResponse:
-    import json
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        updates = []
-        params: list = [workspace_id, auth.org_id]
-        if "name" in body:
-            params.append(body["name"])
-            updates.append(f"name = ${len(params)}")
-        if "settings" in body:
-            params.append(json.dumps(body["settings"]))
-            updates.append(f"settings = ${len(params)}::jsonb")
-        if not updates:
-            raise HTTPException(400, "No fields to update")
-        row = await conn.fetchrow(
-            f"UPDATE workspaces SET {', '.join(updates)} WHERE id = $1 AND org_id = $2 RETURNING *",
-            *params,
-        )
-    if not row:
+    patch = _patch_from_update_body(body)
+    try:
+        ws = await workspaces_service.update_workspace(store, workspace_id, auth.org_id, patch)
+    except StoreNotFoundError:
         raise HTTPException(404, "Workspace not found")
-    return WorkspaceResponse(
-        id=row["id"], org_id=row["org_id"], name=row["name"],
-        slug=row["slug"], settings=row["settings"] or {},
-        created_at=_ts(row["created_at"]),
-    )
+    except ValueError as exc:
+        if "empty patch" in str(exc).lower():
+            raise HTTPException(400, str(exc))
+        raise
+    return _to_workspace_response(ws)
 
 
 @router.put("/{workspace_id}", response_model=WorkspaceResponse)
@@ -179,40 +163,35 @@ async def replace_workspace(
     workspace_id: str,
     body: WorkspaceUpdateRequest,
     auth: AuthContext = Depends(require_role("admin")),
+    store: Store = Depends(get_store),
 ) -> WorkspaceResponse:
     """Full update of workspace fields (name and settings)."""
-    import json
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """UPDATE workspaces SET name = COALESCE($3, name),
-                      settings = COALESCE($4::jsonb, settings)
-               WHERE id = $1 AND org_id = $2 RETURNING *""",
-            workspace_id, auth.org_id,
-            body.name, json.dumps(body.settings) if body.settings is not None else None,
+    try:
+        ws = await workspaces_service.replace_workspace(
+            store,
+            workspace_id,
+            auth.org_id,
+            name=body.name,
+            settings=body.settings,
         )
-    if not row:
+    except StoreNotFoundError:
         raise HTTPException(404, "Workspace not found")
-    return WorkspaceResponse(
-        id=row["id"], org_id=row["org_id"], name=row["name"],
-        slug=row["slug"], settings=row["settings"] or {},
-        created_at=_ts(row["created_at"]),
-    )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _to_workspace_response(ws)
 
 
 @router.delete("/{workspace_id}", status_code=204)
 async def archive_workspace(
     workspace_id: str,
     auth: AuthContext = Depends(require_role("admin")),
-) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            "UPDATE workspaces SET archived_at = now() WHERE id = $1 AND org_id = $2",
-            workspace_id, auth.org_id,
-        )
-        if result == "UPDATE 0":
-            raise HTTPException(404, "Workspace not found")
+    store: Store = Depends(get_store),
+) -> Response:
+    try:
+        await workspaces_service.archive_workspace(store, workspace_id, auth.org_id)
+    except StoreNotFoundError:
+        raise HTTPException(404, "Workspace not found")
+    return Response(status_code=204)
 
 
 @router.post("/{workspace_id}/members", response_model=MemberResponse, status_code=201)
@@ -220,72 +199,59 @@ async def add_member(
     workspace_id: str,
     body: MemberAddRequest,
     auth: AuthContext = Depends(require_role("admin")),
+    store: Store = Depends(get_store),
 ) -> MemberResponse:
-    if body.role not in WORKSPACE_ROLES:
-        raise HTTPException(
-            400,
-            f"Invalid role '{body.role}'. Must be one of: {', '.join(WORKSPACE_ROLES)}",
+    try:
+        member = await workspaces_service.add_member(
+            store,
+            workspace_id,
+            auth.org_id,
+            user_id=body.user_id,
+            role=body.role,
         )
-    from ulid import ULID
-    member_id = str(ULID())
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """INSERT INTO workspace_members (id, workspace_id, user_id, role)
-               VALUES ($1, $2, $3, $4) RETURNING *""",
-            member_id, workspace_id, body.user_id, body.role,
-        )
-    return MemberResponse(
-        id=row["id"], workspace_id=row["workspace_id"],
-        user_id=row["user_id"], role=row["role"],
-        invited_at=_ts(row["invited_at"]),
-    )
+    except StoreNotFoundError:
+        raise HTTPException(404, "Workspace not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except IntegrityError:
+        raise HTTPException(409, "Member already exists")
+    return _to_member_response(member)
 
 
 @router.get("/{workspace_id}/members", response_model=List[MemberResponse])
 async def list_members(
     workspace_id: str,
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> List[MemberResponse]:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(
-            "SELECT * FROM workspace_members WHERE workspace_id = $1",
-            workspace_id,
-        )
-    return [
-        MemberResponse(
-            id=r["id"], workspace_id=r["workspace_id"],
-            user_id=r["user_id"], role=r["role"],
-            invited_at=_ts(r["invited_at"]),
-            accepted_at=_ts(r["accepted_at"]),
-        )
-        for r in rows
-    ]
+    try:
+        members = await workspaces_service.list_members(store, workspace_id, auth.org_id)
+    except StoreNotFoundError:
+        raise HTTPException(404, "Workspace not found")
+    return [_to_member_response(m) for m in members]
 
 
 @router.patch("/{workspace_id}/members/{user_id}")
 async def update_member_role(
     workspace_id: str,
     user_id: str,
-    body: Dict[str, str],
+    body: MemberRoleUpdateRequest,
     auth: AuthContext = Depends(require_role("admin")),
-) -> Dict[str, str]:
-    new_role = body.get("role", "member")
-    if new_role not in WORKSPACE_ROLES:
-        raise HTTPException(
-            400,
-            f"Invalid role '{new_role}'. Must be one of: {', '.join(WORKSPACE_ROLES)}",
+    store: Store = Depends(get_store),
+) -> MemberResponse:
+    try:
+        member = await workspaces_service.update_member_role(
+            store,
+            workspace_id,
+            auth.org_id,
+            user_id=user_id,
+            role=body.role,
         )
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            "UPDATE workspace_members SET role = $1 WHERE workspace_id = $2 AND user_id = $3",
-            new_role, workspace_id, user_id,
-        )
-        if result == "UPDATE 0":
-            raise HTTPException(404, "Member not found")
-    return {"status": "updated", "role": new_role}
+    except StoreNotFoundError:
+        raise HTTPException(404, "Member not found")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return _to_member_response(member)
 
 
 @router.delete("/{workspace_id}/members/{user_id}", status_code=204)
@@ -293,12 +259,15 @@ async def remove_member(
     workspace_id: str,
     user_id: str,
     auth: AuthContext = Depends(require_role("admin")),
-) -> None:
-    pool = await get_pool()
-    async with pool.acquire() as conn:
-        result = await conn.execute(
-            "DELETE FROM workspace_members WHERE workspace_id = $1 AND user_id = $2",
-            workspace_id, user_id,
+    store: Store = Depends(get_store),
+) -> Response:
+    try:
+        await workspaces_service.remove_member(
+            store,
+            workspace_id,
+            auth.org_id,
+            user_id=user_id,
         )
-        if result == "DELETE 0":
-            raise HTTPException(404, "Member not found")
+    except StoreNotFoundError:
+        raise HTTPException(404, "Member not found")
+    return Response(status_code=204)
