@@ -15,6 +15,7 @@ from lore.persistence.types import (
     GraphStats,
     MemoryFilter,
     MemoryPatch,
+    NewApiKey,
     NewEntity,
     NewMemory,
     NewMember,
@@ -26,6 +27,7 @@ from lore.persistence.types import (
     ProfilePatch,
     RecallParams,
     ScoredMemory,
+    StoredApiKey,
     StoredEntity,
     StoredMember,
     StoredMemory,
@@ -342,4 +344,26 @@ class Store(Protocol):
 
     async def remove_workspace_member(self, workspace_id: str, user_id: str) -> bool:
         """Remove a member from a workspace; returns True if a row was deleted."""
+        ...
+
+    # ── AuthOps ──────────────────────────────────────────────────────
+
+    async def get_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        """Return an API key by id, or None if absent."""
+        ...
+
+    async def list_api_keys(self, org_id: str) -> Sequence[StoredApiKey]:
+        """List all API keys for an org, ordered by created_at DESC."""
+        ...
+
+    async def create_api_key(self, key: NewApiKey) -> StoredApiKey:
+        """Insert a new API key; returns the stored row with server-generated id/timestamps."""
+        ...
+
+    async def revoke_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        """Revoke an API key; returns the updated row, or None if absent."""
+        ...
+
+    async def count_active_root_keys(self, org_id: str) -> int:
+        """Count active (non-revoked) root-level API keys for an org."""
         ...
