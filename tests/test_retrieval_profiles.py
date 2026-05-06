@@ -4,36 +4,57 @@ from __future__ import annotations
 
 
 class TestProfileCache:
+    """Cache behaviour now lives in lore.services.profiles."""
+
+    def _make_resolved(self, name: str = "test"):
+        from lore.persistence import ResolvedProfile
+        return ResolvedProfile(
+            name=name,
+            source="default",
+            semantic_weight=1.0,
+            graph_weight=1.0,
+            recency_bias=30.0,
+            min_score=0.3,
+            max_results=10,
+            tier_filters=None,
+            k=None,
+            threshold=None,
+            rerank=False,
+            include_graph=True,
+        )
+
     def test_get_cached_returns_none_when_empty(self):
-        from lore.server.routes.profiles import _get_cached_profile, _profile_cache
-        _profile_cache.clear()
-        assert _get_cached_profile("nonexistent") is None
+        from lore.services.profiles import _cache_clear, _cache_get
+        _cache_clear()
+        assert _cache_get("nonexistent") is None
 
     def test_set_and_get_cached(self):
-        from lore.server.routes.profiles import _get_cached_profile, _profile_cache, _set_cached_profile
-        _profile_cache.clear()
-        profile = {"name": "test", "semantic_weight": 1.0}
-        _set_cached_profile("org:test", profile)
-        cached = _get_cached_profile("org:test")
+        from lore.services.profiles import _cache_clear, _cache_get, _cache_set
+        _cache_clear()
+        profile = self._make_resolved("test")
+        _cache_set("org:test", profile)
+        cached = _cache_get("org:test")
         assert cached is not None
-        assert cached["name"] == "test"
+        assert cached.name == "test"
 
     def test_cache_ttl_expires(self):
         import time as _time
 
-        from lore.server.routes.profiles import (
+        from lore.services.profiles import (
             _PROFILE_CACHE_TTL,
-            _get_cached_profile,
+            _cache_clear,
+            _cache_get,
+            _cache_set,
             _profile_cache,
-            _set_cached_profile,
         )
-        _profile_cache.clear()
-        _set_cached_profile("org:expire", {"name": "expire"})
+        _cache_clear()
+        profile = self._make_resolved("expire")
+        _cache_set("org:expire", profile)
         # Manually expire the entry
         key = "org:expire"
         old_val, _ = _profile_cache[key]
         _profile_cache[key] = (old_val, _time.monotonic() - _PROFILE_CACHE_TTL - 1)
-        assert _get_cached_profile(key) is None
+        assert _cache_get(key) is None
 
 
 class TestProfileModels:
