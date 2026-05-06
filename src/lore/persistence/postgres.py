@@ -2333,7 +2333,152 @@ class PostgresStore:
         days: int,
         project: Optional[str] = None,
     ) -> "RetrievalAnalyticsResult":
-        raise NotImplementedError("compute_retrieval_analytics implemented in T3")
+        from lore.persistence.types import (
+            DailyStatRow,
+            ScoreDistributionBucket,
+            TopQueryRow,
+        )
+
+        # Build shared WHERE clause (retrieval_events)
+        where_parts = ["org_id = $1", "created_at >= now() - make_interval(days => $2)"]
+        params: list[Any] = [org_id, days]
+
+        if project is not None:
+            params.append(project)
+            where_parts.append(f"project = ${len(params)}")
+
+        where_sql = " AND ".join(where_parts)
+
+        async with self._acquire() as conn:
+            # ── Summary stats ──────────────────────────────────────
+            summary = await conn.fetchrow(f"""
+                SELECT
+                    COUNT(*)::int AS total_queries,
+                    COUNT(*) FILTER (WHERE results_count > 0)::int AS queries_with_results,
+                    COUNT(*) FILTER (WHERE results_count = 0)::int AS queries_empty,
+                    AVG(results_count)::float AS avg_results,
+                    AVG(avg_score)::float AS avg_score,
+                    AVG(max_score)::float AS avg_max_score,
+                    AVG(query_time_ms)::float AS avg_latency_ms
+                FROM retrieval_events
+                WHERE {where_sql}
+            """, *params)
+
+            total = summary["total_queries"] or 0
+
+            # ── P95 latency ────────────────────────────────────────
+            p95_row = await conn.fetchrow(f"""
+                SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY query_time_ms) AS p95
+                FROM retrieval_events
+                WHERE {where_sql}
+            """, *params)
+            p95 = round(float(p95_row["p95"]), 2) if p95_row and p95_row["p95"] is not None else None
+
+            # ── Score distribution ─────────────────────────────────
+            score_dist_rows = await conn.fetch(f"""
+                SELECT bucket, COUNT(*)::int AS cnt
+                FROM (
+                    SELECT
+                        CASE
+                            WHEN s::float < 0.3 THEN '0.0-0.3'
+                            WHEN s::float < 0.5 THEN '0.3-0.5'
+                            WHEN s::float < 0.7 THEN '0.5-0.7'
+                            WHEN s::float < 0.9 THEN '0.7-0.9'
+                            ELSE '0.9-1.0'
+                        END AS bucket
+                    FROM retrieval_events,
+                         jsonb_array_elements_text(scores) AS s
+                    WHERE {where_sql}
+                ) sub
+                GROUP BY bucket
+                ORDER BY bucket
+            """, *params)
+
+            buckets_order = ["0.0-0.3", "0.3-0.5", "0.5-0.7", "0.7-0.9", "0.9-1.0"]
+            bucket_counts: dict[str, int] = {r["bucket"]: r["cnt"] for r in score_dist_rows}
+            score_distribution = [
+                ScoreDistributionBucket(bucket=b, count=bucket_counts.get(b, 0))
+                for b in buckets_order
+            ]
+
+            # ── Top queries ────────────────────────────────────────
+            top_rows = await conn.fetch(f"""
+                SELECT query, COUNT(*)::int AS cnt, AVG(avg_score)::float AS avg_s
+                FROM retrieval_events
+                WHERE {where_sql}
+                GROUP BY query
+                ORDER BY cnt DESC
+                LIMIT 10
+            """, *params)
+            top_queries = [
+                TopQueryRow(
+                    query=r["query"],
+                    count=r["cnt"],
+                    avg_score=round(r["avg_s"], 4) if r["avg_s"] else None,
+                )
+                for r in top_rows
+            ]
+
+            # ── Unique memories retrieved ──────────────────────────
+            unique_row = await conn.fetchrow(f"""
+                SELECT COUNT(DISTINCT mid)::int AS unique_count
+                FROM retrieval_events,
+                     jsonb_array_elements_text(memory_ids) AS mid
+                WHERE {where_sql}
+            """, *params)
+            unique_memories = unique_row["unique_count"] if unique_row else 0
+
+            # ── Total memories (no date filter) ───────────────────
+            mem_where_parts = ["org_id = $1"]
+            mem_params: list[Any] = [org_id]
+            if project is not None:
+                mem_params.append(project)
+                mem_where_parts.append(f"project = ${len(mem_params)}")
+            mem_where_sql = " AND ".join(mem_where_parts)
+
+            total_memories_row = await conn.fetchrow(
+                f"SELECT COUNT(*)::int AS total FROM memories WHERE {mem_where_sql}",
+                *mem_params,
+            )
+            total_memories = total_memories_row["total"] if total_memories_row else 0
+
+            # ── Daily stats ────────────────────────────────────────
+            daily_rows = await conn.fetch(f"""
+                SELECT
+                    created_at::date AS day,
+                    COUNT(*)::int AS queries,
+                    AVG(avg_score)::float AS avg_s,
+                    (COUNT(*) FILTER (WHERE results_count > 0))::float / GREATEST(COUNT(*), 1) AS hit_rate
+                FROM retrieval_events
+                WHERE {where_sql}
+                GROUP BY day
+                ORDER BY day DESC
+            """, *params)
+            daily_stats = [
+                DailyStatRow(
+                    date=str(r["day"]),
+                    queries=r["queries"],
+                    avg_score=round(r["avg_s"], 4) if r["avg_s"] else None,
+                    hit_rate=round(float(r["hit_rate"]), 4) if r["hit_rate"] is not None else 0.0,
+                )
+                for r in daily_rows
+            ]
+
+        return RetrievalAnalyticsResult(
+            total_queries=total,
+            queries_with_results=summary["queries_with_results"] or 0,
+            queries_empty=summary["queries_empty"] or 0,
+            avg_results_per_query=round(float(summary["avg_results"] or 0), 2),
+            avg_score=round(float(summary["avg_score"]), 4) if summary["avg_score"] else None,
+            avg_max_score=round(float(summary["avg_max_score"]), 4) if summary["avg_max_score"] else None,
+            avg_latency_ms=round(float(summary["avg_latency_ms"]), 2) if summary["avg_latency_ms"] else None,
+            p95_latency_ms=p95,
+            score_distribution=score_distribution,
+            top_queries=top_queries,
+            unique_memories_retrieved=unique_memories,
+            total_memories=total_memories,
+            daily_stats=daily_stats,
+        )
 
 
 class _BoundConn:
