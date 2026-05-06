@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import List, Optional
@@ -15,8 +14,10 @@ except ImportError:
 
 from pydantic import BaseModel
 
+from lore.persistence import StoredMemory
 from lore.server.auth import AuthContext, get_auth_context
-from lore.server.db import get_pool, get_store
+from lore.server.db import get_store
+from lore.services import retrieve as retrieve_service
 from lore.services.retrieve import retrieve as _retrieve_service
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,26 @@ _FORMATTERS = {
     "markdown": _format_markdown,
     "raw": _format_raw,
 }
+
+
+# ── Conversion helpers ─────────────────────────────────────────────
+
+
+def _stored_to_retrieve_memory(sm: StoredMemory) -> RetrieveMemory:
+    """Convert a persistence-layer StoredMemory to the route-layer RetrieveMemory."""
+    tags = list(sm.tags or [])
+    created_at = sm.created_at.isoformat() if hasattr(sm.created_at, "isoformat") else str(sm.created_at or "")
+    return RetrieveMemory(
+        id=sm.id,
+        content=f"[Session Context] {sm.content}",
+        type=(sm.meta or {}).get("type", "session_snapshot"),
+        tier=(sm.meta or {}).get("tier", "long"),
+        score=0.0,
+        created_at=created_at,
+        source=sm.source,
+        project=sm.project,
+        tags=tags,
+    )
 
 
 # ── Route ──────────────────────────────────────────────────────────
@@ -198,11 +219,11 @@ async def retrieve(
     session_memories: List[RetrieveMemory] = []
     if include_session_context:
         existing_ids = {m.id for m in memories}
-        session_memories = await _fetch_session_snapshots(
-            auth=auth,
-            effective_project=effective_project,
-            exclude_ids=existing_ids,
+        session_stored = await retrieve_service.recent_session_snapshots(
+            store, org_id=auth.org_id, project=effective_project,
+            exclude_ids=tuple(existing_ids), limit=3,
         )
+        session_memories = [_stored_to_retrieve_memory(sm) for sm in session_stored]
         memories.extend(session_memories)
 
     # Re-format if session memories were appended (otherwise out.formatted is fine)
@@ -215,19 +236,23 @@ async def retrieve(
     elapsed_ms = round((time.monotonic() - start) * 1000, 2)
 
     # Fire-and-forget: record analytics event and update Prometheus metrics
-    asyncio.create_task(_record_retrieval_event(
-        auth=auth,
+    asyncio.create_task(retrieve_service.record_retrieval_event(
+        store,
+        org_id=auth.org_id,
         query_text=query,
-        memories=memories,
+        memory_ids=[m.id for m in memories],
+        scores=[m.score for m in memories],
         min_score=min_score,
         elapsed_ms=elapsed_ms,
         fmt=format,
-        effective_project=effective_project,
+        project=effective_project,
     ))
 
     # Fire-and-forget: bump access_count + recalculate importance for returned memories
     if memories:
-        asyncio.create_task(_bump_access_counts(auth.org_id, [m.id for m in memories]))
+        asyncio.create_task(retrieve_service.bump_access_counts(
+            store, auth.org_id, [m.id for m in memories],
+        ))
 
     return RetrieveResponse(
         memories=memories,
@@ -235,152 +260,3 @@ async def retrieve(
         count=len(memories),
         query_time_ms=elapsed_ms,
     )
-
-
-async def _record_retrieval_event(
-    *,
-    auth: AuthContext,
-    query_text: str,
-    memories: List[RetrieveMemory],
-    min_score: float,
-    elapsed_ms: float,
-    fmt: str,
-    effective_project: Optional[str],
-) -> None:
-    """Insert a retrieval_events row and update Prometheus metrics (fire-and-forget)."""
-    try:
-        from lore.server.metrics import (
-            retrieve_empty_total,
-            retrieve_latency,
-            retrieve_max_score,
-            retrieve_queries_total,
-            retrieve_results_total,
-        )
-
-        # Prometheus metrics
-        retrieve_queries_total.inc()
-        retrieve_results_total.inc(amount=float(len(memories)))
-        if not memories:
-            retrieve_empty_total.inc()
-        retrieve_latency.observe(elapsed_ms / 1000.0)
-
-        scores = [m.score for m in memories]
-        max_sc = max(scores) if scores else 0.0
-        if scores:
-            retrieve_max_score.observe(max_sc)
-
-        avg_sc = sum(scores) / len(scores) if scores else None
-        memory_ids = [m.id for m in memories]
-
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """INSERT INTO retrieval_events
-                   (org_id, query, results_count, scores, avg_score, max_score,
-                    min_score_threshold, query_time_ms, project, format, memory_ids)
-                   VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11::jsonb)""",
-                auth.org_id,
-                query_text,
-                len(memories),
-                json.dumps(scores),
-                avg_sc,
-                max_sc if scores else None,
-                min_score,
-                elapsed_ms,
-                effective_project,
-                fmt,
-                json.dumps(memory_ids),
-            )
-    except Exception:
-        logger.warning("Failed to record retrieval event", exc_info=True)
-
-
-async def _bump_access_counts(org_id: str, memory_ids: List[str]) -> None:
-    """Bump access_count, last_accessed_at, and recalculate importance (fire-and-forget)."""
-    try:
-
-        from lore.server.db import get_pool
-
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            await conn.execute(
-                """UPDATE memories
-                   SET access_count = COALESCE(access_count, 0) + 1,
-                       last_accessed_at = now(),
-                       importance_score = COALESCE(confidence, 1.0)
-                           * GREATEST(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1)
-                           * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
-                   WHERE id = ANY($1) AND org_id = $2""",
-                memory_ids,
-                org_id,
-            )
-    except Exception:
-        logger.warning("Failed to bump access counts", exc_info=True)
-
-
-async def _fetch_session_snapshots(
-    *,
-    auth: AuthContext,
-    effective_project: Optional[str],
-    exclude_ids: set,
-    max_snapshots: int = 3,
-) -> List[RetrieveMemory]:
-    """Fetch recent session_snapshot memories from the last 24 hours."""
-    try:
-        where_parts: list[str] = ["org_id = $1"]
-        params: list = [auth.org_id]
-
-        if effective_project is not None:
-            params.append(effective_project)
-            where_parts.append(f"project = ${len(params)}")
-
-        where_parts.append("(expires_at IS NULL OR expires_at > now())")
-        where_parts.append("meta->>'type' = 'session_snapshot'")
-        where_parts.append("created_at > now() - interval '24 hours'")
-
-        where_sql = " AND ".join(where_parts)
-
-        params.append(max_snapshots)
-        limit_idx = len(params)
-
-        sql = f"""
-            SELECT id, content,
-                   COALESCE(meta->>'type', 'unknown') AS type,
-                   COALESCE(meta->>'tier', 'long') AS tier,
-                   source, project, tags, created_at
-            FROM memories
-            WHERE {where_sql}
-            ORDER BY created_at DESC
-            LIMIT ${limit_idx}
-        """
-
-        pool = await get_pool()
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, *params)
-
-        result: List[RetrieveMemory] = []
-        for r in rows:
-            rd = dict(r)
-            if rd["id"] in exclude_ids:
-                continue
-            tags = rd.get("tags") or []
-            if isinstance(tags, str):
-                tags = json.loads(tags)
-            created_at = rd.get("created_at")
-            if hasattr(created_at, "isoformat"):
-                created_at = created_at.isoformat()
-            result.append(RetrieveMemory(
-                id=rd["id"],
-                content=f"[Session Context] {rd['content']}",
-                type=rd.get("type", "session_snapshot"),
-                tier=rd.get("tier", "long"),
-                score=0.0,
-                created_at=str(created_at or ""),
-                source=rd.get("source"),
-                project=rd.get("project"),
-                tags=tags,
-            ))
-        return result
-    except Exception:
-        logger.warning("Failed to fetch session snapshots", exc_info=True)
-        return []
