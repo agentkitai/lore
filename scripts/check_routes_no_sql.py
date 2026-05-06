@@ -16,10 +16,12 @@ MIGRATED_ROUTES = {
     "src/lore/server/routes/graph/memories.py",
     "src/lore/server/routes/graph/stats.py",
     "src/lore/server/routes/graph/topics.py",
+    "src/lore/server/routes/keys.py",
     "src/lore/server/routes/memories.py",
     "src/lore/server/routes/profiles.py",
     "src/lore/server/routes/retrieve.py",
     "src/lore/server/routes/review.py",
+    "src/lore/server/routes/workspaces.py",
 }
 
 FORBIDDEN_PATTERNS = [
