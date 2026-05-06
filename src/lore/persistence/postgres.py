@@ -1958,7 +1958,19 @@ class PostgresStore:
     async def mark_conversation_job_processing(
         self, job_id: str
     ) -> Optional[StoredConversationJob]:
-        raise NotImplementedError("mark_conversation_job_processing implemented in T4")
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE conversation_jobs SET status = 'processing'
+                WHERE id = $1
+                RETURNING id, org_id, status, message_count, messages_json,
+                          user_id, session_id, project, memory_ids,
+                          memories_extracted, duplicates_skipped, error,
+                          processing_time_ms, created_at, completed_at
+                """,
+                job_id,
+            )
+        return _row_to_conversation_job(row) if row else None
 
     async def complete_conversation_job(
         self,
@@ -1969,7 +1981,24 @@ class PostgresStore:
         duplicates_skipped: int,
         processing_time_ms: int,
     ) -> None:
-        raise NotImplementedError("complete_conversation_job implemented in T4")
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE conversation_jobs SET
+                    status = 'completed',
+                    memory_ids = $2,
+                    memories_extracted = $3,
+                    duplicates_skipped = $4,
+                    processing_time_ms = $5,
+                    completed_at = now()
+                WHERE id = $1
+                """,
+                job_id,
+                json.dumps(list(memory_ids)),
+                memories_extracted,
+                duplicates_skipped,
+                processing_time_ms,
+            )
 
     async def fail_conversation_job(
         self,
@@ -1978,7 +2007,20 @@ class PostgresStore:
         error: str,
         processing_time_ms: int,
     ) -> None:
-        raise NotImplementedError("fail_conversation_job implemented in T4")
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE conversation_jobs SET
+                    status = 'failed',
+                    error = $2,
+                    processing_time_ms = $3,
+                    completed_at = now()
+                WHERE id = $1
+                """,
+                job_id,
+                error,
+                processing_time_ms,
+            )
 
 
 class _BoundConn:

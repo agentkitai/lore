@@ -91,3 +91,110 @@ async def test_create_job_initial_memory_ids_empty(store: Store):
     )
     stored = await store.create_conversation_job(job)
     assert stored.memory_ids == ()
+
+
+# ── mark_conversation_job_processing ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_mark_processing_updates_status(store: Store):
+    job = NewConversationJob(
+        org_id="solo",
+        message_count=2,
+        messages_json="[]",
+    )
+    created = await store.create_conversation_job(job)
+
+    result = await store.mark_conversation_job_processing(created.id)
+
+    assert result is not None
+    assert result.status == "processing"
+    assert result.id == created.id
+    assert result.org_id == created.org_id
+    assert result.message_count == created.message_count
+
+
+@pytest.mark.asyncio
+async def test_mark_processing_returns_none_when_missing(store: Store):
+    result = await store.mark_conversation_job_processing("job_nonexistent")
+    assert result is None
+
+
+# ── complete_conversation_job ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_complete_job_sets_status_and_payload(store: Store):
+    job = NewConversationJob(
+        org_id="solo",
+        message_count=3,
+        messages_json="[]",
+    )
+    created = await store.create_conversation_job(job)
+    await store.mark_conversation_job_processing(created.id)
+
+    await store.complete_conversation_job(
+        created.id,
+        memory_ids=["m1", "m2"],
+        memories_extracted=2,
+        duplicates_skipped=1,
+        processing_time_ms=500,
+    )
+
+    fetched = await store.get_conversation_job(created.id, "solo")
+    assert fetched is not None
+    assert fetched.status == "completed"
+    assert fetched.memory_ids == ("m1", "m2")
+    assert fetched.memories_extracted == 2
+    assert fetched.duplicates_skipped == 1
+    assert fetched.processing_time_ms == 500
+    assert fetched.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_complete_job_silent_on_missing_id(store: Store):
+    # Should not raise
+    await store.complete_conversation_job(
+        "job_nonexistent",
+        memory_ids=[],
+        memories_extracted=0,
+        duplicates_skipped=0,
+        processing_time_ms=0,
+    )
+
+
+# ── fail_conversation_job ──────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fail_job_sets_error_and_status(store: Store):
+    job = NewConversationJob(
+        org_id="solo",
+        message_count=1,
+        messages_json="[]",
+    )
+    created = await store.create_conversation_job(job)
+    await store.mark_conversation_job_processing(created.id)
+
+    await store.fail_conversation_job(
+        created.id,
+        error="oops",
+        processing_time_ms=42,
+    )
+
+    fetched = await store.get_conversation_job(created.id, "solo")
+    assert fetched is not None
+    assert fetched.status == "failed"
+    assert fetched.error == "oops"
+    assert fetched.processing_time_ms == 42
+    assert fetched.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_fail_job_silent_on_missing_id(store: Store):
+    # Should not raise
+    await store.fail_conversation_job(
+        "job_nonexistent",
+        error="irrelevant",
+        processing_time_ms=0,
+    )
