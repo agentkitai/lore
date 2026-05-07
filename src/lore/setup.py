@@ -12,6 +12,48 @@ from typing import Optional
 
 # ── Hook script templates ──────────────────────────────────────────
 
+# Shared bash preamble — included verbatim at the top of every bash
+# hook. If /health responds in <0.5s the server is up and we proceed;
+# otherwise spawn `lore serve --idle-timeout $LORE_IDLE_TIMEOUT` as a
+# fully detached background process and poll /health for up to ~3s. If
+# the spawn or bind fails, the helper returns 1 and the calling hook
+# fails-open (exit 0) — never blocks the agent.
+#
+# Tunables (set in the user's shell profile):
+#   LORE_API_URL          server URL (default: http://127.0.0.1:8765)
+#   LORE_IDLE_TIMEOUT     seconds before the spawned server self-exits
+#                         (default: 3600 — 1h). Pass 0 to disable.
+#   LORE_NO_AUTOSTART     if "true", skip the spawn (manual control).
+#
+# The literal {{ / }} doubling is required so this string survives the
+# .format(server_url=..., api_key=...) call in setup_*; the rendered
+# output is plain bash that we validate with `bash -n`.
+ENSURE_SERVER_BASH = """\
+_lore_ensure_server() {{
+    local url="${{LORE_API_URL:-http://127.0.0.1:8765}}"
+    if curl -sf -o /dev/null --max-time 0.5 "$url/health" 2>/dev/null; then
+        return 0
+    fi
+    if [ "${{LORE_NO_AUTOSTART:-}}" = "true" ]; then
+        return 1
+    fi
+    if ! command -v lore >/dev/null 2>&1; then
+        return 1
+    fi
+    nohup lore serve --port 8765 --idle-timeout "${{LORE_IDLE_TIMEOUT:-3600}}" \\
+        > /tmp/lore-serve.log 2>&1 & disown
+    local i
+    for i in 1 2 3 4 5 6; do
+        if curl -sf -o /dev/null --max-time 0.3 "$url/health" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}}
+"""
+
+
 CLAUDE_CODE_HOOK_SCRIPT = """\
 #!/usr/bin/env python3
 # Lore auto-retrieval hook for Claude Code
@@ -39,12 +81,57 @@ CLAUDE_CODE_HOOK_SCRIPT = """\
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.parse
 import urllib.request
 
 DEFAULT_API_URL = "{server_url}"
 DEFAULT_API_KEY = "{api_key}"
+
+# Lazy-server bash preamble: written inline so we don't depend on
+# anything outside the hook script. Spawns `lore serve` if /health is
+# unreachable, polls until it's up, and exits 0 fail-open if it can't.
+_ENSURE_SERVER_BASH = r\"\"\"
+_lore_ensure_server() {{
+    local url="${{LORE_API_URL:-http://127.0.0.1:8765}}"
+    if curl -sf -o /dev/null --max-time 0.5 "$url/health" 2>/dev/null; then
+        return 0
+    fi
+    if [ "${{LORE_NO_AUTOSTART:-}}" = "true" ]; then
+        return 1
+    fi
+    if ! command -v lore >/dev/null 2>&1; then
+        return 1
+    fi
+    nohup lore serve --port 8765 --idle-timeout "${{LORE_IDLE_TIMEOUT:-3600}}" \\
+        > /tmp/lore-serve.log 2>&1 & disown
+    local i
+    for i in 1 2 3 4 5 6; do
+        if curl -sf -o /dev/null --max-time 0.3 "$url/health" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}}
+_lore_ensure_server
+\"\"\"
+
+
+def _ensure_server_running():
+    \"\"\"Run the bash preamble; if it returns non-zero, exit 0 (fail-open).\"\"\"
+    try:
+        rc = subprocess.run(
+            ["bash", "-c", _ENSURE_SERVER_BASH],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        ).returncode
+    except (OSError, subprocess.SubprocessError):
+        sys.exit(0)
+    if rc != 0:
+        sys.exit(0)
 
 
 def _read_input():
@@ -215,6 +302,10 @@ def main():
     prompt = (inp.get("prompt") or inp.get("user_message") or "").strip()
     if len(prompt) < 10:
         return
+
+    # Lazy-server: if `lore serve` isn't up, spawn it and wait for /health.
+    # This exits 0 (fail-open) if spawning or binding fails.
+    _ensure_server_running()
 
     api_url = os.environ.get("LORE_API_URL") or DEFAULT_API_URL
     api_key = _api_key()
@@ -445,6 +536,12 @@ if [ -z "$INPUT" ]; then
     exit 0
 fi
 
+# Lazy-server: best-effort spawn `lore serve` if /health is unreachable.
+# The buffer-append path is purely local-disk so we proceed regardless,
+# but the spawn ensures any concurrent retrieve hook sees a warm server.
+{ensure_server_bash}
+_lore_ensure_server || true
+
 # Default skip list. Tools listed here are filtered out before being
 # appended to the buffer; their use surfaces indirectly via subsequent
 # Edit/Bash/Write events.
@@ -613,6 +710,14 @@ if [ -z "$INPUT" ]; then
     exit 0
 fi
 
+# Lazy-server: spawn `lore serve` if /health is unreachable. The Stop
+# capture-extract path itself talks to the local DB through the CLI,
+# but ensures the server is up so any concurrent retrieval/dream hooks
+# work — and so this hook's own bookkeeping (recent-memories prompt
+# context inside capture-extract) doesn't time out.
+{ensure_server_bash}
+_lore_ensure_server || true
+
 SESSION_ID="$(LORE_CAPTURE_INPUT="$INPUT" python3 -c '
 import json, os, sys
 try:
@@ -687,6 +792,12 @@ fi
 # Drain stdin so the Stop event payload doesn't backfill the pipe; we
 # don't actually need any of it for the trigger check.
 cat >/dev/null 2>&1 || true
+
+# Lazy-server: ensure `lore serve` is running so subsequent retrieval
+# hooks see a warm server. Best-effort — if it can't come up, dream
+# itself talks to the DB directly so we still proceed.
+{ensure_server_bash}
+_lore_ensure_server || true
 
 STATUS_JSON="$(lore dream --status --json 2>/dev/null)"
 if [ -z "$STATUS_JSON" ]; then
@@ -1042,6 +1153,19 @@ def _write_executable(path: Path, content: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
+def _render_ensure_server_bash() -> str:
+    """Pre-render the bash ensure-server preamble.
+
+    The shared template uses ``{{`` / ``}}`` doubling so it survives a
+    ``.format()`` call. We resolve those here so it can be safely
+    embedded into the outer hook templates as a literal value. The
+    inserted text contains NO unescaped ``{`` chars after this pass —
+    it's plain bash — so dropping it into another ``.format()`` won't
+    confuse the placeholder parser.
+    """
+    return ENSURE_SERVER_BASH.format()
+
+
 def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | None = None) -> None:
     """Install Lore hooks for Claude Code.
 
@@ -1072,6 +1196,8 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
             "`lore serve` once to auto-bootstrap ~/.lore/key.txt."
         )
 
+    ensure_server_bash = _render_ensure_server_bash()
+
     # ── 1. UserPromptSubmit retrieval hook (existing) ─────────────────
     retrieve_hook = _claude_hook_path()
     retrieve_script = CLAUDE_CODE_HOOK_SCRIPT.format(
@@ -1083,7 +1209,9 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
     # ── 2. PostToolUse auto-capture hook (Phase 6A) ───────────────────
     capture_tool_hook = _claude_capture_tool_hook_path()
     capture_tool_script = LORE_CAPTURE_TOOL_HOOK_SCRIPT.format(
-        server_url=server_url, api_key=api_key_val,
+        server_url=server_url,
+        api_key=api_key_val,
+        ensure_server_bash=ensure_server_bash,
     )
     _write_executable(capture_tool_hook, capture_tool_script)
     print(f"  Capture hook  (PostToolUse):       {capture_tool_hook}")
@@ -1091,7 +1219,9 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
     # ── 3. Stop auto-capture flush hook (Phase 6A) ────────────────────
     capture_stop_hook = _claude_capture_stop_hook_path()
     capture_stop_script = LORE_CAPTURE_STOP_HOOK_SCRIPT.format(
-        server_url=server_url, api_key=api_key_val,
+        server_url=server_url,
+        api_key=api_key_val,
+        ensure_server_bash=ensure_server_bash,
     )
     _write_executable(capture_stop_hook, capture_stop_script)
     print(f"  Capture hook  (Stop):              {capture_stop_hook}")
@@ -1099,7 +1229,9 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
     # ── 4. Dream trigger hook (Phase 6E) ──────────────────────────────
     # Wired alongside the capture-stop hook on the Stop event chain.
     dream_trigger_hook = _claude_dream_trigger_hook_path()
-    dream_trigger_script = LORE_DREAM_TRIGGER_HOOK_SCRIPT.format()
+    dream_trigger_script = LORE_DREAM_TRIGGER_HOOK_SCRIPT.format(
+        ensure_server_bash=ensure_server_bash,
+    )
     _write_executable(dream_trigger_hook, dream_trigger_script)
     print(f"  Dream hook    (Stop):              {dream_trigger_hook}")
 
