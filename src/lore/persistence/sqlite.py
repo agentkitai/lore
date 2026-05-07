@@ -785,7 +785,14 @@ class SqliteStore:
 
     @classmethod
     async def open(cls, database_url: str) -> "SqliteStore":
-        """Open a SqliteStore from a sqlite:// URL, applying migrations."""
+        """Open a SqliteStore from a sqlite:// URL, applying migrations.
+
+        Phase 3J: after migrations + vec0 init, bootstrap the solo org +
+        first API key on a fresh DB (skips when ``api_keys`` is already
+        populated; in-memory URLs skip entirely). The bootstrap is wrapped
+        in a try/except so a write failure (e.g. read-only FS for the
+        ``~/.lore/key.txt`` file) doesn't take down the open path.
+        """
         db_path = _resolve_db_path(database_url)
         if db_path != ":memory:":
             parent = Path(db_path).parent
@@ -795,6 +802,12 @@ class SqliteStore:
         store._owned_conn = await store._open_connection(db_path)
         await store._apply_migrations(store._owned_conn)
         await store._init_vec_tables(store._owned_conn)
+        # Bootstrap the solo org + first key on an empty DB.
+        from lore.persistence.bootstrap import bootstrap_solo_if_empty
+        try:
+            await bootstrap_solo_if_empty(store)
+        except Exception as exc:  # pragma: no cover - non-fatal
+            logger.warning("SqliteStore.open: bootstrap_solo_if_empty failed: %s", exc)
         return store
 
     @classmethod
