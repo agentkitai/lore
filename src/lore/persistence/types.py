@@ -780,6 +780,27 @@ class SharingStatsData:
 
 
 @dataclass(frozen=True, slots=True)
+class StoredSupersession:
+    """A single row from ``memory_supersessions`` (Phase 6F temporal reasoning).
+
+    Append-only audit log entry linking a memory to (optionally) the memory
+    that supersedes it. ``superseded_by IS None`` means an explicit
+    un-supersession (the memory is the current canonical one again).
+
+    The "is superseded?" question always reads the LATEST row by ``ts`` for
+    a given ``memory_id`` — see ``Store.is_superseded`` /
+    ``Store.are_superseded`` for the canonical query shape.
+    """
+
+    id: int
+    memory_id: str
+    superseded_by: Optional[str]
+    reason: Optional[str]
+    ts: datetime
+    agent: str
+
+
+@dataclass(frozen=True, slots=True)
 class NewDreamRun:
     """Insert payload for a new dream run.
 

@@ -380,6 +380,14 @@ def _build_prompt(
         "  - Skip anything similar to a memory already in the list above.\n"
         "  - Use complete sentences. Each item should make sense out of context.\n"
         "\n"
+        "Corrections / supersessions (Phase 6F):\n"
+        "  If you see a correction in the conversation (e.g. \"actually X is Y\n"
+        "  now\", \"we changed our approach\", \"I no longer prefer X\"), prefer\n"
+        "  mcp__lore__supersede(old_memory_id, new_memory_id, reason) over\n"
+        "  mcp__lore__forget(old_memory_id). Use mcp__lore__recall(query=topic)\n"
+        "  to find the old memory's id first; record the new memory with\n"
+        "  remember/remember_observation, then call supersede with both ids.\n"
+        "\n"
         "After processing, return on its own line: PROCESSED_THROUGH_SEQ=<highest seq from buffer>\n"
     )
 

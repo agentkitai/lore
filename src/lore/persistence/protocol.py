@@ -64,6 +64,7 @@ from lore.persistence.types import (
     StoredSloAlert,
     StoredSloDefinition,
     StoredSnapshotMetadata,
+    StoredSupersession,
     StoredWorkspace,
     TimelineBucketRow,
     TimeseriesPoint,
@@ -176,6 +177,70 @@ class Store(Protocol):
         meta: Mapping[str, Any],
     ) -> bool:
         """Insert or update a memory row including its embedding vector; returns True if inserted, False if updated."""
+        ...
+
+    # ── SupersessionOps (Phase 6F) ───────────────────────────────────
+
+    async def record_supersession(
+        self,
+        memory_id: str,
+        *,
+        superseded_by: Optional[str],
+        reason: Optional[str],
+        agent: str = "auto",
+    ) -> None:
+        """Append a row to the ``memory_supersessions`` audit log.
+
+        ``superseded_by`` may be ``None`` to explicitly un-supersede a
+        previously-superseded memory; the row stays in the audit trail.
+        """
+        ...
+
+    async def is_superseded(
+        self,
+        memory_id: str,
+        *,
+        at: Optional[datetime] = None,
+    ) -> bool:
+        """True iff the memory's LATEST ``memory_supersessions`` row before ``at``
+        (default ``now``) has ``superseded_by IS NOT NULL``."""
+        ...
+
+    async def are_superseded(
+        self,
+        memory_ids: "set[str]",
+        *,
+        at: Optional[datetime] = None,
+    ) -> "set[str]":
+        """Batch helper: return the subset of ``memory_ids`` that are
+        superseded as of ``at`` (default ``now``).
+
+        Used by the hybrid-recall pipeline to score-suppress superseded
+        memories in a single round-trip.
+        """
+        ...
+
+    async def get_supersession_chain(
+        self,
+        memory_id: str,
+    ) -> Sequence[StoredSupersession]:
+        """Full audit trail for a memory, ordered oldest-first."""
+        ...
+
+    async def list_memories_at_time(
+        self,
+        org_id: str,
+        *,
+        at: datetime,
+        entity_name: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        """Memories created on or before ``at`` and not superseded as of ``at``.
+
+        Optional ``entity_name`` filters via ``entity_mentions``; optional
+        ``type_filter`` matches ``meta->>'type'``.
+        """
         ...
 
     # ── GraphOps ─────────────────────────────────────────────────────

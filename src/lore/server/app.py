@@ -56,6 +56,7 @@ from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
 from lore.server.routes.slo import router as slo_router
 from lore.server.routes.snapshots import router as snapshots_router
+from lore.server.routes.temporal import router as temporal_router
 from lore.server.routes.topics import router as topics_router
 from lore.server.routes.workspaces import router as workspaces_router
 
@@ -141,6 +142,10 @@ app = FastAPI(
 
 app.include_router(keys_router)
 app.include_router(lessons_router)
+# temporal_router shares the /v1/memories prefix and must be registered
+# BEFORE memories_router so its fixed-path ``/at_time`` route wins over
+# ``memories_router``'s ``GET /{memory_id}`` catch-all.
+app.include_router(temporal_router)
 app.include_router(memories_router)
 app.include_router(observations_router)
 app.include_router(sharing_router)

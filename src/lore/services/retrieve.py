@@ -441,6 +441,23 @@ async def _hybrid_recall(
         k=_RRF_K,
     )
 
+    # Phase 6F: annotate the fused candidates with supersession state. Hard
+    # filtering is the wrong call (explicit at_time queries still want to
+    # see the row); instead we score-multiply by 0.1 so the natural
+    # ``min_score`` filter downstream tends to drop them. Empty candidate
+    # set short-circuits — no point in a round trip.
+    superseded_set: set[str] = set()
+    if fused and hasattr(store, "are_superseded"):
+        candidate_ids = {memory.id for memory, *_ in fused}
+        try:
+            superseded_set = await store.are_superseded(candidate_ids)
+        except Exception:
+            logger.warning(
+                "are_superseded failed; skipping supersession suppression",
+                exc_info=True,
+            )
+            superseded_set = set()
+
     # Annotate with recency + importance, multiplicative.
     annotated: list[HybridResult] = []
     for memory, base_score, raw_signals in fused[: max(params.limit * 2, params.limit)]:
@@ -448,15 +465,26 @@ async def _hybrid_recall(
         importance = (
             float(memory.importance_score) if memory.importance_score is not None else 0.5
         )
+        is_superseded = memory.id in superseded_set
+        supersession_multiplier = 0.1 if is_superseded else 1.0
         # multiplicative annotations: recency multiplier ∈ [1.0, 1.5];
         # importance multiplier ∈ [0.75, 1.25] for importance ∈ [0, 1].
-        final = base_score * (1.0 + 0.5 * recency) * (1.0 + 0.5 * (importance - 0.5))
+        final = (
+            base_score
+            * (1.0 + 0.5 * recency)
+            * (1.0 + 0.5 * (importance - 0.5))
+            * supersession_multiplier
+        )
         signals: Dict[str, float] = {
             "vector": raw_signals.get("signal_0", 0.0),
             "fts": raw_signals.get("signal_1", 0.0),
             "graph": raw_signals.get("signal_2", 0.0),
             "recency": recency,
             "importance": importance,
+            # ``superseded`` lands in signals so the route can surface it
+            # alongside the per-signal breakdown. Float (1.0/0.0) keeps
+            # the existing ``Mapping[str, float]`` shape from changing.
+            "superseded": 1.0 if is_superseded else 0.0,
         }
         annotated.append(HybridResult(memory=memory, score=final, signals=signals))
 
