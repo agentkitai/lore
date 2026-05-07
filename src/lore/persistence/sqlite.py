@@ -393,6 +393,13 @@ def _row_to_profile(row) -> StoredProfile:
         tf = None
     else:
         tf = tuple(tier_raw)
+    # Phase 6C: ``fts_weight`` arrived in 021_fts_weight.sql with NOT NULL
+    # default 1.0. Tolerate older queries that don't SELECT the column by
+    # falling back to 1.0.
+    try:
+        fts_weight_raw = row["fts_weight"]
+    except (KeyError, IndexError):
+        fts_weight_raw = None
     return StoredProfile(
         id=row["id"],
         org_id=row["org_id"],
@@ -410,6 +417,7 @@ def _row_to_profile(row) -> StoredProfile:
         include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
         created_at=_parse_iso(row["created_at"]),
         updated_at=_parse_iso(row["updated_at"]),
+        fts_weight=float(fts_weight_raw) if fts_weight_raw is not None else 1.0,
     )
 
 
@@ -2306,7 +2314,7 @@ class SqliteStore:
         "semantic_weight, graph_weight, recency_bias, "
         "tier_filters, min_score, max_results, is_preset, "
         "k, threshold, rerank, include_graph, "
-        "created_at, updated_at"
+        "created_at, updated_at, fts_weight"
     )
 
     async def get_profile(self, profile_id: str) -> Optional[StoredProfile]:
@@ -2374,8 +2382,8 @@ class SqliteStore:
                         (id, org_id, name,
                          semantic_weight, graph_weight, recency_bias,
                          tier_filters, min_score, max_results, is_preset,
-                         k, threshold, rerank, include_graph)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         k, threshold, rerank, include_graph, fts_weight)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         profile_id,
@@ -2392,6 +2400,7 @@ class SqliteStore:
                         profile.threshold,
                         1 if profile.rerank else 0,
                         1 if profile.include_graph else 0,
+                        profile.fts_weight,
                     ),
                 )
                 await conn.commit()
@@ -2472,6 +2481,9 @@ class SqliteStore:
         if patch.include_graph is not None:
             params.append(1 if patch.include_graph else 0)
             sets.append("include_graph = ?")
+        if patch.fts_weight is not None:
+            params.append(patch.fts_weight)
+            sets.append("fts_weight = ?")
 
         if not sets:
             raise ValueError(
@@ -5164,6 +5176,118 @@ class SqliteStore:
             ) as cur:
                 rows = await cur.fetchall()
         return [_row_to_memory(r) for r in rows]
+
+    # FTS5 syntax characters that must be escaped or stripped to keep the
+    # MATCH expression a plain phrase search. Wrapping the whole sanitized
+    # query in double-quotes ("phrase search by default") gives predictable
+    # behaviour without surfacing FTS5 query syntax to API callers.
+    _FTS5_RESERVED = '"*:^()'
+
+    @staticmethod
+    def _sanitize_fts_query(query: str) -> str:
+        """Return a quoted FTS5 phrase string, or ``""`` if nothing useful remains.
+
+        Strips reserved FTS5 characters (so a stray ``:`` or unbalanced quote
+        doesn't blow up the MATCH parser), collapses whitespace, then wraps
+        the rest in double quotes so it's interpreted as a single phrase.
+        """
+        cleaned = "".join(
+            ch if ch not in SqliteStore._FTS5_RESERVED else " " for ch in query
+        )
+        cleaned = " ".join(cleaned.split())
+        if not cleaned:
+            return ""
+        return f'"{cleaned}"'
+
+    async def recall_by_text(
+        self,
+        org_id: str,
+        query: str,
+        *,
+        limit: int = 20,
+        project: Optional[str] = None,
+    ) -> Sequence[tuple[StoredMemory, float]]:
+        """Phase 6C FTS branch on SQLite.
+
+        Uses ``bm25(memories_fts)`` against the FTS5 virtual table created
+        by 020_fts_index.sql. The MATCH query is sanitized and wrapped in
+        double quotes (phrase search by default) to dodge accidental FTS5
+        operator syntax in user input.
+
+        ``bm25`` returns *negated* relevance — lower (more negative) is
+        better. We flip the sign so callers see a positive "higher is
+        better" rank, consistent with PG's ``ts_rank``.
+
+        Returns ``[]`` when:
+        * the query sanitizes to empty (no real terms);
+        * the FTS5 table or sqlite_vec extension is missing (graceful
+          degradation — the service layer treats an exception here as
+          "no FTS signal" and falls through to vector + graph).
+        """
+        match_query = self._sanitize_fts_query(query)
+        if not match_query:
+            return []
+
+        where: list[str] = ["m.org_id = ?"]
+        sql_params: list[Any] = [match_query, org_id]
+        if project is not None:
+            where.append("m.project = ?")
+            sql_params.append(project)
+        sql_params.append(limit)
+
+        sql = f"""
+            SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+                   m.source, m.project, m.created_at, m.updated_at, m.expires_at,
+                   m.upvotes, m.downvotes, m.meta, m.importance_score,
+                   m.access_count, m.last_accessed_at,
+                   -bm25(memories_fts) AS fts_rank
+            FROM memories_fts
+            JOIN memories m ON m.rowid = memories_fts.rowid
+            WHERE memories_fts MATCH ?
+              AND {' AND '.join(where)}
+            ORDER BY fts_rank DESC
+            LIMIT ?
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(sql_params)) as cur:
+                rows = await cur.fetchall()
+        return [(_row_to_memory(r), float(r["fts_rank"])) for r in rows]
+
+    async def recall_by_entities(
+        self,
+        org_id: str,
+        entity_ids: Sequence[str],
+        *,
+        limit: int = 20,
+    ) -> Sequence[tuple[StoredMemory, int]]:
+        """Phase 6C graph branch on SQLite.
+
+        Mirrors ``PostgresStore.recall_by_entities``: counts entity-overlap
+        per memory, sorted by count DESC then created_at DESC. SQLite has no
+        ``= ANY($1)`` so the entity list expands to ``IN (?, ...)``.
+        """
+        if not entity_ids:
+            return []
+        ids = list(entity_ids)
+        ent_placeholders = ", ".join(["?"] * len(ids))
+        sql = f"""
+            SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+                   m.source, m.project, m.created_at, m.updated_at, m.expires_at,
+                   m.upvotes, m.downvotes, m.meta, m.importance_score,
+                   m.access_count, m.last_accessed_at,
+                   COUNT(DISTINCT em.entity_id) AS overlap_count
+            FROM entity_mentions em
+            JOIN memories m ON m.id = em.memory_id
+            WHERE em.entity_id IN ({ent_placeholders}) AND m.org_id = ?
+            GROUP BY m.id
+            ORDER BY overlap_count DESC, m.created_at DESC
+            LIMIT ?
+        """
+        params = (*ids, org_id, limit)
+        async with self._acquire() as conn:
+            async with conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+        return [(_row_to_memory(r), int(r["overlap_count"])) for r in rows]
 
     async def rate_lesson(
         self,

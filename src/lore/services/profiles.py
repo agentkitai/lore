@@ -296,6 +296,7 @@ async def resolve_profile(
             threshold=row.threshold,
             rerank=row.rerank,
             include_graph=row.include_graph,
+            fts_weight=row.fts_weight,
         )
         _cache_set(cache_key, resolved)
         return resolved
@@ -315,6 +316,7 @@ async def resolve_profile(
             threshold=d.get("threshold"),
             rerank=d.get("rerank", False),
             include_graph=d.get("include_graph", True),
+            fts_weight=d.get("fts_weight", 1.0),
         )
         _cache_set(cache_key, resolved)
         return resolved

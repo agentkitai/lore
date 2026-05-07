@@ -358,6 +358,42 @@ class Store(Protocol):
         """Case-insensitive substring match against memories.content for the UI search box."""
         ...
 
+    async def recall_by_text(
+        self,
+        org_id: str,
+        query: str,
+        *,
+        limit: int = 20,
+        project: Optional[str] = None,
+    ) -> Sequence[tuple[StoredMemory, float]]:
+        """Full-text search with backend-native ranking.
+
+        Phase 6C hybrid retrieval: PG uses ``ts_rank`` against the GIN index
+        introduced in 020_fts_index.sql; SQLite uses ``bm25(memories_fts)``
+        against the FTS5 virtual table.
+
+        Returns ``[(memory, fts_rank)]`` ordered by descending rank. Empty
+        when the query yields no terms or the FTS migration hasn't been
+        applied.
+        """
+        ...
+
+    async def recall_by_entities(
+        self,
+        org_id: str,
+        entity_ids: Sequence[str],
+        *,
+        limit: int = 20,
+    ) -> Sequence[tuple[StoredMemory, int]]:
+        """Memories tied to any of the given entities, ranked by mention count.
+
+        Phase 6C hybrid retrieval: companion to the existing
+        ``get_memories_by_entities`` but returns the count of overlapping
+        entity ids per memory so the service layer can use it as a graph
+        signal in RRF fusion.
+        """
+        ...
+
     # ── PolicyOps ────────────────────────────────────────────────────
 
     async def get_profile(self, profile_id: str) -> Optional[StoredProfile]:
