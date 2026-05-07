@@ -102,7 +102,33 @@ async def bootstrap_solo_if_empty(
         )
         return None
 
-    raw_key = _generate_raw_key()
+    # Defensive self-heal: if the DB is empty BUT ~/.lore/key.txt already
+    # exists with non-empty contents, ADOPT that key instead of generating
+    # a new one. This recovers from the "DB got rebuilt while key.txt was
+    # left behind" failure mode without overwriting the user's stable key.
+    # If `key_path=None` (in-memory tests), this branch is skipped.
+    adopted_key: Optional[str] = None
+    if key_path is not None:
+        candidate = (
+            DEFAULT_KEY_PATH if key_path is _DEFAULT else key_path  # type: ignore[assignment]
+        )
+        candidate = Path(candidate).expanduser()
+        if candidate.exists():
+            try:
+                content = candidate.read_text().strip()
+            except OSError:
+                content = ""
+            if content:
+                adopted_key = content
+                logger.info(
+                    "bootstrap_solo_if_empty: adopting existing key at %s "
+                    "(DB had no root keys)", candidate,
+                )
+
+    if adopted_key:
+        raw_key = adopted_key
+    else:
+        raw_key = _generate_raw_key()
     key_hash = hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
     key_prefix = raw_key[:12]  # "lore_sk_" + 4 hex chars
 
@@ -150,6 +176,11 @@ async def bootstrap_solo_if_empty(
         logger.info(
             "bootstrap_solo_if_empty: created solo org + root API key (key file skipped)"
         )
+        return raw_key
+
+    # If we adopted an existing key file, the file already holds the right
+    # value — don't rewrite it (and don't risk a chmod race).
+    if adopted_key:
         return raw_key
 
     target_path: Path = (
