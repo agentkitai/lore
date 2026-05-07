@@ -53,6 +53,7 @@ from lore.server.routes.setup_validation import router as setup_validation_route
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
 from lore.server.routes.slo import router as slo_router
+from lore.server.routes.snapshots import router as snapshots_router
 from lore.server.routes.topics import router as topics_router
 from lore.server.routes.workspaces import router as workspaces_router
 
@@ -146,6 +147,12 @@ app.include_router(retrieve_router)
 app.include_router(analytics_router)
 app.include_router(conversations_router)
 app.include_router(recent_router)
+# snapshots_router must be registered BEFORE export_router so its
+# /v1/snapshots POST handler shadows the legacy filesystem-export
+# handler that still tries to instantiate Lore() against an HTTP
+# backend (broken in solo mode, where there's no remote server to
+# call back into).
+app.include_router(snapshots_router)
 app.include_router(export_router)
 app.include_router(graph_router)
 app.include_router(review_router)
