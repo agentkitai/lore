@@ -188,6 +188,13 @@ def _row_to_profile(row: "asyncpg.Record") -> StoredProfile:
     tier_filters = row["tier_filters"]
     # asyncpg returns Postgres TEXT[] as list[str] | None
     tf: Optional[tuple] = tuple(tier_filters) if tier_filters is not None else None
+    # Phase 6C: ``fts_weight`` arrived in 021_fts_weight.sql with a NOT NULL
+    # default 1.0. Older row mappers in callers sometimes leave it off the
+    # SELECT; tolerate by falling back to 1.0 when missing.
+    try:
+        fts_weight_raw = row["fts_weight"]
+    except (KeyError, IndexError):
+        fts_weight_raw = None
     return StoredProfile(
         id=row["id"],
         org_id=row["org_id"],
@@ -206,6 +213,7 @@ def _row_to_profile(row: "asyncpg.Record") -> StoredProfile:
         include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        fts_weight=float(fts_weight_raw) if fts_weight_raw is not None else 1.0,
     )
 
 
@@ -1686,6 +1694,94 @@ class PostgresStore:
             )
         return [_row_to_stored(r) for r in rows]
 
+    async def recall_by_text(
+        self,
+        org_id: str,
+        query: str,
+        *,
+        limit: int = 20,
+        project: Optional[str] = None,
+    ) -> Sequence[tuple[StoredMemory, float]]:
+        """Phase 6C FTS branch: ``ts_rank`` against the GIN index from 020_fts_index.sql.
+
+        Uses ``plainto_tsquery('english', ...)`` so the caller can pass a
+        natural-language query without worrying about FTS syntax. Returns an
+        empty list when the query yields no terms (e.g. all stop words) —
+        the service layer treats that as "no FTS signal" rather than an error.
+
+        ``ts_rank`` typically falls in 0.001–0.1 range; we multiply by 1000
+        to bring it into a more comparable scale before downstream consumers
+        (RRF treats ranks not raw scores, so the multiplier doesn't change
+        ordering — it only makes the per-signal breakdown more readable).
+        """
+        if not query.strip():
+            return []
+        where: list[str] = ["org_id = $1"]
+        sql_params: list[Any] = [org_id]
+        sql_params.append(query)
+        q_idx = len(sql_params)
+        if project is not None:
+            sql_params.append(project)
+            where.append(f"project = ${len(sql_params)}")
+        sql_params.append(limit)
+        limit_idx = len(sql_params)
+
+        sql = f"""
+            SELECT id, org_id, content, context, tags, confidence, source, project,
+                   created_at, updated_at, expires_at, upvotes, downvotes, meta,
+                   importance_score, access_count, last_accessed_at,
+                   ts_rank(
+                       to_tsvector('english', content || ' ' || COALESCE(context, '')),
+                       plainto_tsquery('english', ${q_idx})
+                   ) * 1000 AS fts_rank
+            FROM memories
+            WHERE {' AND '.join(where)}
+              AND to_tsvector('english', content || ' ' || COALESCE(context, ''))
+                  @@ plainto_tsquery('english', ${q_idx})
+            ORDER BY fts_rank DESC
+            LIMIT ${limit_idx}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *sql_params)
+        return [(_row_to_stored(r), float(r["fts_rank"])) for r in rows]
+
+    async def recall_by_entities(
+        self,
+        org_id: str,
+        entity_ids: Sequence[str],
+        *,
+        limit: int = 20,
+    ) -> Sequence[tuple[StoredMemory, int]]:
+        """Phase 6C graph branch: rank memories by entity-overlap count.
+
+        Joins entity_mentions to memories, scoping by org_id and counting the
+        number of distinct entity ids from the input that touch each memory.
+        Returns ``[(memory, n_overlapping_entities)]`` sorted by count DESC,
+        then created_at DESC for stable ordering.
+        """
+        if not entity_ids:
+            return []
+        ids = list(entity_ids)
+        sql = """
+            SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+                   m.source, m.project, m.created_at, m.updated_at, m.expires_at,
+                   m.upvotes, m.downvotes, m.meta, m.importance_score,
+                   m.access_count, m.last_accessed_at,
+                   COUNT(DISTINCT em.entity_id) AS overlap_count
+            FROM entity_mentions em
+            JOIN memories m ON m.id = em.memory_id
+            WHERE em.entity_id = ANY($1) AND m.org_id = $2
+            GROUP BY m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+                     m.source, m.project, m.created_at, m.updated_at, m.expires_at,
+                     m.upvotes, m.downvotes, m.meta, m.importance_score,
+                     m.access_count, m.last_accessed_at
+            ORDER BY overlap_count DESC, m.created_at DESC
+            LIMIT $3
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, ids, org_id, limit)
+        return [(_row_to_stored(r), int(r["overlap_count"])) for r in rows]
+
     # ── PolicyOps ─────────────────────────────────────────────────────
 
     async def get_profile(self, profile_id: str) -> Optional[StoredProfile]:
@@ -1696,7 +1792,7 @@ class PostgresStore:
                        semantic_weight, graph_weight, recency_bias,
                        tier_filters, min_score, max_results, is_preset,
                        k, threshold, rerank, include_graph,
-                       created_at, updated_at
+                       created_at, updated_at, fts_weight
                 FROM retrieval_profiles
                 WHERE id = $1
                 """,
@@ -1714,7 +1810,7 @@ class PostgresStore:
                        semantic_weight, graph_weight, recency_bias,
                        tier_filters, min_score, max_results, is_preset,
                        k, threshold, rerank, include_graph,
-                       created_at, updated_at
+                       created_at, updated_at, fts_weight
                 FROM retrieval_profiles
                 WHERE name = $1 AND org_id = $2
                 """,
@@ -1733,7 +1829,7 @@ class PostgresStore:
                        semantic_weight, graph_weight, recency_bias,
                        tier_filters, min_score, max_results, is_preset,
                        k, threshold, rerank, include_graph,
-                       created_at, updated_at
+                       created_at, updated_at, fts_weight
                 FROM retrieval_profiles
                 WHERE org_id = $1 OR org_id = '__global__'
                 ORDER BY name
@@ -1751,13 +1847,13 @@ class PostgresStore:
                     INSERT INTO retrieval_profiles
                       (id, org_id, name, semantic_weight, graph_weight, recency_bias,
                        tier_filters, min_score, max_results, is_preset,
-                       k, threshold, rerank, include_graph)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                       k, threshold, rerank, include_graph, fts_weight)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                     RETURNING id, org_id, name,
                               semantic_weight, graph_weight, recency_bias,
                               tier_filters, min_score, max_results, is_preset,
                               k, threshold, rerank, include_graph,
-                              created_at, updated_at
+                              created_at, updated_at, fts_weight
                     """,
                     profile_id,
                     profile.org_id,
@@ -1773,6 +1869,7 @@ class PostgresStore:
                     profile.threshold,
                     profile.rerank,
                     profile.include_graph,
+                    profile.fts_weight,
                 )
             except asyncpg.UniqueViolationError as e:
                 raise IntegrityError(
@@ -1823,6 +1920,9 @@ class PostgresStore:
         if patch.include_graph is not None:
             params.append(patch.include_graph)
             sets.append(f"include_graph = ${len(params)}")
+        if patch.fts_weight is not None:
+            params.append(patch.fts_weight)
+            sets.append(f"fts_weight = ${len(params)}")
 
         if not sets:
             raise ValueError(
@@ -1838,7 +1938,7 @@ class PostgresStore:
             "semantic_weight, graph_weight, recency_bias, "
             "tier_filters, min_score, max_results, is_preset, "
             "k, threshold, rerank, include_graph, "
-            "created_at, updated_at"
+            "created_at, updated_at, fts_weight"
         )
         async with self._acquire() as conn:
             row = await conn.fetchrow(sql, *params)
@@ -1862,7 +1962,7 @@ class PostgresStore:
                 """
                 SELECT id, org_id, name, semantic_weight, graph_weight, recency_bias,
                        tier_filters, min_score, max_results, is_preset, k, threshold,
-                       rerank, include_graph, created_at, updated_at
+                       rerank, include_graph, created_at, updated_at, fts_weight
                 FROM retrieval_profiles
                 WHERE name = $1 AND (org_id = $2 OR org_id = '__global__')
                 ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END

@@ -245,6 +245,8 @@ class NewProfile:
     threshold: Optional[float] = None
     rerank: bool = False
     include_graph: bool = True
+    # Phase 6C: weight for the FTS branch in hybrid recall (RRF fusion).
+    fts_weight: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,6 +267,8 @@ class StoredProfile:
     include_graph: bool
     created_at: datetime
     updated_at: datetime
+    # Phase 6C: weight for the FTS branch in hybrid recall (RRF fusion).
+    fts_weight: float = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,6 +285,8 @@ class ProfilePatch:
     threshold: Optional[float] = None
     rerank: Optional[bool] = None
     include_graph: Optional[bool] = None
+    # Phase 6C
+    fts_weight: Optional[float] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,6 +303,8 @@ class ResolvedProfile:
     threshold: Optional[float]
     rerank: bool
     include_graph: bool
+    # Phase 6C: hybrid retrieval weight for FTS branch.
+    fts_weight: float = 1.0
 
 
 # Identity slice dataclasses
