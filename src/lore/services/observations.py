@@ -14,12 +14,36 @@ memories — there is no separate observations table.
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Sequence
+from typing import Awaitable, Callable, Optional, Sequence
 
 from lore.persistence import NewObservation, Store, StoredMemory
 from lore.services.memories import create_memory
 
 EmbedFn = Callable[[str], Awaitable[Sequence[float]]]
+
+
+def _classify_kind(tags: Sequence[str], captured_by: str) -> Optional[str]:
+    """Phase 6G — derive ``meta.kind`` from tags + capture provenance.
+
+    Returns the value to set at ``meta['kind']``, or ``None`` if no kind
+    should be recorded. The mapping:
+
+    * ``tags`` contains ``"intent"``         → ``"intent"``
+    * ``tags`` contains ``"session-summary"`` → ``"summary"``
+    * else, ``captured_by == "auto"``        → ``"tool"``
+    * else (manual)                           → ``None`` (don't auto-classify)
+
+    Tag matches win over the auto/manual default — a manual observation
+    explicitly tagged ``intent`` still gets ``meta.kind='intent'``.
+    """
+    tag_set = {t for t in tags if isinstance(t, str)}
+    if "intent" in tag_set:
+        return "intent"
+    if "session-summary" in tag_set:
+        return "summary"
+    if captured_by == "auto":
+        return "tool"
+    return None
 
 
 async def create_observation(
@@ -41,7 +65,7 @@ async def create_observation(
     discriminator at ``meta.type`` (NOT ``meta.memory_type``).
     """
     embedding = await embed(f"{obs.title}\n{obs.narrative}")
-    meta = {
+    meta: dict = {
         "type": "observation",
         "title": obs.title,
         "facts": list(obs.facts),
@@ -50,6 +74,13 @@ async def create_observation(
     }
     if obs.session_id is not None:
         meta["session_id"] = obs.session_id
+
+    # Phase 6G — classify the observation's intent/summary/tool kind from
+    # the tags the (sub)agent supplied. Manual observations without a
+    # special tag stay unclassified.
+    kind = _classify_kind(obs.tags, obs.captured_by)
+    if kind is not None:
+        meta["kind"] = kind
 
     return await create_memory(
         store,

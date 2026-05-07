@@ -75,6 +75,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
+from lore.cli.commands._project import resolve_project
+
 logger = logging.getLogger(__name__)
 
 # ── Constants & defaults ──────────────────────────────────────────
@@ -316,32 +318,125 @@ def _fetch_recent_memory_titles(
     return titles
 
 
-def _build_prompt(
+def _render_buffer_entry(entry: dict[str, Any]) -> str:
+    """Render one buffer line for inclusion in the extraction prompt.
+
+    Phase 6G — entries now carry a ``kind`` discriminator. Tool events
+    (``kind`` missing or ``"tool"``) keep the legacy JSONL rendering so
+    the subagent's existing parsing for ``tool=``, ``input_summary``,
+    ``output_summary`` keeps working. Prompt events (``kind:"prompt"``,
+    inserted by the UserPromptSubmit hook) are rendered as a clearly
+    labeled ``User said: "..."`` line so the subagent treats them as
+    intent signal, not as a tool I/O JSON blob.
+    """
+    seq = entry.get("seq", "?")
+    kind = entry.get("kind") or "tool"
+    if kind == "prompt":
+        text = entry.get("text") or ""
+        # Verbatim — <private> stripping happened at the hook level.
+        return f'[{seq}] User said: "{text}"'
+    # Tool events: keep the legacy JSONL rendering so previously-tested
+    # downstream parsing remains unchanged.
+    return json.dumps(entry, ensure_ascii=False, sort_keys=True)
+
+
+def _has_prompt_entries(buffer_slice: list[dict[str, Any]]) -> bool:
+    """Return True iff the slice has at least one ``kind:"prompt"`` entry."""
+    return any((e.get("kind") or "tool") == "prompt" for e in buffer_slice)
+
+
+def _build_extraction_prompt(
     *,
-    buffer_lines: list[str],
+    buffer_slice: list[dict[str, Any]],
     transcript_tail: str,
     recent_titles: list[str],
+    project: Optional[str],
 ) -> str:
     """Render the subagent prompt described in the spec.
 
-    Kept identical in shape to the design doc so test regressions catch
-    accidental drift. The subagent must return
-    ``PROCESSED_THROUGH_SEQ=<n>`` as the trailing line."""
-    buffer_block = "\n".join(buffer_lines) if buffer_lines else "(empty)"
+    Kept close to the design doc so test regressions catch accidental
+    drift. The subagent must return ``PROCESSED_THROUGH_SEQ=<n>`` as the
+    trailing line.
+
+    Phase 6G additions:
+
+    * Entries with ``kind:"prompt"`` are rendered as ``User said: "..."``.
+    * If the slice contains any prompt entries, the subagent is asked
+      to emit ONE additional ``meta.kind="intent"`` observation summarizing
+      what the user was trying to accomplish in the batch. Skipped
+      otherwise — without prompts there's no intent signal to summarize.
+    * Each ``remember_observation`` call MUST include ``scope`` (project
+      vs global) so cross-project bleed-through is prevented.
+    * The resolved ``project`` is shown to the subagent and substituted
+      into the directive as a literal so the subagent passes it
+      verbatim on every call.
+    """
+    buffer_block = (
+        "\n".join(_render_buffer_entry(e) for e in buffer_slice)
+        if buffer_slice
+        else "(empty)"
+    )
+    return _format_extraction_prompt(
+        buffer_block=buffer_block,
+        transcript_tail=transcript_tail,
+        recent_titles=recent_titles,
+        project=project,
+        has_prompts=_has_prompt_entries(buffer_slice),
+    )
+
+
+def _format_extraction_prompt(
+    *,
+    buffer_block: str,
+    transcript_tail: str,
+    recent_titles: list[str],
+    project: Optional[str],
+    has_prompts: bool,
+) -> str:
+    """Internal — build the full prompt string from a pre-rendered
+    ``buffer_block`` plus the other context. Both
+    ``_build_extraction_prompt`` (Phase 6G primary) and the legacy
+    ``_build_prompt`` shim funnel through here so the prompt copy stays
+    in one place."""
     transcript_block = transcript_tail or "(no transcript available)"
     titles_block = (
         "\n".join(f"  - {t}" for t in recent_titles)
         if recent_titles
         else "  (none)"
     )
+    project_display = project if project else "(unknown — no git remote)"
+    project_arg_literal = f'"{project}"' if project else "None"
+    if has_prompts:
+        intent_directive = (
+            "Intent summary (REQUIRED for this batch):\n"
+            "  This batch contains one or more `User said: \"...\"` lines.\n"
+            "  Emit exactly ONE additional observation with tags=[\"intent\"]\n"
+            "  summarizing what the user was trying to accomplish across\n"
+            "  this batch. Keep it concise:\n"
+            "    - title: ≤80 chars\n"
+            "    - facts: 2–4 atomic items\n"
+            "    - narrative: 1 sentence\n"
+            "  The server reads `tags=[\"intent\"]` to set `meta.kind=\"intent\"`.\n"
+            "  Pass the same `scope` and `project` arguments as below.\n"
+        )
+    else:
+        intent_directive = (
+            "Intent summary (SKIP for this batch):\n"
+            "  This batch contains no `User said: \"...\"` lines, so there's\n"
+            "  no intent signal to summarize. Do NOT emit a tags=[\"intent\"]\n"
+            "  observation — inferring intent from tool I/O alone re-introduces\n"
+            "  the noise this design is meant to remove.\n"
+        )
     return (
         "You are Lore's memory extraction worker for an active Claude Code\n"
         "session. Your job: read the session log and recent transcript, decide\n"
         "what (if anything) is worth remembering, and call the appropriate\n"
         "Lore MCP tool for each kept item.\n"
         "\n"
+        f"Project: {project_display}\n"
+        "\n"
         "Inputs:\n"
-        "  Buffer (tool calls since last extraction):\n"
+        "  Buffer (events since last extraction — tool calls and user prompts):\n"
         f"{buffer_block}\n"
         "\n"
         "  Transcript tail (recent user+assistant turns):\n"
@@ -359,8 +454,10 @@ def _build_prompt(
         "         title=\"<~80-char headline>\",\n"
         "         facts=[\"<atomic bullet>\", \"<atomic bullet>\", ...],\n"
         "         narrative=\"<the prose context — why it matters>\",\n"
-        "         tags=[...],            # optional\n"
-        "         project=\"...\"          # optional\n"
+        "         tags=[...],            # optional; use [\"intent\"] for the\n"
+        "                                # batch intent summary (see below)\n"
+        f"         project={project_arg_literal},\n"
+        "         scope=\"project\"|\"global\"  # REQUIRED — see directive below\n"
         "     )\n"
         "     PREFER THIS for typical extractions: a multi-faceted event\n"
         "     (debugging session, decision with trade-offs, workflow pattern)\n"
@@ -372,6 +469,21 @@ def _build_prompt(
         "     )\n"
         "     RESERVE THIS for high-confidence polished single-fact memories\n"
         "     you're certain belong in the long-term store as-is.\n"
+        "\n"
+        "Scope (REQUIRED on every remember_observation call):\n"
+        "  - scope=\"project\" for anything mentioning specific files,\n"
+        "    functions, decisions, or behavior in *this* repo. This is the\n"
+        "    common case.\n"
+        "  - scope=\"global\" only for universal lessons that would apply in\n"
+        "    any codebase (language gotchas, framework patterns, tool quirks).\n"
+        "  - When in doubt, pick \"project\".\n"
+        "\n"
+        f"Always pass project={project_arg_literal} to every\n"
+        "mcp__lore__remember_observation call — substitute the literal above\n"
+        "verbatim. (Manual `remember()` calls don't need it; the server\n"
+        "infers project there.)\n"
+        "\n"
+        f"{intent_directive}"
         "\n"
         "Rules:\n"
         "  - Be selective. Quality > quantity. 0 items is fine.\n"
@@ -392,29 +504,104 @@ def _build_prompt(
     )
 
 
+def _build_prompt(
+    *,
+    buffer_lines: list[str],
+    transcript_tail: str,
+    recent_titles: list[str],
+) -> str:
+    """Backward-compatible wrapper used by Phase 6A tests.
+
+    Phase 6G migrated callers to ``_build_extraction_prompt``, which
+    takes the raw buffer slice and a resolved ``project``. This thin
+    shim wraps the older signature and forwards JSONL-string buffer
+    rendering through unchanged. (Phase 6A tests assert specific
+    substrings of the JSONL representation, so we do not re-serialize
+    here.)
+    """
+    return _build_extraction_prompt_from_lines(
+        buffer_lines=buffer_lines,
+        transcript_tail=transcript_tail,
+        recent_titles=recent_titles,
+        project=None,
+    )
+
+
+def _build_extraction_prompt_from_lines(
+    *,
+    buffer_lines: list[str],
+    transcript_tail: str,
+    recent_titles: list[str],
+    project: Optional[str],
+) -> str:
+    """Variant of ``_build_extraction_prompt`` that takes already-rendered
+    buffer lines (legacy JSONL strings). Used by ``_build_prompt`` only.
+    Detects ``kind:"prompt"`` entries by parsing each line; renders
+    everything else verbatim so old callers/tests see the JSONL they
+    passed in."""
+    rendered_lines: list[str] = []
+    has_prompts = False
+    for line in buffer_lines:
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            obj = None
+        if isinstance(obj, dict) and (obj.get("kind") or "tool") == "prompt":
+            has_prompts = True
+            rendered_lines.append(_render_buffer_entry(obj))
+        else:
+            rendered_lines.append(line)
+    return _format_extraction_prompt(
+        buffer_block="\n".join(rendered_lines) if rendered_lines else "(empty)",
+        transcript_tail=transcript_tail,
+        recent_titles=recent_titles,
+        project=project,
+        has_prompts=has_prompts,
+    )
+
+
 def _spawn_subagent(
     *,
     prompt: str,
     extract_log: Path,
+    foreground: bool = False,
 ) -> Optional[subprocess.Popen]:
-    """Fire-and-forget ``claude -p`` invocation. Returns the Popen handle
-    so tests can introspect it (and so production code can keep the
-    object alive long enough not to be GC'd before the OS forks)."""
+    """``claude -p`` invocation.
+
+    Default mode is fire-and-forget — the Popen is detached
+    (``start_new_session=True``) and the parent returns immediately.
+    Phase 6G adds a ``foreground=True`` mode used by the SessionEnd
+    flush: the parent waits for the subagent to exit so the next step
+    (``lore session-finalize``) can read the observations the subagent
+    just wrote. Foreground spawns do NOT use ``start_new_session`` so
+    a terminating parent process can clean up the child via the normal
+    process group.
+    """
     if not shutil.which("claude"):
         return None
     extract_log.parent.mkdir(parents=True, exist_ok=True)
     log_fh = extract_log.open("a", encoding="utf-8")
     try:
-        return subprocess.Popen(  # noqa: S603 — input is internal, not user-supplied
+        proc = subprocess.Popen(  # noqa: S603 — input is internal, not user-supplied
             ["claude", "-p", prompt, "--output-format", "stream-json"],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=not foreground,
         )
     except OSError:
         log_fh.close()
         return None
+    if foreground:
+        try:
+            proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        finally:
+            with contextlib.suppress(Exception):
+                log_fh.close()
+    return proc
 
 
 def _scan_log_for_processed_seq(extract_log: Path) -> Optional[int]:
@@ -483,6 +670,8 @@ def cmd_capture_extract(args: argparse.Namespace) -> int:
     """Subagent dispatcher. Always returns 0 (fail-open)."""
     session_id = getattr(args, "session_id", None) or ""
     transcript_path = getattr(args, "transcript_path", None) or ""
+    cwd = getattr(args, "cwd", None) or os.getcwd()
+    foreground = bool(getattr(args, "foreground", False))
     if not session_id:
         # Without a session id we have nothing to do.
         return 0
@@ -493,13 +682,24 @@ def cmd_capture_extract(args: argparse.Namespace) -> int:
             return 0
 
         try:
-            _do_extract(session_id, transcript_path)
+            _do_extract(
+                session_id,
+                transcript_path,
+                cwd=cwd,
+                foreground=foreground,
+            )
         except Exception as exc:  # pragma: no cover — last-ditch fail-open
             _log_error(session_id, f"unexpected extract failure: {exc!r}")
     return 0
 
 
-def _do_extract(session_id: str, transcript_path: str) -> None:
+def _do_extract(
+    session_id: str,
+    transcript_path: str,
+    *,
+    cwd: Optional[str] = None,
+    foreground: bool = False,
+) -> None:
     """The real worker, factored out so the lock context wraps it cleanly."""
     cursor = _read_cursor(session_id)
     buffer = _read_buffer(session_id)
@@ -516,9 +716,6 @@ def _do_extract(session_id: str, transcript_path: str) -> None:
 
     highest_seq = max(int(e["seq"]) for e in unprocessed)
 
-    # Render each unprocessed event back to a JSONL line for the prompt.
-    buffer_lines = [json.dumps(e, ensure_ascii=False, sort_keys=True) for e in unprocessed]
-
     transcript_turns = _env_int("LORE_CAPTURE_TRANSCRIPT_TURNS", DEFAULT_TRANSCRIPT_TURNS)
     transcript_tail = _read_transcript_tail(transcript_path, transcript_turns)
 
@@ -527,15 +724,35 @@ def _do_extract(session_id: str, transcript_path: str) -> None:
     recent_n = _env_int("LORE_CAPTURE_RECENT_MEMORIES", DEFAULT_RECENT_MEMORIES)
     recent_titles = _fetch_recent_memory_titles(api_url, api_key, recent_n)
 
-    prompt = _build_prompt(
-        buffer_lines=buffer_lines,
+    # Phase 6G — resolve the project from the cwd at hook-fire time so
+    # observations land with the right project key for cross-worktree
+    # grouping. ``LORE_PROJECT_OVERRIDE`` short-circuits git resolution
+    # for CI / non-git callers.
+    project_override = os.environ.get("LORE_PROJECT_OVERRIDE")
+    if project_override:
+        project: Optional[str] = project_override.strip() or None
+    else:
+        cwd_path = Path(cwd) if cwd else Path.cwd()
+        try:
+            project = resolve_project(cwd_path)
+        except Exception as exc:
+            _log_error(session_id, f"resolve_project failed: {exc!r}")
+            project = None
+
+    prompt = _build_extraction_prompt(
+        buffer_slice=unprocessed,
         transcript_tail=transcript_tail,
         recent_titles=recent_titles,
+        project=project,
     )
 
     extract_log = _extract_log(session_id)
 
-    proc = _spawn_subagent(prompt=prompt, extract_log=extract_log)
+    proc = _spawn_subagent(
+        prompt=prompt,
+        extract_log=extract_log,
+        foreground=foreground,
+    )
     if proc is None:
         _log_error(
             session_id,
@@ -606,6 +823,9 @@ __all__ = [
     "_write_cursor",
     "_read_buffer",
     "_build_prompt",
+    "_build_extraction_prompt",
+    "_render_buffer_entry",
+    "_has_prompt_entries",
     "_session_dir",
     "_buffer_path",
     "_cursor_path",

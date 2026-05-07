@@ -686,6 +686,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--transcript-path", default=None, dest="transcript_path",
         help="Path to the Claude Code JSONL transcript for this session",
     )
+    # Phase 6G — pass the cwd at hook-fire time so resolve_project() picks
+    # the right git context (matters in monorepos and worktrees). Defaults
+    # to the cwd of the invoking process if omitted, which is the safe
+    # behavior on direct CLI invocations.
+    p_cap.add_argument(
+        "--cwd", default=None, dest="cwd",
+        help="Working directory for git project resolution "
+             "(defaults to current process cwd)",
+    )
+    # Phase 6G — used by the SessionEnd hook to flush synchronously so
+    # the subsequent ``lore session-finalize`` step can read the
+    # observations the flush just wrote.
+    p_cap.add_argument(
+        "--foreground", action="store_true", default=False, dest="foreground",
+        help="Wait for the subagent to exit before returning "
+             "(default: detached, fire-and-forget)",
+    )
 
     # dream (Phase 6E) — LLM-driven memory consolidation pipeline.
     p_dream = sub.add_parser(
