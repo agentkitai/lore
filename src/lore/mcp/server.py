@@ -1691,6 +1691,132 @@ def suggest(
         return f"Suggestion failed: {e}"
 
 
+# ── Temporal tools (Phase 6F) ──────────────────────────────────────
+
+
+def _temporal_request(method: str, path: str, **kwargs):
+    """Issue an HTTP request through Lore's HTTP store.
+
+    Phase 6F temporal endpoints don't have SDK helpers yet — the MCP
+    tools call them directly. Returns the parsed JSON body or raises
+    ``RuntimeError`` if the SDK is on a non-HTTP backend.
+    """
+    lore = _get_lore()
+    store = getattr(lore, "_store", None)
+    request_fn = getattr(store, "_request", None)
+    if request_fn is None:
+        raise RuntimeError(
+            "Lore is not configured with an HTTP backend. Set "
+            "LORE_STORE=remote and LORE_API_URL."
+        )
+    resp = request_fn(method, path, **kwargs)
+    return resp.json() if resp.content else {}
+
+
+@mcp.tool(
+    description=(
+        "Mark a memory as superseded by a newer one. "
+        "USE THIS WHEN: a fact has changed (e.g. 'we used Postgres but "
+        "switched to SQLite', 'I no longer prefer X'). PREFER THIS over "
+        "forget — supersede preserves history for audit while ensuring "
+        "the old memory drops in retrieval score so stale facts don't "
+        "pollute future recalls. Pass superseded_by=None to explicitly "
+        "un-supersede."
+    ),
+)
+def supersede(
+    memory_id: str,
+    superseded_by: Optional[str] = None,
+    reason: Optional[str] = None,
+) -> str:
+    """Record a supersession event."""
+    try:
+        body: Dict[str, Any] = {"by": superseded_by, "reason": reason}
+        data = _temporal_request(
+            "POST", f"/v1/memories/{memory_id}/supersede", json=body,
+        )
+        return json.dumps(
+            {
+                "status": "ok",
+                "memory_id": memory_id,
+                "superseded_by": data.get("superseded_by"),
+                "reason": data.get("reason"),
+            }
+        )
+    except Exception as e:
+        return f"Failed to supersede memory: {e}"
+
+
+@mcp.tool(
+    description=(
+        "List memories that were canonical at a given point in time. "
+        "USE THIS WHEN: you want to know 'what did we know about X "
+        "as of date Y?' — useful for audit, debugging stale-context "
+        "issues, or answering historical questions. Filter by entity "
+        "name and/or type. Excludes memories that were already "
+        "superseded as of the given timestamp."
+    ),
+)
+def list_at_time(
+    at: str,
+    entity: Optional[str] = None,
+    type: Optional[str] = None,
+    limit: int = 20,
+) -> str:
+    """Memories valid (non-superseded) at a given timestamp."""
+    try:
+        params: Dict[str, Any] = {"at": at, "limit": limit}
+        if entity is not None:
+            params["entity"] = entity
+        if type is not None:
+            params["type"] = type
+        data = _temporal_request("GET", "/v1/memories/at_time", params=params)
+        memories = data.get("memories", [])
+        if not memories:
+            return f"No memories valid at {at}."
+        lines = [f"Found {len(memories)} memory(ies) valid at {at}:"]
+        for m in memories:
+            lines.append(
+                f"[{m.get('id', '?')}] "
+                f"({(m.get('meta') or {}).get('type', 'unknown')}) "
+                f"{(m.get('content') or '')[:120]}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list memories at time: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Show the supersession audit chain for a memory. "
+        "USE THIS WHEN: investigating why a memory drops in retrieval "
+        "score, auditing 'what changed' for a given fact, or tracing "
+        "the lineage of a piece of knowledge across corrections. "
+        "Returns the events oldest first."
+    ),
+)
+def supersession_chain(memory_id: str) -> str:
+    """Audit trail for a memory's supersessions."""
+    try:
+        data = _temporal_request(
+            "GET", f"/v1/memories/{memory_id}/supersession-chain",
+        )
+        events = data.get("events", [])
+        if not events:
+            return f"Memory {memory_id} has no supersession history."
+        lines = [f"Supersession chain for {memory_id} ({len(events)} event(s)):"]
+        for e in events:
+            sb = e.get("superseded_by") or "(un-superseded)"
+            reason = e.get("reason") or ""
+            lines.append(
+                f"  {e.get('ts', '?')} agent={e.get('agent', '?')} "
+                f"by={sb} reason={reason}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to fetch supersession chain: {e}"
+
+
 def run_server() -> None:
     """Start the MCP server with stdio transport."""
     mcp.run(transport="stdio")

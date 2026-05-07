@@ -33,6 +33,7 @@ MIGRATED_ROUTES = {
     "src/lore/server/routes/sharing.py",
     "src/lore/server/routes/slo.py",
     "src/lore/server/routes/snapshots.py",
+    "src/lore/server/routes/temporal.py",
     "src/lore/server/routes/topics.py",
     "src/lore/server/routes/workspaces.py",
 }
