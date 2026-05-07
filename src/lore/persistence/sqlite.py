@@ -357,6 +357,13 @@ class SqliteStore:
         (see `transaction()`) so a `memories` row never exists without its
         matching vector and vice versa.
 
+        ``distance_metric=cosine`` selects cosine distance so the recall
+        ranking matches PG's ``embedding <=> $vec`` operator (also cosine).
+        Cosine distance is in ``[0, 2]`` for arbitrary vectors and in
+        ``[0, 1]`` for the typical case of normalized embeddings — the
+        recall path computes ``score = 1 - distance`` to mirror PG's
+        ``(1 - (embedding <=> $vec))`` similarity expression.
+
         Not migration-versioned because vec0 is provider-specific to the
         SQLite backend and not part of the cross-dialect schema contract.
         Idempotent thanks to `IF NOT EXISTS`.
@@ -365,7 +372,7 @@ class SqliteStore:
             f"""
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
                 memory_rowid INTEGER PRIMARY KEY,
-                embedding FLOAT[{EMBED_DIM}]
+                embedding FLOAT[{EMBED_DIM}] distance_metric=cosine
             )
             """
         )
@@ -786,6 +793,119 @@ class SqliteStore:
                 (json.dumps(dict(enrichment_data)), memory_id),
             )
             await conn.commit()
+
+    async def recall_by_embedding(
+        self,
+        params: "RecallParams",
+    ) -> Sequence["ScoredMemory"]:
+        """Vec0 KNN ⨯ memories JOIN ⨯ score-decay ⨯ min_score filter.
+
+        Mirrors PG's ``recall_by_embedding``:
+
+        ``score = (1 - cosine_distance) * importance_score
+                  * 0.5 ^ ( min(days_since_created, days_since_last_accessed)
+                            / half_life_days )``
+
+        Translation notes:
+        * PG's ``embedding <=> $vec`` (cosine distance) → vec0's
+          ``distance`` column with ``distance_metric=cosine``. Both yield
+          the same metric; ``similarity = 1 - distance``.
+        * The vec0 ``MATCH`` operator only allows the LIMIT to come
+          through the virtual table's own ``k = ?`` constraint, so we
+          fetch top-K from vec0 first, then JOIN ``memories`` and apply
+          downstream filters (org, project, expiry, min_score). We
+          slightly over-fetch from vec0 (max(k, limit*4)) to leave room
+          for the WHERE-clause filters to drop candidates without
+          starving the final result.
+        * SQLite has no ``EXTRACT(EPOCH FROM …)``; we use
+          ``(julianday('now') - julianday(col))`` which yields days as
+          a float. ``LEAST`` → ``MIN``. ``power(0.5, x)`` → SQLite's
+          ``pow(0.5, x)`` (alias since 3.35).
+        """
+        # Over-fetch from vec0 since post-filtering may drop candidates.
+        # 4x the limit is a generous floor; clamp to a sane upper bound.
+        k = max(params.limit, 1) * 4
+        # Build the post-vec0 WHERE clauses (PG path: org, project, expiry).
+        where: list[str] = ["m.org_id = ?"]
+        sql_params: list[Any] = [params.org_id]
+        if params.project is not None:
+            where.append("m.project = ?")
+            sql_params.append(params.project)
+        if params.exclude_expired:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            where.append("(m.expires_at IS NULL OR m.expires_at > ?)")
+            sql_params.append(now_iso)
+
+        # SQLite quirks: vec0's k must be a literal integer in some
+        # builds; passing it as a parameter is supported via the rowid
+        # virtual constraint syntax. We thread it as a bind param.
+        sql = f"""
+            SELECT
+                m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+                m.source, m.project, m.created_at, m.updated_at, m.expires_at,
+                m.upvotes, m.downvotes, m.meta, m.importance_score,
+                m.access_count, m.last_accessed_at,
+                v.distance AS distance,
+                (
+                    (1.0 - v.distance)
+                    * COALESCE(m.importance_score, 1.0)
+                    * pow(
+                        0.5,
+                        MIN(
+                            julianday('now') - julianday(m.created_at),
+                            COALESCE(
+                                julianday('now') - julianday(m.last_accessed_at),
+                                julianday('now') - julianday(m.created_at)
+                            )
+                        ) / {float(params.half_life_days)}
+                      )
+                ) AS score
+            FROM memory_vectors v
+            JOIN memories m ON m.rowid = v.memory_rowid
+            WHERE v.embedding MATCH ?
+              AND v.k = ?
+              AND {' AND '.join(where)}
+              AND (1.0 - v.distance) >= ?
+            ORDER BY score DESC
+            LIMIT ?
+        """
+        bind: list[Any] = [
+            repr(list(params.query_vec)),
+            k,
+            *sql_params,
+            params.min_score,
+            params.limit,
+        ]
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(bind)) as cur:
+                rows = await cur.fetchall()
+
+        scored: list[ScoredMemory] = []
+        for r in rows:
+            sm = _row_to_memory(r)
+            scored.append(
+                ScoredMemory(
+                    id=sm.id,
+                    org_id=sm.org_id,
+                    content=sm.content,
+                    context=sm.context,
+                    tags=sm.tags,
+                    confidence=sm.confidence,
+                    source=sm.source,
+                    project=sm.project,
+                    created_at=sm.created_at,
+                    updated_at=sm.updated_at,
+                    expires_at=sm.expires_at,
+                    upvotes=sm.upvotes,
+                    downvotes=sm.downvotes,
+                    meta=sm.meta,
+                    importance_score=sm.importance_score,
+                    access_count=sm.access_count,
+                    last_accessed_at=sm.last_accessed_at,
+                    score=float(r["score"]),
+                )
+            )
+        return scored
 
     async def vote_memory(
         self,

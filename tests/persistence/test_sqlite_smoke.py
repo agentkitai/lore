@@ -83,11 +83,11 @@ async def test_method_stubs_raise_not_implemented(tmp_path: Path):
 
     store = await SqliteStore.open(f"sqlite:///{tmp_path / 'stubs.db'}")
     try:
-        # Pick a method that is still a stub in the current sub-phase.
-        # Phase 3C implements insert/get/delete; ``update_memory`` is one
-        # of the next-up MemoryOps slots and stays NotImplementedError.
-        with pytest.raises(NotImplementedError, match="update_memory"):
-            await store.update_memory("solo", "mem_x", patch=None)
+        # Phase 3D implemented all MemoryOps. Pick a still-stubbed slice
+        # method (GraphOps lands in 3E+) to assert the stub surface
+        # remains in place.
+        with pytest.raises(NotImplementedError, match="get_entity"):
+            await store.get_entity("ent_x")
     finally:
         await store.close()
 
@@ -144,8 +144,14 @@ async def test_vec0_knn_query_works(tmp_path: Path):
 
     store = await SqliteStore.open(f"sqlite:///{tmp_path / 'knn.db'}")
     try:
-        v1 = [0.1] * EMBED_DIM
-        v2 = [0.9] * EMBED_DIM
+        # Two unit vectors pointing in different directions: identity-aligned
+        # (1,0,...,0) and a vector with components on the first two axes.
+        # Cosine distance to v1 is 0 for v1 itself and ~0.293 for v2.
+        v1 = [0.0] * EMBED_DIM
+        v1[0] = 1.0
+        v2 = [0.0] * EMBED_DIM
+        v2[0] = 0.7071
+        v2[1] = 0.7071
         async with store.transaction() as tx:
             await tx.execute(
                 "INSERT INTO memory_vectors(memory_rowid, embedding) VALUES (?, ?)",
@@ -179,17 +185,21 @@ async def test_transaction_rolls_back_on_exception(tmp_path: Path):
 
     store = await SqliteStore.open(f"sqlite:///{tmp_path / 'tx.db'}")
     try:
+        v1 = [0.0] * EMBED_DIM
+        v1[0] = 1.0
+        v2 = [0.0] * EMBED_DIM
+        v2[1] = 1.0
         async with store.transaction() as tx:
             await tx.execute(
                 "INSERT INTO memory_vectors(memory_rowid, embedding) VALUES (?, ?)",
-                (1, repr([0.1] * EMBED_DIM)),
+                (1, repr(v1)),
             )
 
         with pytest.raises(RuntimeError, match="forced"):
             async with store.transaction() as tx:
                 await tx.execute(
                     "INSERT INTO memory_vectors(memory_rowid, embedding) VALUES (?, ?)",
-                    (2, repr([0.2] * EMBED_DIM)),
+                    (2, repr(v2)),
                 )
                 raise RuntimeError("forced")
 
