@@ -231,6 +231,8 @@ def _fake_store_with(*, vec=None, fts=None, graph=None, fail=()):
     store.recall_by_text = AsyncMock(side_effect=_fts)
     store.recall_by_entities = AsyncMock(side_effect=_graph)
     store.get_entity_by_name = AsyncMock(side_effect=_ent_by_name)
+    # Phase 6F: hybrid recall calls are_superseded; default to no-op set.
+    store.are_superseded = AsyncMock(return_value=set())
     return store
 
 
@@ -396,6 +398,8 @@ async def test_v1_retrieve_returns_signals_breakdown(client):
     fake_store.recall_by_text = AsyncMock(return_value=[])
     fake_store.recall_by_entities = AsyncMock(return_value=[])
     fake_store.get_entity_by_name = AsyncMock(return_value=None)
+    # Phase 6F: hybrid recall calls are_superseded to score-suppress.
+    fake_store.are_superseded = AsyncMock(return_value=set())
     auth_store = _make_auth_store()
 
     async def _fake_get_store():
@@ -413,8 +417,11 @@ async def test_v1_retrieve_returns_signals_breakdown(client):
     data = resp.json()
     assert data["count"] == 1
     sigs = data["memories"][0]["signals"]
-    assert set(sigs.keys()) == {"vector", "fts", "graph", "recency", "importance"}
+    assert set(sigs.keys()) == {
+        "vector", "fts", "graph", "recency", "importance", "superseded",
+    }
     assert sigs["vector"] > 0
     assert sigs["fts"] == 0
     assert sigs["graph"] == 0
     assert 0 < sigs["recency"] <= 1.0
+    assert sigs["superseded"] == 0
