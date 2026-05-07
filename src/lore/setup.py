@@ -348,7 +348,7 @@ LORE_CAPTURE_TOOL_HOOK_SCRIPT = """\
 #   - Apply the skip list (LORE_CAPTURE_SKIP, CSV; defaults to passive
 #     read tools + the agent's own todo scratchpad). mcp__lore__* is
 #     ALWAYS skipped to prevent recursion when the subagent calls
-#     remember().
+#     remember() / remember_observation().
 #   - Append a single JSON line to ~/.lore/sessions/<session_id>/buffer.jsonl
 #     with seq, ts, tool, input_summary, output_summary (truncated).
 #   - Compute unprocessed_count vs the cursor; if >= LORE_CAPTURE_N (default
@@ -416,7 +416,8 @@ if not tool_name or not session_id:
     sys.exit(0)
 
 # mcp__lore__* is ALWAYS skipped (recursion guard for the subagents
-# own remember() calls). Then apply the user-configurable skip list.
+# own remember()/remember_observation() calls). Then apply the
+# user-configurable skip list.
 if tool_name.startswith("mcp__lore__"):
     sys.exit(0)
 skip = {{s.strip() for s in skip_csv.split(",") if s.strip()}}

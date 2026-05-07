@@ -275,6 +275,56 @@ def remember(
 
 @mcp.tool(
     description=(
+        "Record a structured observation extracted from a session. "
+        "USE THIS WHEN: capturing a multi-faceted event (a debugging session, "
+        "a decision with trade-offs, a workflow pattern) where you have a "
+        "short title, a few atomic facts, and a narrative. PREFER THIS over "
+        "remember(...) for typical auto-extracted observations from session "
+        "transcripts. Use the simpler remember(content, type=...) only for "
+        "polished single-fact memories you're confident about. "
+        "Stored with type='observation' so future retrieval can score "
+        "polished memories higher than raw observations."
+    ),
+)
+def remember_observation(
+    title: str,
+    facts: List[str],
+    narrative: str,
+    tags: Optional[List[str]] = None,
+    project: Optional[str] = None,
+) -> str:
+    """Save a structured observation. Returns a confirmation with the memory ID."""
+    try:
+        lore = _get_lore()
+        body = {
+            "title": title,
+            "facts": list(facts) if facts else [],
+            "narrative": narrative,
+            "tags": list(tags) if tags else [],
+            "project": project,
+            "captured_by": "auto",
+        }
+        # Drop None project so the server applies its default project resolution.
+        if body["project"] is None:
+            body.pop("project")
+
+        store = getattr(lore, "_store", None)
+        request_fn = getattr(store, "_request", None)
+        if request_fn is None:
+            return (
+                "Failed to save observation: Lore is not configured with an "
+                "HTTP backend. Set LORE_STORE=remote and LORE_API_URL."
+            )
+        resp = request_fn("POST", "/v1/observations", json=body)
+        data = resp.json() if resp.content else {}
+        observation_id = data.get("id", "?")
+        return f"Saved observation {observation_id}"
+    except Exception as e:
+        return f"Failed to save observation: {e}"
+
+
+@mcp.tool(
+    description=(
         "Search for relevant memories from past experience. "
         "USE THIS WHEN: you're about to solve a problem, debug an error, "
         "or make a design decision — especially if you suspect someone has "

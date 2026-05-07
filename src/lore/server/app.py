@@ -41,6 +41,7 @@ from lore.server.routes.ingest import router as ingest_router
 from lore.server.routes.keys import router as keys_router
 from lore.server.routes.lessons import router as lessons_router
 from lore.server.routes.memories import router as memories_router
+from lore.server.routes.observations import router as observations_router
 from lore.server.routes.plugins import router as plugins_router
 from lore.server.routes.policies import router as policies_router
 from lore.server.routes.profiles import router as profiles_router
@@ -140,6 +141,7 @@ app = FastAPI(
 app.include_router(keys_router)
 app.include_router(lessons_router)
 app.include_router(memories_router)
+app.include_router(observations_router)
 app.include_router(sharing_router)
 app.include_router(rate_router)
 app.include_router(ingest_router)

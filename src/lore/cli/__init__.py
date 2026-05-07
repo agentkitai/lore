@@ -646,6 +646,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_ui.add_argument("--port", type=int, default=8766, help="Port (default: 8766)")
     p_ui.add_argument("--no-open", action="store_true", dest="no_open", help="Don't open browser")
 
+    # observations (Phase 6B) — list/show structured observations.
+    obs_parser = sub.add_parser(
+        "observations",
+        help="List or inspect structured observations (Phase 6B)",
+    )
+    obs_sub = obs_parser.add_subparsers(dest="obs_command")
+
+    obs_list = obs_sub.add_parser("list", help="List recent observations")
+    obs_list.add_argument("--limit", type=int, default=20, help="Max rows to show (default: 20)")
+    obs_list.add_argument("--project", default=None, help="Filter by project")
+
+    obs_show = obs_sub.add_parser("show", help="Show full payload for an observation by ID")
+    obs_show.add_argument("observation_id", help="Observation memory ID")
+
     # capture-extract (Phase 6A) — internal subagent entry point invoked
     # by the PostToolUse and Stop hooks. Users do not normally call this
     # directly. ``--session-id`` is required; ``--transcript-path`` is
@@ -721,6 +735,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         cmd_workspace,
         cmd_wrap,
     )
+    from lore.cli.commands.observations import cmd_observations
     from lore.cli.commands.recall import cmd_prompt, cmd_recall
     from lore.cli.commands.remember import cmd_remember
     from lore.cli.commands.server import cmd_mcp, cmd_serve, cmd_ui
@@ -794,6 +809,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "mcp": cmd_mcp,
         "ui": cmd_ui,
         "migrate": cmd_migrate,
+        "observations": cmd_observations,
         "capture-extract": cmd_capture,
     }
     handlers[args.command](args)
