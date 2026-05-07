@@ -296,3 +296,58 @@ class MemorySearchResponse(BaseModel):
     """Response for POST /v1/memories/search."""
 
     memories: List[MemorySearchResult]
+
+
+# ── Observation Models (Phase 6B) ────────────────────────────────
+
+
+class ObservationCreateRequest(BaseModel):
+    """Request body for POST /v1/observations."""
+
+    title: str = Field(..., min_length=1, max_length=200)
+    facts: List[str] = Field(..., min_length=0)
+    narrative: str = Field(..., min_length=1)
+    tags: List[str] = Field(default_factory=list)
+    project: Optional[str] = None
+    source: Optional[str] = None
+    captured_by: str = Field(default="auto")
+    session_id: Optional[str] = None
+
+    @field_validator("captured_by")
+    @classmethod
+    def validate_captured_by(cls, v: str) -> str:
+        if v not in ("auto", "manual"):
+            raise ValueError("captured_by must be 'auto' or 'manual'")
+        return v
+
+
+class ObservationCreateResponse(BaseModel):
+    """Response for POST /v1/observations."""
+
+    id: str
+
+
+class ObservationResponse(BaseModel):
+    """Single observation (no embedding)."""
+
+    id: str
+    title: str
+    facts: List[str]
+    narrative: str
+    tags: List[str] = Field(default_factory=list)
+    project: Optional[str] = None
+    source: Optional[str] = None
+    captured_by: str = "auto"
+    session_id: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    meta: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ObservationListResponse(BaseModel):
+    """Response for GET /v1/observations."""
+
+    observations: List[ObservationResponse]
+    total: int
+    limit: int
+    offset: int
