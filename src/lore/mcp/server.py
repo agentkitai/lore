@@ -11,6 +11,7 @@ Configure via environment variables:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
@@ -508,6 +509,96 @@ def _get_session_context(
     except Exception:
         logger.warning("Failed to fetch session context", exc_info=True)
         return []
+
+
+@mcp.tool(
+    description=(
+        "Phase 6D progressive disclosure: return a compact index of "
+        "relevant memories — id, title, score, signals only. "
+        "USE THIS WHEN: you want to survey what Lore knows about a topic "
+        "before drilling in. Cheaper than recall (~50 tokens/result vs "
+        "~300). Pair with get_memories(ids=[...]) to fetch full content "
+        "for the rows worth reading. "
+        "GOOD queries: 'CORS errors with FastAPI', 'Docker build fails on M1'. "
+        "Avoid 'help', 'error', 'fix this'."
+    ),
+)
+def search(
+    query: str,
+    limit: int = 20,
+    min_score: float = 0.3,
+) -> str:
+    """Return a compact JSON index of relevant memories."""
+    try:
+        lore = _get_lore()
+        store = getattr(lore, "_store", None)
+        request_fn = getattr(store, "_request", None)
+        if request_fn is None:
+            return (
+                "Failed to search: Lore is not configured with an HTTP "
+                "backend. Set LORE_STORE=remote and LORE_API_URL."
+            )
+        params = {
+            "query": query,
+            "limit": max(1, min(int(limit), 50)),
+            "min_score": float(min_score),
+        }
+        resp = request_fn("GET", "/v1/search", params=params)
+        if resp.status_code != 200:
+            return f"Search failed: HTTP {resp.status_code}"
+        data = resp.json() if resp.content else {}
+        hits = data.get("hits") or []
+        if not hits:
+            return "No relevant memories found."
+        # Compact, predictable JSON — easy for the agent to parse.
+        return json.dumps(
+            {"hits": hits, "count": data.get("count", len(hits))},
+            ensure_ascii=False,
+            indent=2,
+        )
+    except Exception as e:
+        return f"Failed to search memories: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Phase 6D progressive disclosure: fetch full payloads for one or "
+        "more memory IDs (typically returned by search()). "
+        "USE THIS AFTER search() identifies rows worth drilling into. "
+        "Caps at 10 IDs per call. Returns a JSON-formatted block with full "
+        "content, tags, meta, and timestamps. "
+        "Errors (missing or unauthorized IDs) are surfaced in the "
+        "``errors`` array; the call still succeeds as long as at least "
+        "one ID resolves."
+    ),
+)
+def get_memories(ids: List[str]) -> str:
+    """Fetch full StoredMemory payloads by id."""
+    try:
+        if not ids:
+            return "Provide at least one memory id."
+        lore = _get_lore()
+        store = getattr(lore, "_store", None)
+        request_fn = getattr(store, "_request", None)
+        if request_fn is None:
+            return (
+                "Failed to fetch memories: Lore is not configured with an "
+                "HTTP backend. Set LORE_STORE=remote and LORE_API_URL."
+            )
+        # Drop blanks; the server caps at 10 and 422s on overflow.
+        cleaned = [s.strip() for s in ids if s and s.strip()]
+        if not cleaned:
+            return "Provide at least one non-blank memory id."
+        params = {"ids": ",".join(cleaned)}
+        resp = request_fn("GET", "/v1/memories/details", params=params)
+        if resp.status_code == 404:
+            return "No memories found for the given ids."
+        if resp.status_code != 200:
+            return f"Fetch failed: HTTP {resp.status_code}"
+        data = resp.json() if resp.content else {}
+        return json.dumps(data, ensure_ascii=False, indent=2, default=str)
+    except Exception as e:
+        return f"Failed to fetch memories: {e}"
 
 
 @mcp.tool(
