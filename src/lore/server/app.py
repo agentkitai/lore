@@ -72,39 +72,58 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         yield
         return
 
-    pool = await init_pool(db_url)
-    await run_migrations(pool, settings.migrations_dir)
-    await init_store(db_url)
+    from urllib.parse import urlparse
+    scheme = urlparse(db_url).scheme.lower()
+    is_sqlite = scheme == "sqlite"
 
-    # Cache pgvector availability at startup
     global _pgvector_available
-    try:
-        async with pool.acquire() as conn:
-            result = await conn.fetchval(
-                "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')"
-            )
-            _pgvector_available = bool(result)
-            logger.info("pgvector available: %s", _pgvector_available)
-    except Exception:
-        logger.exception("Failed to check pgvector at startup")
+    slo_task = None
+    scheduler_task = None
+
+    if is_sqlite:
+        # Solo SQLite path: open the Store (handles migrations + bootstrap)
+        # and skip the asyncpg pool, pgvector check, and pool-based workers.
+        # The Phase 4C AsyncLore workers cover retention/SLO/alerting/ingest;
+        # the legacy server.scheduler / server.slo_checker still use raw
+        # asyncpg and don't apply to SQLite.
+        await init_store(db_url)
         _pgvector_available = False
+        logger.info("Solo mode (SQLite) — pgvector check + asyncpg-based "
+                    "workers skipped")
+    else:
+        pool = await init_pool(db_url)
+        await run_migrations(pool, settings.migrations_dir)
+        await init_store(db_url)
 
-    # Start background tasks
-    import asyncio
+        try:
+            async with pool.acquire() as conn:
+                result = await conn.fetchval(
+                    "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'vector')"
+                )
+                _pgvector_available = bool(result)
+                logger.info("pgvector available: %s", _pgvector_available)
+        except Exception:
+            logger.exception("Failed to check pgvector at startup")
+            _pgvector_available = False
 
-    from lore.server.scheduler import policy_scheduler_loop
-    from lore.server.slo_checker import slo_checker_loop
+        import asyncio
 
-    slo_check_interval = int(os.environ.get("SLO_CHECK_INTERVAL", "60"))
-    slo_task = asyncio.create_task(slo_checker_loop(slo_check_interval))
-    scheduler_task = asyncio.create_task(policy_scheduler_loop(60))
+        from lore.server.scheduler import policy_scheduler_loop
+        from lore.server.slo_checker import slo_checker_loop
+
+        slo_check_interval = int(os.environ.get("SLO_CHECK_INTERVAL", "60"))
+        slo_task = asyncio.create_task(slo_checker_loop(slo_check_interval))
+        scheduler_task = asyncio.create_task(policy_scheduler_loop(60))
 
     yield
 
-    slo_task.cancel()
-    scheduler_task.cancel()
+    if slo_task is not None:
+        slo_task.cancel()
+    if scheduler_task is not None:
+        scheduler_task.cancel()
     await close_store()
-    await close_pool()
+    if not is_sqlite:
+        await close_pool()
 
     # Reset cache on shutdown
     _pgvector_available = None
