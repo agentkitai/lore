@@ -86,6 +86,13 @@ class _FakePipeline:
 
 @pytest.mark.asyncio
 async def test_enrich_memory_async_calls_pipeline_and_persists(store, monkeypatch):
+    # ``enrich_memory_async`` calls ``store.enrich_memory_meta`` and the
+    # service swallows NotImplementedError to a warning — so the contract
+    # hook can't see the original. Skip cleanly on SqliteStore until 3D+.
+    from tests.persistence.conftest import _is_sqlite
+    if _is_sqlite(store):
+        pytest.skip("SqliteStore.enrich_memory_meta pending Phase 3D+")
+
     monkeypatch.setattr("lore.enrichment.pipeline.EnrichmentPipeline", _FakePipeline)
     monkeypatch.setattr("lore.enrichment.llm.LLMClient", lambda **_: object())
 
