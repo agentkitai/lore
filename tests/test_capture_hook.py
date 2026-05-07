@@ -28,6 +28,7 @@ from lore.cli.commands import capture as cap
 from lore.setup import (
     LORE_CAPTURE_STOP_HOOK_SCRIPT,
     LORE_CAPTURE_TOOL_HOOK_SCRIPT,
+    _render_ensure_server_bash,
 )
 
 # ── Unit tests ────────────────────────────────────────────────────
@@ -400,7 +401,19 @@ class TestCaptureExtractIntegration:
 
 
 def _render(template: str) -> str:
-    return template.format(server_url="http://localhost:8765", api_key="test-key")
+    return template.format(
+        server_url="http://localhost:8765",
+        api_key="test-key",
+        ensure_server_bash=_render_ensure_server_bash(),
+    )
+
+
+def _hook_env(env: dict) -> dict:
+    """Test helper: bake LORE_NO_AUTOSTART so the rendered ensure-server
+    helper short-circuits without spawning a background `lore serve`.
+    Tests that want to exercise the spawn path explicitly should clear it."""
+    env.setdefault("LORE_NO_AUTOSTART", "true")
+    return env
 
 
 class TestHookTemplates:
@@ -430,7 +443,7 @@ class TestHookTemplates:
         hook_path.write_text(rendered)
         hook_path.chmod(0o755)
 
-        env = os.environ.copy()
+        env = _hook_env(os.environ.copy())
         env["HOME"] = str(tmp_path)
         env["LORE_CAPTURE_N"] = "999"  # don't try to spawn capture-extract
 
@@ -458,7 +471,7 @@ class TestHookTemplates:
         hook_path = tmp_path / "lore-capture-tool.sh"
         hook_path.write_text(rendered)
         hook_path.chmod(0o755)
-        env = os.environ.copy()
+        env = _hook_env(os.environ.copy())
         env["HOME"] = str(tmp_path)
 
         payload = json.dumps({
@@ -480,7 +493,7 @@ class TestHookTemplates:
         hook_path = tmp_path / "lore-capture-tool.sh"
         hook_path.write_text(rendered)
         hook_path.chmod(0o755)
-        env = os.environ.copy()
+        env = _hook_env(os.environ.copy())
         env["HOME"] = str(tmp_path)
         env["LORE_AUTO_SAVE"] = "false"
 
@@ -502,7 +515,7 @@ class TestHookTemplates:
         hook_path = tmp_path / "lore-capture-tool.sh"
         hook_path.write_text(rendered)
         hook_path.chmod(0o755)
-        env = os.environ.copy()
+        env = _hook_env(os.environ.copy())
         env["HOME"] = str(tmp_path)
         # Default skip list includes Read.
         payload = json.dumps({

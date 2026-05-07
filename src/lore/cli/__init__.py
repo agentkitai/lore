@@ -600,6 +600,16 @@ def build_parser() -> argparse.ArgumentParser:
             "binding to a non-loopback host."
         ),
     )
+    p_serve.add_argument(
+        "--idle-timeout",
+        type=int,
+        default=None,
+        dest="idle_timeout",
+        help=(
+            "Auto-exit after N seconds of no requests (lazy mode). "
+            "0 disables (default). Falls back to $LORE_IDLE_TIMEOUT env var."
+        ),
+    )
 
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
