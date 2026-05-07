@@ -29,6 +29,7 @@ MIGRATED_ROUTES = {
     "src/lore/server/routes/recommendations.py",
     "src/lore/server/routes/retrieve.py",
     "src/lore/server/routes/review.py",
+    "src/lore/server/routes/search.py",
     "src/lore/server/routes/sharing.py",
     "src/lore/server/routes/slo.py",
     "src/lore/server/routes/snapshots.py",

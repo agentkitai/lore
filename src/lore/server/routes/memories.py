@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Optional
+from typing import List, Optional
 
 try:
     from fastapi import APIRouter, Depends, HTTPException, Query
@@ -195,6 +195,88 @@ async def record_access(
         "last_accessed_at": updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
         "importance_score": updated.importance_score,
     }
+
+
+# ── Bulk read (Phase 6D progressive disclosure) ─────────────────────
+
+
+class MemoryDetailsResponse(MemoryListResponse):
+    """Response for /v1/memories/details: full payloads for a CSV id list.
+
+    Reuses ``MemoryListResponse``'s ``memories``/``total``/``limit``/``offset``
+    shape so existing list-consuming clients can reuse decoders, with one
+    addition: ``errors`` lists any IDs that were missing or unauthorized so
+    the caller can distinguish "we returned everything you asked for" from
+    "some IDs silently dropped". A 404 is raised only when *every* requested
+    ID failed to resolve (don't leak existence one-by-one, but also don't
+    hand back an empty array on a typo).
+    """
+
+    errors: List[str] = []
+
+
+_MAX_DETAIL_IDS = 10
+
+
+@router.get("/details", response_model=MemoryDetailsResponse)
+async def get_memory_details(
+    ids: str = Query(
+        ..., min_length=1, description="Comma-separated memory IDs (max 10)",
+    ),
+    auth: AuthContext = Depends(get_auth_context),
+) -> MemoryDetailsResponse:
+    """Fetch full ``StoredMemory`` payloads for one or more IDs.
+
+    Phase 6D progressive-disclosure: an agent surveys ``/v1/search`` (compact
+    index) and calls this endpoint with the IDs it wants to drill into.
+
+    404 policy:
+        * If at least one ID resolves to a memory the caller can read, return
+          200 with the resolved memories plus an ``errors`` array listing the
+          unresolved ones.
+        * If every ID is missing or scoped out, return 404 — don't leak
+          existence by returning a 200 with an empty array.
+    """
+    requested = [s for s in (chunk.strip() for chunk in ids.split(",")) if s]
+    if not requested:
+        raise HTTPException(status_code=422, detail="At least one id is required")
+    # De-dupe while preserving caller order so the response is deterministic.
+    seen: set = set()
+    unique_ids: list = []
+    for mid in requested:
+        if mid not in seen:
+            seen.add(mid)
+            unique_ids.append(mid)
+    if len(unique_ids) > _MAX_DETAIL_IDS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many ids; max {_MAX_DETAIL_IDS} per call",
+        )
+
+    store = await get_store()
+    resolved: list = []
+    errors: List[str] = []
+    for mid in unique_ids:
+        m = await _get_memory(store, auth.org_id, mid)
+        if m is None:
+            errors.append(mid)
+            continue
+        # Project-scoped key: refuse to disclose memories outside its project.
+        if auth.project is not None and m.project != auth.project:
+            errors.append(mid)
+            continue
+        resolved.append(_stored_to_memory_response(m))
+
+    if not resolved:
+        raise HTTPException(status_code=404, detail="No memories found for given ids")
+
+    return MemoryDetailsResponse(
+        memories=resolved,
+        total=len(resolved),
+        limit=len(unique_ids),
+        offset=0,
+        errors=errors,
+    )
 
 
 # ── Read ───────────────────────────────────────────────────────────

@@ -33,6 +33,8 @@ CLAUDE_CODE_HOOK_SCRIPT = """\
 #   LORE_MAX_MEMORIES     max per turn (default: 5)
 #   LORE_TURNS_FOR_QUERY  user turns to concat for retrieval (default: 4)
 #   LORE_TIMEOUT          per-request seconds (default: 2)
+#   LORE_PROGRESSIVE      Phase 6D progressive disclosure: search→detail (default: false)
+#   LORE_SEARCH_LIMIT     when LORE_PROGRESSIVE=true, candidates fetched (default: 20)
 
 import json
 import os
@@ -120,6 +122,67 @@ def _retrieve(api_url, api_key, query, limit, min_score, timeout):
         return {{}}
 
 
+def _search(api_url, api_key, query, limit, min_score, timeout):
+    \"\"\"Phase 6D: compact-index search — id/title/score/signals only.\"\"\"
+    qs = urllib.parse.urlencode({{
+        "query": query,
+        "limit": limit,
+        "min_score": min_score,
+    }})
+    req = urllib.request.Request(
+        f"{{api_url}}/v1/search?{{qs}}",
+        headers={{"Authorization": f"Bearer {{api_key}}"}},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return {{}}
+
+
+def _get_memories(api_url, api_key, ids, timeout):
+    \"\"\"Phase 6D: fetch full payloads by id.\"\"\"
+    if not ids:
+        return {{}}
+    qs = urllib.parse.urlencode({{"ids": ",".join(ids)}})
+    req = urllib.request.Request(
+        f"{{api_url}}/v1/memories/details?{{qs}}",
+        headers={{"Authorization": f"Bearer {{api_key}}"}},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except Exception:
+        return {{}}
+
+
+def _progressive_retrieve(api_url, api_key, query, search_limit, detail_limit, min_score, timeout):
+    \"\"\"Two-phase progressive disclosure: search → drill-in.
+
+    Returns a list of full memories shaped like ``/v1/retrieve``'s ``memories``
+    field so the rest of ``main()`` (formatting + dedup) is unchanged.\"\"\"
+    index = _search(api_url, api_key, query, search_limit, min_score, timeout)
+    hits = index.get("hits") or []
+    if not hits:
+        return []
+    survivors = [h for h in hits if h.get("score", 0) >= min_score][:detail_limit]
+    if not survivors:
+        return []
+    score_by_id = {{h.get("id"): h.get("score", 0) for h in survivors}}
+    detail = _get_memories(api_url, api_key, [h["id"] for h in survivors if h.get("id")], timeout)
+    full = detail.get("memories") or []
+    # Re-attach the search score so the existing markdown formatter stays
+    # numerically meaningful (full payloads from /v1/memories/details don't
+    # carry ``score``).
+    out = []
+    for m in full:
+        m = dict(m)
+        if "score" not in m:
+            m["score"] = score_by_id.get(m.get("id"), 0)
+        out.append(m)
+    return out
+
+
 def _seen_path(session_id):
     if not session_id:
         return None
@@ -162,14 +225,22 @@ def main():
     limit = int(os.environ.get("LORE_MAX_MEMORIES") or "5")
     turns_for_query = int(os.environ.get("LORE_TURNS_FOR_QUERY") or "4")
     timeout = float(os.environ.get("LORE_TIMEOUT") or "2")
+    progressive = (os.environ.get("LORE_PROGRESSIVE") or "false").lower() in ("true", "1", "yes")
+    search_limit = int(os.environ.get("LORE_SEARCH_LIMIT") or "20")
 
     # Build conversation-aware query: previous user turns + current prompt.
     transcript_path = inp.get("transcript_path")
     conv_context = _last_user_turns(transcript_path, turns_for_query)
     query = (conv_context + " \\n " + prompt).strip() if conv_context else prompt
 
-    result = _retrieve(api_url, api_key, query, limit, min_score, timeout)
-    memories = result.get("memories") or []
+    if progressive:
+        # Phase 6D: search compact index, drill into top survivors.
+        memories = _progressive_retrieve(
+            api_url, api_key, query, search_limit, limit, min_score, timeout
+        )
+    else:
+        result = _retrieve(api_url, api_key, query, limit, min_score, timeout)
+        memories = result.get("memories") or []
     if not memories:
         return
 
