@@ -68,6 +68,41 @@ async def _insert_memory(
 # ── record_retrieval_event tests ───────────────────────────────────────────────
 
 
+async def _count_retrieval_events(store, org_id: str) -> int:
+    """Dialect-aware COUNT(*) on retrieval_events for an org."""
+    from tests.persistence.conftest import _is_sqlite
+
+    if _is_sqlite(store):
+        async with store._conn.execute(
+            "SELECT COUNT(*) AS n FROM retrieval_events WHERE org_id = ?",
+            (org_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row["n"])
+    return int(
+        await store._conn.fetchval(
+            "SELECT COUNT(*) FROM retrieval_events WHERE org_id = $1",
+            org_id,
+        )
+    )
+
+
+async def _fetch_retrieval_event_row(store, org_id: str, columns: str):
+    """Dialect-aware fetch of a single retrieval_events row."""
+    from tests.persistence.conftest import _is_sqlite
+
+    if _is_sqlite(store):
+        async with store._conn.execute(
+            f"SELECT {columns} FROM retrieval_events WHERE org_id = ?",
+            (org_id,),
+        ) as cur:
+            return await cur.fetchone()
+    return await store._conn.fetchrow(
+        f"SELECT {columns} FROM retrieval_events WHERE org_id = $1",
+        org_id,
+    )
+
+
 @pytest.mark.asyncio
 async def test_record_retrieval_event_inserts_row(store: Store):
     await _ensure_org(store, "org-re1")
@@ -86,15 +121,11 @@ async def test_record_retrieval_event_inserts_row(store: Store):
     )
     await store.record_retrieval_event(event)
 
-    count = await store._conn.fetchval(
-        "SELECT COUNT(*) FROM retrieval_events WHERE org_id = $1",
-        "org-re1",
-    )
+    count = await _count_retrieval_events(store, "org-re1")
     assert count == 1
 
-    row = await store._conn.fetchrow(
-        "SELECT query, results_count, project, format FROM retrieval_events WHERE org_id = $1",
-        "org-re1",
+    row = await _fetch_retrieval_event_row(
+        store, "org-re1", "query, results_count, project, format"
     )
     assert row["query"] == "what is a fact"
     assert row["results_count"] == 3
@@ -119,10 +150,7 @@ async def test_record_retrieval_event_with_empty_results(store: Store):
     # Should not raise
     await store.record_retrieval_event(event)
 
-    count = await store._conn.fetchval(
-        "SELECT COUNT(*) FROM retrieval_events WHERE org_id = $1",
-        "org-re2",
-    )
+    count = await _count_retrieval_events(store, "org-re2")
     assert count == 1
 
 
@@ -142,11 +170,8 @@ async def test_record_retrieval_event_serializes_jsonb_arrays(store: Store):
     )
     await store.record_retrieval_event(event)
 
-    row = await store._conn.fetchrow(
-        "SELECT scores, memory_ids FROM retrieval_events WHERE org_id = $1",
-        "org-re3",
-    )
-    # asyncpg returns JSONB as strings; decode for comparison
+    row = await _fetch_retrieval_event_row(store, "org-re3", "scores, memory_ids")
+    # asyncpg returns JSONB as strings; SQLite stores TEXT-as-JSON. Decode either way.
     scores = row["scores"]
     if isinstance(scores, str):
         scores = json.loads(scores)

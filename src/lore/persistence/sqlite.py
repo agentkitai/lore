@@ -36,6 +36,7 @@ from lore.persistence.types import (
     MemoryFilter,
     MemoryPatch,
     NewMemory,
+    NewRetrievalEvent,
     RecallParams,
     ScoredMemory,
     StoredMemory,
@@ -1206,6 +1207,82 @@ class SqliteStore:
             raise StoreNotFoundError("memories", memory_id)
         return _row_to_memory(row)
 
+    # ── AnalyticsOps (Phase 3E) ───────────────────────────────────────
+
+    async def record_retrieval_event(self, event: "NewRetrievalEvent") -> None:
+        """Insert a retrieval analytics event row.
+
+        Mirrors ``PostgresStore.record_retrieval_event``: JSON-serialized
+        ``scores`` / ``memory_ids`` arrays are stored as TEXT in SQLite
+        instead of JSONB. ``created_at`` defaults to ``datetime('now')``
+        via the column default.
+        """
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO retrieval_events
+                    (org_id, query, results_count, scores, memory_ids,
+                     avg_score, max_score, min_score_threshold, query_time_ms,
+                     project, format)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.org_id,
+                    event.query,
+                    event.results_count,
+                    json.dumps(list(event.scores)),
+                    json.dumps(list(event.memory_ids)),
+                    event.avg_score,
+                    event.max_score,
+                    event.min_score_threshold,
+                    event.query_time_ms,
+                    event.project,
+                    event.format,
+                ),
+            )
+            await conn.commit()
+
+    async def record_memory_access(
+        self, org_id: str, memory_id: str
+    ) -> Optional["StoredMemory"]:
+        """Increment access counters and return the updated memory, or None.
+
+        Mirrors ``PostgresStore.record_memory_access``: bumps
+        ``access_count`` by 1, sets ``last_accessed_at = now()``, and
+        recomputes ``importance_score`` from confidence, vote delta, and
+        the (slightly damped) log of the new access count. Returns the
+        updated row, or None if (id, org_id) does not match.
+
+        SQLite has no ``UPDATE … RETURNING`` (added in 3.35; aiosqlite's
+        wrapper doesn't expose it everywhere), so we issue an UPDATE and
+        a SELECT inside the same connection. There is no risk of a
+        concurrent writer interleaving since SQLite is single-writer.
+        """
+        sql_update = (
+            "UPDATE memories SET "
+            "access_count = COALESCE(access_count, 0) + 1, "
+            "last_accessed_at = datetime('now'), "
+            "importance_score = COALESCE(confidence, 1.0) "
+            " * MAX(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1) "
+            " * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1), "
+            "updated_at = datetime('now') "
+            "WHERE id = ? AND org_id = ?"
+        )
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql_update, (memory_id, org_id))
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._MEMORY_COLS} FROM memories "
+                "WHERE id = ? AND org_id = ?",
+                (memory_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_memory(row) if row else None
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -1269,8 +1346,9 @@ _STUBBED_METHODS: Sequence[str] = (
     "get_api_key", "list_api_keys", "create_api_key", "revoke_api_key",
     "count_active_root_keys", "lookup_api_key_by_hash",
     "touch_api_key_last_used",
-    # AnalyticsOps
-    "record_retrieval_event", "record_memory_access",
+    # AnalyticsOps — Phase 3E commits 1–3 implement all six. Commit 1
+    # ships record_retrieval_event + record_memory_access; the remaining
+    # four stay stubbed until commits 2–3.
     "list_recent_session_snapshots", "compute_retrieval_analytics",
     "compute_metric_value", "compute_metric_timeseries",
     # RecommendationOps
