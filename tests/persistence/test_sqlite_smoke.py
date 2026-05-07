@@ -113,3 +113,121 @@ def test_resolve_db_path_home_expansion():
     result = _resolve_db_path("sqlite:///~/.lore/lore.db")
     assert "~" not in result
     assert result.endswith(".lore/lore.db")
+
+
+# ── Phase 3B: vec0 virtual table + transaction helper ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_memory_vectors_table_exists_after_open(tmp_path: Path):
+    from lore.persistence.sqlite import SqliteStore
+
+    store = await SqliteStore.open(f"sqlite:///{tmp_path / 'vec.db'}")
+    try:
+        async with store._acquire() as conn:
+            async with conn.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='memory_vectors'"
+            ) as cur:
+                row = await cur.fetchone()
+        assert row is not None, "memory_vectors vec0 virtual table should exist"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_vec0_knn_query_works(tmp_path: Path):
+    from lore.persistence.sqlite import EMBED_DIM, SqliteStore
+
+    store = await SqliteStore.open(f"sqlite:///{tmp_path / 'knn.db'}")
+    try:
+        v1 = [0.1] * EMBED_DIM
+        v2 = [0.9] * EMBED_DIM
+        async with store.transaction() as tx:
+            await tx.execute(
+                "INSERT INTO memory_vectors(memory_rowid, embedding) VALUES (?, ?)",
+                (1, repr(v1)),
+            )
+            await tx.execute(
+                "INSERT INTO memory_vectors(memory_rowid, embedding) VALUES (?, ?)",
+                (2, repr(v2)),
+            )
+
+        async with store._acquire() as conn:
+            async with conn.execute(
+                "SELECT memory_rowid, distance FROM memory_vectors "
+                "WHERE embedding MATCH ? AND k = 2",
+                (repr(v1),),
+            ) as cur:
+                rows = [dict(r) async for r in cur]
+
+        assert len(rows) == 2
+        assert rows[0]["memory_rowid"] == 1
+        assert rows[0]["distance"] == pytest.approx(0.0, abs=1e-5)
+        assert rows[1]["memory_rowid"] == 2
+        assert rows[1]["distance"] > rows[0]["distance"]
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_transaction_rolls_back_on_exception(tmp_path: Path):
+    from lore.persistence.sqlite import EMBED_DIM, SqliteStore
+
+    store = await SqliteStore.open(f"sqlite:///{tmp_path / 'tx.db'}")
+    try:
+        async with store.transaction() as tx:
+            await tx.execute(
+                "INSERT INTO memory_vectors(memory_rowid, embedding) VALUES (?, ?)",
+                (1, repr([0.1] * EMBED_DIM)),
+            )
+
+        with pytest.raises(RuntimeError, match="forced"):
+            async with store.transaction() as tx:
+                await tx.execute(
+                    "INSERT INTO memory_vectors(memory_rowid, embedding) VALUES (?, ?)",
+                    (2, repr([0.2] * EMBED_DIM)),
+                )
+                raise RuntimeError("forced")
+
+        async with store._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) AS n FROM memory_vectors"
+            ) as cur:
+                row = await cur.fetchone()
+        assert row["n"] == 1, "Second insert should have rolled back"
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
+async def test_init_vec_tables_is_idempotent(tmp_path: Path):
+    """Re-opening the same DB must not fail when memory_vectors already exists."""
+    from lore.persistence.sqlite import SqliteStore
+
+    db_path = tmp_path / "idempotent.db"
+    store1 = await SqliteStore.open(f"sqlite:///{db_path}")
+    await store1.close()
+
+    store2 = await SqliteStore.open(f"sqlite:///{db_path}")
+    try:
+        async with store2._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) AS n FROM memory_vectors"
+            ) as cur:
+                row = await cur.fetchone()
+        assert row["n"] == 0
+    finally:
+        await store2.close()
+
+
+@pytest.mark.asyncio
+async def test_transaction_on_closed_store_raises(tmp_path: Path):
+    from lore.persistence.sqlite import SqliteStore, StoreError
+
+    store = await SqliteStore.open(f"sqlite:///{tmp_path / 'closed.db'}")
+    await store.close()
+
+    with pytest.raises(StoreError, match="closed"):
+        async with store.transaction():
+            pass

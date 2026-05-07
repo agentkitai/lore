@@ -1,16 +1,17 @@
 """SQLite Store implementation (Phase 3 of the solo-mode design).
 
-Phase 3A — foundation only. The class is wired through `make_store()` for
-sqlite:// URLs, opens a real connection pool with the WAL pragmas the design
-calls for, and applies the `migrations_sqlite/` schema. Store-protocol method
-implementations land in subsequent sub-phases (3C–3F); they currently raise
-`NotImplementedError`.
+Phase 3A — foundation: lifecycle + WAL pragmas + sqlite-vec extension load
++ migration runner. Phase 3B — vec0 virtual table for embeddings + a
+transactional helper enforcing the `memories` ⇆ `memory_vectors` invariant
+in a single `BEGIN IMMEDIATE … COMMIT`. Per-method Store implementations
+land in 3C–3F; the protocol methods are still `NotImplementedError` stubs.
 
 Spec: docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -23,6 +24,10 @@ from lore.persistence.exceptions import (
     ConfigError,
     StoreError,
 )
+
+# Embedding dimension is fixed at 384 across the codebase
+# (see migrations/001_initial.sql and lore.embed defaults).
+EMBED_DIM = 384
 
 try:  # pragma: no cover - optional dep
     import aiosqlite
@@ -117,6 +122,7 @@ class SqliteStore:
         store = cls(db_path=db_path)
         store._owned_conn = await store._open_connection(db_path)
         await store._apply_migrations(store._owned_conn)
+        await store._init_vec_tables(store._owned_conn)
         return store
 
     @classmethod
@@ -210,6 +216,56 @@ class SqliteStore:
                     f"Failed to apply SQLite migration {path.name}: {exc}"
                 ) from exc
             logger.info("Applied SQLite migration %s", path.name)
+
+    # ── Vector layer (Phase 3B) ────────────────────────────────────────
+
+    async def _init_vec_tables(self, conn) -> None:
+        """Create the `memory_vectors` vec0 virtual table.
+
+        The vec0 table stores the embedding vector keyed by `memory_rowid`,
+        which mirrors the `memories.rowid` integer the underlying base
+        table assigns. Inserts go in pairs inside a single transaction
+        (see `transaction()`) so a `memories` row never exists without its
+        matching vector and vice versa.
+
+        Not migration-versioned because vec0 is provider-specific to the
+        SQLite backend and not part of the cross-dialect schema contract.
+        Idempotent thanks to `IF NOT EXISTS`.
+        """
+        await conn.execute(
+            f"""
+            CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+                memory_rowid INTEGER PRIMARY KEY,
+                embedding FLOAT[{EMBED_DIM}]
+            )
+            """
+        )
+        await conn.commit()
+
+    @contextlib.asynccontextmanager
+    async def transaction(self):
+        """`BEGIN IMMEDIATE … COMMIT` (or ROLLBACK on exception).
+
+        Use for any write that touches BOTH `memories` and `memory_vectors`
+        — or any other multi-table invariant. `BEGIN IMMEDIATE` acquires a
+        write lock up-front so we don't get stuck in a deferred-to-immediate
+        upgrade if a concurrent read is open.
+
+        Yields the connection so the caller can chain executes inside the
+        transaction without re-acquiring it.
+        """
+        conn = self._conn or self._owned_conn
+        if conn is None:
+            raise StoreError("SqliteStore connection is closed")
+        await conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except BaseException:
+            with contextlib.suppress(Exception):
+                await conn.rollback()
+            raise
+        else:
+            await conn.commit()
 
     def _acquire(self):
         """Return an async context manager yielding a usable connection.
