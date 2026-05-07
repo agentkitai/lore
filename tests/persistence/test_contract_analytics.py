@@ -19,12 +19,25 @@ from lore.persistence.types import NewMemory, NewRetrievalEvent
 
 
 async def _ensure_org(store, org_id: str) -> None:
-    """Insert an org row if it doesn't already exist (required by memories FK)."""
-    await store._conn.execute(
-        "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        org_id,
-        org_id,
-    )
+    """Insert an org row if it doesn't already exist (required by memories FK).
+
+    Dialect-aware: PostgresStore uses asyncpg ``$N`` placeholders;
+    SqliteStore uses aiosqlite ``?`` placeholders.
+    """
+    from tests.persistence.conftest import _is_sqlite
+
+    if _is_sqlite(store):
+        await store._conn.execute(
+            "INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)",
+            (org_id, org_id),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            org_id,
+            org_id,
+        )
 
 
 def _vec(seed: int = 0) -> list[float]:
