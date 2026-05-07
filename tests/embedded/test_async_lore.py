@@ -229,6 +229,420 @@ async def test_org_id_validation_raises_for_unknown_org(tmp_path: Path):
             pass  # pragma: no cover
 
 
+# ── Phase 4B tests ───────────────────────────────────────────────────
+
+
+class TestAsyncLoreSnapshots:
+    """``save_snapshot`` round-trip + tag/meta wiring."""
+
+    @pytest.mark.asyncio
+    async def test_save_snapshot_persists_and_tags(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            snap = await lore.save_snapshot(
+                "Decided to retry on 5xx but not 4xx; investigating ratelimit lib next.",
+                title="Retry policy",
+                session_id="sess-1234",
+                tags=["retry"],
+                project="infra",
+            )
+            assert snap.id.startswith("mem_")
+            assert "session_snapshot" in snap.tags
+            assert "sess-1234" in snap.tags
+            assert "retry" in snap.tags
+            assert (snap.meta or {}).get("session_id") == "sess-1234"
+            assert (snap.meta or {}).get("type") == "session_snapshot"
+            assert snap.project == "infra"
+
+    @pytest.mark.asyncio
+    async def test_save_snapshot_rejects_empty(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            with pytest.raises(ValueError):
+                await lore.save_snapshot("   ")
+
+
+class TestAsyncLoreTopics:
+    """``list_topics`` + ``topic_detail`` over a small graph fixture."""
+
+    @pytest.mark.asyncio
+    async def test_list_topics_returns_high_mention_entities(self):
+        from lore import AsyncLore
+        from lore.persistence import NewEntity
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            store = lore.store
+            await store.upsert_entity(
+                NewEntity(name="Alpha", entity_type="topic", mention_count=5)
+            )
+            await store.upsert_entity(
+                NewEntity(name="Beta", entity_type="topic", mention_count=1)
+            )
+            topics = await lore.list_topics(min_mentions=3)
+            names = {t.name for t in topics}
+            assert "Alpha" in names
+            assert "Beta" not in names
+
+    @pytest.mark.asyncio
+    async def test_topic_detail_unknown_returns_none(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            assert await lore.topic_detail("does-not-exist") is None
+
+    @pytest.mark.asyncio
+    async def test_topic_detail_returns_entity_and_memories(self):
+        from lore import AsyncLore
+        from lore.persistence import NewEntity, NewMention
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            mem = await lore.remember("Talking about Alpha specifically", project="x")
+            store = lore.store
+            ent = await store.upsert_entity(
+                NewEntity(name="Alpha", entity_type="topic", mention_count=2)
+            )
+            await store.save_mention(
+                NewMention(entity_id=ent.id, memory_id=mem.id)
+            )
+
+            detail = await lore.topic_detail("Alpha")
+            assert detail is not None
+            assert detail.entity.name == "Alpha"
+            assert any(m.id == mem.id for m in detail.memories)
+
+
+class TestAsyncLoreRecentActivity:
+    """``recent_activity`` groups by project + clamps args."""
+
+    @pytest.mark.asyncio
+    async def test_recent_activity_groups_by_project(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            await lore.remember("a1", project="alpha")
+            await lore.remember("a2", project="alpha")
+            await lore.remember("b1", project="beta")
+            ra = await lore.recent_activity(hours=24)
+            assert ra.total_count == 3
+            project_counts = {g.project: g.count for g in ra.groups}
+            assert project_counts.get("alpha") == 2
+            assert project_counts.get("beta") == 1
+
+    @pytest.mark.asyncio
+    async def test_recent_activity_clamps_hours(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            ra = await lore.recent_activity(hours=10000)
+            assert ra.hours == 168
+
+
+class TestAsyncLoreReviews:
+    """Pending-review listing + bulk approve/reject."""
+
+    @pytest.mark.asyncio
+    async def test_get_pending_reviews_empty(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            assert list(await lore.get_pending_reviews()) == []
+
+    @pytest.mark.asyncio
+    async def test_review_connection_and_review_all(self):
+        from lore import AsyncLore
+        from lore.persistence import NewEntity, NewRelationship
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            store = lore.store
+            a = await store.upsert_entity(NewEntity(name="ra", entity_type="topic"))
+            b = await store.upsert_entity(NewEntity(name="rb", entity_type="topic"))
+            r1 = await store.save_relationship(
+                NewRelationship(
+                    source_entity_id=a.id, target_entity_id=b.id,
+                    rel_type="uses", status="pending",
+                )
+            )
+            r2 = await store.save_relationship(
+                NewRelationship(
+                    source_entity_id=a.id, target_entity_id=b.id,
+                    rel_type="depends_on", status="pending",
+                )
+            )
+
+            pending = await lore.get_pending_reviews()
+            assert {p.id for p in pending} >= {r1.id, r2.id}
+
+            res = await lore.review_connection(r1.id, "approve")
+            assert res.status == "approved"
+
+            updated = await lore.review_all("reject", reason="cleanup")
+            # r2 was the only one still pending after r1's approve.
+            assert updated >= 1
+
+    @pytest.mark.asyncio
+    async def test_review_connection_rejects_invalid_action(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            with pytest.raises(ValueError):
+                await lore.review_connection("rel-x", "archive")
+
+
+class TestAsyncLoreConversations:
+    """Conversation-job queueing + status fetch."""
+
+    @pytest.mark.asyncio
+    async def test_add_conversation_creates_queued_job(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            job = await lore.add_conversation(
+                [
+                    {"role": "user", "content": "What's our retry policy?"},
+                    {"role": "assistant", "content": "Exponential backoff."},
+                ],
+                project="infra",
+                session_id="conv-1",
+            )
+            assert job.org_id == "solo"
+            assert job.message_count == 2
+            assert job.session_id == "conv-1"
+            # Newly-created jobs are queued, not processed.
+            assert job.status in ("queued", "pending", "accepted")
+
+    @pytest.mark.asyncio
+    async def test_conversation_status_round_trip(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            job = await lore.add_conversation(
+                [{"role": "user", "content": "hi"}],
+            )
+            again = await lore.conversation_status(job.id)
+            assert again.id == job.id
+
+    @pytest.mark.asyncio
+    async def test_add_conversation_validates_messages(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            with pytest.raises(ValueError):
+                await lore.add_conversation([])
+
+
+class TestAsyncLoreStats:
+    """``stats`` aggregates total + by_type + oldest/newest."""
+
+    @pytest.mark.asyncio
+    async def test_stats_empty(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            s = await lore.stats()
+            assert s.total == 0
+            assert s.oldest is None
+            assert s.newest is None
+
+    @pytest.mark.asyncio
+    async def test_stats_counts_and_extremes(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            await lore.remember("first")
+            await lore.remember("second")
+            await lore.remember("third")
+            s = await lore.stats()
+            assert s.total == 3
+            assert s.oldest is not None
+            assert s.newest is not None
+            assert s.newest >= s.oldest
+            # All inserted via remember() — no explicit type set, default
+            # is sourced from meta.type or "general".
+            assert sum(s.by_type.values()) == 3
+
+
+class TestAsyncLoreOnThisDay:
+    """``on_this_day`` filters by month/day of created_at."""
+
+    @pytest.mark.asyncio
+    async def test_on_this_day_returns_today_only(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            m = await lore.remember("created today")
+            # Default = utc-now; m was just inserted so it should match.
+            hits = await lore.on_this_day(limit=10)
+            assert any(h.id == m.id for h in hits)
+
+    @pytest.mark.asyncio
+    async def test_on_this_day_respects_today_override(self):
+        from datetime import datetime, timezone
+
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            await lore.remember("just inserted")
+            # Pin to Jan 1 of an arbitrary year — the inserted memory's
+            # created_at is "now" so it almost certainly won't match.
+            hits = await lore.on_this_day(
+                today=datetime(2000, 1, 1, tzinfo=timezone.utc),
+                limit=10,
+            )
+            assert hits == [] or all(
+                h.created_at.month == 1 and h.created_at.day == 1
+                for h in hits
+            )
+
+
+class TestAsyncLoreVoting:
+    """``upvote``/``downvote`` increment counters."""
+
+    @pytest.mark.asyncio
+    async def test_upvote_increments_count(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            m = await lore.remember("vote me up")
+            updated = await lore.upvote(m.id)
+            assert updated.upvotes == 1
+            again = await lore.upvote(m.id)
+            assert again.upvotes == 2
+
+    @pytest.mark.asyncio
+    async def test_downvote_increments_count(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            m = await lore.remember("vote me down")
+            updated = await lore.downvote(m.id)
+            assert updated.downvotes == 1
+
+
+class TestAsyncLoreConsolidationAndMaintenance:
+    """Phase 4B parity stubs and maintenance helpers."""
+
+    @pytest.mark.asyncio
+    async def test_consolidate_returns_noop_report(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            report = await lore.consolidate(project="x", dry_run=True)
+            assert report.dry_run is True
+            assert report.groups_found == 0
+            assert "no-op" in report.note
+
+    @pytest.mark.asyncio
+    async def test_get_consolidation_log_empty_in_4b(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            log = await lore.get_consolidation_log()
+            assert list(log) == []
+
+    @pytest.mark.asyncio
+    async def test_cleanup_expired_returns_int(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            count = await lore.cleanup_expired()
+            assert count == 0
+
+    @pytest.mark.asyncio
+    async def test_recalculate_importance_noop(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            assert await lore.recalculate_importance() == 0
+
+
+class TestAsyncLoreEnrichment:
+    """``enrich_memories`` short-circuits on already-enriched rows."""
+
+    @pytest.mark.asyncio
+    async def test_enrich_memories_skips_already_enriched(self, monkeypatch):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            await lore.remember(
+                "already enriched",
+                meta={"enrichment": {"topics": ["x"]}},
+            )
+            # Stub the LLM-touching path — if enrich_memory_async is invoked
+            # we'd need network access; this test should never hit it.
+            from lore.services import memories as memories_service
+
+            async def boom(*_a, **_kw):  # pragma: no cover - guard
+                raise AssertionError(
+                    "enrich_memory_async should not be called for already-enriched rows"
+                )
+
+            monkeypatch.setattr(memories_service, "enrich_memory_async", boom)
+            report = await lore.enrich_memories(limit=10)
+            assert report.skipped == 1
+            assert report.enriched == 0
+
+    @pytest.mark.asyncio
+    async def test_enrich_memories_invokes_pipeline_on_unenriched(self, monkeypatch):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            await lore.remember("plain memory")
+
+            calls: list[str] = []
+
+            async def fake_enrich(_store, *, memory_id, content, context):
+                calls.append(memory_id)
+
+            from lore.services import memories as memories_service
+            monkeypatch.setattr(
+                memories_service, "enrich_memory_async", fake_enrich
+            )
+
+            report = await lore.enrich_memories(limit=10)
+            assert report.enriched == 1
+            assert report.skipped == 0
+            assert len(calls) == 1
+
+
+class TestAsyncLoreClassifyAndPrompt:
+    """``classify`` (rule-based) and ``as_prompt`` formatting."""
+
+    @pytest.mark.asyncio
+    async def test_classify_returns_classification(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            cls = await lore.classify("Always use exponential backoff for 429s.")
+            assert cls.intent
+            assert cls.domain
+            assert cls.emotion
+
+    @pytest.mark.asyncio
+    async def test_as_prompt_empty_when_no_hits(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            out = await lore.as_prompt("anything", limit=3)
+            assert out == ""
+
+    @pytest.mark.asyncio
+    async def test_as_prompt_renders_recall_hits(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            await lore.remember("Use exponential backoff for HTTP 429 responses")
+            out = await lore.as_prompt(
+                "Use exponential backoff for HTTP 429 responses",
+                limit=3,
+            )
+            assert isinstance(out, str)
+            assert len(out) > 0
+            # The default xml format wraps content in tags.
+            assert "<" in out
+
+
 @pytest.mark.asyncio
 async def test_filebacked_db_bootstrap_default_path(tmp_path: Path, monkeypatch):
     """File-backed AsyncLore uses the standard Phase 3J bootstrap path.
