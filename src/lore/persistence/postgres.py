@@ -112,6 +112,12 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         meta = json.loads(meta)
     # Schema stores context as NOT NULL TEXT; surface "" as None at the API
     raw_context = row["context"]
+    # ``scope`` is Phase 6G; tolerate rows that pre-date the column for
+    # back-compat with hand-built test fixtures.
+    try:
+        scope_val = row["scope"]
+    except (KeyError, IndexError):
+        scope_val = None
     return StoredMemory(
         id=row["id"],
         org_id=row["org_id"],
@@ -130,6 +136,7 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=row["last_accessed_at"],
+        scope=scope_val if scope_val else "project",
     )
 
 
@@ -546,12 +553,12 @@ class PostgresStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, confidence, source,
-                     project, embedding, expires_at, meta)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, $10, $11::jsonb)
+                     project, embedding, expires_at, meta, scope)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, $10, $11::jsonb, $12)
                 RETURNING id, org_id, content, context, tags, confidence, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, importance_score, access_count,
-                          last_accessed_at
+                          last_accessed_at, scope
                 """,
                 memory_id,
                 memory.org_id,
@@ -564,6 +571,7 @@ class PostgresStore:
                 json.dumps(list(memory.embedding)),
                 memory.expires_at,
                 json.dumps(dict(memory.meta)),
+                memory.scope,
             )
         return _row_to_stored(row)
 
@@ -574,7 +582,7 @@ class PostgresStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories
                 WHERE id = $1
                   AND org_id = $2
@@ -636,7 +644,7 @@ class PostgresStore:
             "AND (expires_at IS NULL OR expires_at > now()) "
             "RETURNING id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at"
+            "meta, importance_score, access_count, last_accessed_at, scope"
         )
         async with self._acquire() as conn:
             row = await conn.fetchrow(sql, *params)
@@ -683,7 +691,7 @@ class PostgresStore:
         sql = (
             "SELECT id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at "
+            "meta, importance_score, access_count, last_accessed_at, scope "
             "FROM memories "
             f"WHERE {' AND '.join(where)} "
             "ORDER BY created_at DESC"
@@ -746,7 +754,7 @@ class PostgresStore:
         select_sql = (
             "SELECT id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at "
+            "meta, importance_score, access_count, last_accessed_at, scope "
             f"FROM memories WHERE {where_sql} "
             f"ORDER BY created_at DESC "
             f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
@@ -903,7 +911,7 @@ class PostgresStore:
         sql = f"""
             SELECT id, org_id, content, context, tags, confidence, source, project,
                    created_at, updated_at, expires_at, upvotes, downvotes, meta,
-                   importance_score, access_count, last_accessed_at,
+                   importance_score, access_count, last_accessed_at, scope,
                    (1 - (embedding <=> ${emb_idx}::vector)) *
                    COALESCE(importance_score, 1.0) *
                    power(0.5,
@@ -946,6 +954,7 @@ class PostgresStore:
                     importance_score=sm.importance_score,
                     access_count=sm.access_count,
                     last_accessed_at=sm.last_accessed_at,
+                    scope=sm.scope,
                     score=float(r["score"]),
                 )
             )
@@ -1021,7 +1030,7 @@ class PostgresStore:
                 RETURNING id, org_id, content, context, tags, confidence, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, importance_score, access_count,
-                          last_accessed_at
+                          last_accessed_at, scope
                 """,
                 memory_id,
                 org_id,
@@ -1708,7 +1717,7 @@ class PostgresStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories
                 WHERE content ILIKE $1
                 ORDER BY importance_score DESC NULLS LAST, created_at DESC
@@ -1754,7 +1763,7 @@ class PostgresStore:
         sql = f"""
             SELECT id, org_id, content, context, tags, confidence, source, project,
                    created_at, updated_at, expires_at, upvotes, downvotes, meta,
-                   importance_score, access_count, last_accessed_at,
+                   importance_score, access_count, last_accessed_at, scope,
                    ts_rank(
                        to_tsvector('english', content || ' ' || COALESCE(context, '')),
                        plainto_tsquery('english', ${q_idx})
@@ -1791,7 +1800,7 @@ class PostgresStore:
             SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta, m.importance_score,
-                   m.access_count, m.last_accessed_at,
+                   m.access_count, m.last_accessed_at, m.scope,
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
@@ -1799,7 +1808,7 @@ class PostgresStore:
             GROUP BY m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                      m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                      m.upvotes, m.downvotes, m.meta, m.importance_score,
-                     m.access_count, m.last_accessed_at
+                     m.access_count, m.last_accessed_at, m.scope
             ORDER BY overlap_count DESC, m.created_at DESC
             LIMIT $3
         """
@@ -2295,7 +2304,7 @@ class PostgresStore:
                 RETURNING id, org_id, content, context, tags, confidence, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, importance_score, access_count,
-                          last_accessed_at
+                          last_accessed_at, scope
                 """,
                 memory_id,
                 org_id,
@@ -2331,7 +2340,7 @@ class PostgresStore:
         sql = (
             "SELECT id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at "
+            "meta, importance_score, access_count, last_accessed_at, scope "
             "FROM memories "
             f"WHERE {' AND '.join(where)} "
             f"ORDER BY created_at DESC LIMIT ${limit_idx}"

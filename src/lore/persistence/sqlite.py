@@ -331,6 +331,13 @@ def _row_to_memory(row) -> StoredMemory:
     meta_raw = row["meta"]
     meta = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
     raw_context = row["context"]
+    # ``scope`` is Phase 6G; reads default to 'project' for back-compat
+    # with rows from before the column existed in tests that hand-build
+    # rows. Production rows always have a non-null scope.
+    try:
+        scope_val = row["scope"]
+    except (IndexError, KeyError):
+        scope_val = None
     return StoredMemory(
         id=row["id"],
         org_id=row["org_id"],
@@ -349,6 +356,7 @@ def _row_to_memory(row) -> StoredMemory:
         importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=_parse_iso(row["last_accessed_at"]),
+        scope=scope_val if scope_val else "project",
     )
 
 
@@ -1075,8 +1083,8 @@ class SqliteStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, confidence, source,
-                     project, expires_at, meta)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     project, expires_at, meta, scope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
@@ -1089,6 +1097,7 @@ class SqliteStore:
                     memory.project,
                     memory.expires_at.isoformat() if memory.expires_at else None,
                     json.dumps(dict(memory.meta)),
+                    memory.scope,
                 ),
             )
             rowid = cursor.lastrowid
@@ -1104,7 +1113,7 @@ class SqliteStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories WHERE rowid = ?
                 """,
                 (rowid,),
@@ -1129,7 +1138,7 @@ class SqliteStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories
                 WHERE id = ?
                   AND org_id = ?
@@ -1173,7 +1182,8 @@ class SqliteStore:
     _MEMORY_COLS = (
         "id, org_id, content, context, tags, confidence, source, "
         "project, created_at, updated_at, expires_at, upvotes, "
-        "downvotes, meta, importance_score, access_count, last_accessed_at"
+        "downvotes, meta, importance_score, access_count, last_accessed_at, "
+        "scope"
     )
 
     async def update_memory(
@@ -1571,7 +1581,7 @@ class SqliteStore:
                 m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                 m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                 m.upvotes, m.downvotes, m.meta, m.importance_score,
-                m.access_count, m.last_accessed_at,
+                m.access_count, m.last_accessed_at, m.scope,
                 v.distance AS distance,
                 (
                     (1.0 - v.distance)
@@ -1629,6 +1639,7 @@ class SqliteStore:
                     importance_score=sm.importance_score,
                     access_count=sm.access_count,
                     last_accessed_at=sm.last_accessed_at,
+                    scope=sm.scope,
                     score=float(r["score"]),
                 )
             )
@@ -5192,7 +5203,7 @@ class SqliteStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories
                 WHERE LOWER(content) LIKE ?
                 ORDER BY (importance_score IS NULL), importance_score DESC, created_at DESC
@@ -5265,7 +5276,7 @@ class SqliteStore:
             SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta, m.importance_score,
-                   m.access_count, m.last_accessed_at,
+                   m.access_count, m.last_accessed_at, m.scope,
                    -bm25(memories_fts) AS fts_rank
             FROM memories_fts
             JOIN memories m ON m.rowid = memories_fts.rowid
@@ -5300,7 +5311,7 @@ class SqliteStore:
             SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta, m.importance_score,
-                   m.access_count, m.last_accessed_at,
+                   m.access_count, m.last_accessed_at, m.scope,
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
