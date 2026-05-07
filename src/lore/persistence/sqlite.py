@@ -20,7 +20,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional, Sequence
+from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urlparse
 
 from ulid import ULID
@@ -29,8 +29,17 @@ from lore.persistence.exceptions import (
     BackendUnavailableError,
     ConfigError,
     StoreError,
+    StoreNotFoundError,
 )
-from lore.persistence.types import NewMemory, StoredMemory
+from lore.persistence.types import (
+    ExportedMemory,
+    MemoryFilter,
+    MemoryPatch,
+    NewMemory,
+    RecallParams,
+    ScoredMemory,
+    StoredMemory,
+)
 
 # Embedding dimension is fixed at 384 across the codebase
 # (see migrations/001_initial.sql and lore.embed defaults).
@@ -104,6 +113,53 @@ def _parse_iso(value: Optional[str]) -> Optional[datetime]:
         return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
     dt = datetime.fromisoformat(value)
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _decode_vec_to_json(value) -> Optional[list[float]]:
+    """Decode a sqlite-vec ``vec_to_json`` output into a list of floats.
+
+    ``vec_to_json`` produces a JSON-array string like ``"[0.1,0.2,...]"``.
+    Returns ``None`` if the input is None / empty (e.g. LEFT JOIN miss).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray)):
+        value = value.decode("utf-8")
+    if not value:
+        return None
+    parsed = json.loads(value)
+    return [float(x) for x in parsed]
+
+
+def _row_to_exported(row, embedding: Optional[list[float]]) -> ExportedMemory:
+    """Translate a memories row + decoded embedding into ``ExportedMemory``.
+
+    Mirrors PostgresStore's ``_row_to_exported_memory`` but takes the
+    embedding as a separate argument since SQLite stores it in the
+    ``memory_vectors`` virtual table joined externally.
+    """
+    tags_raw = row["tags"]
+    tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+    meta_raw = row["meta"]
+    meta = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+    raw_context = row["context"]
+    return ExportedMemory(
+        id=row["id"],
+        org_id=row["org_id"],
+        content=row["content"],
+        context=raw_context if raw_context else None,
+        tags=tuple(tags or ()),
+        confidence=float(row["confidence"]) if row["confidence"] is not None else 0.5,
+        source=row["source"],
+        project=row["project"],
+        embedding=embedding,
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
+        expires_at=_parse_iso(row["expires_at"]),
+        upvotes=row["upvotes"] or 0,
+        downvotes=row["downvotes"] or 0,
+        meta=dict(meta or {}),
+    )
 
 
 def _row_to_memory(row) -> StoredMemory:
@@ -458,6 +514,212 @@ class SqliteStore:
             await cursor.close()
         return deleted == 1
 
+    # ── MemoryOps: rest of the slice (Phase 3D) ───────────────────────
+
+    _MEMORY_COLS = (
+        "id, org_id, content, context, tags, confidence, source, "
+        "project, created_at, updated_at, expires_at, upvotes, "
+        "downvotes, meta, importance_score, access_count, last_accessed_at"
+    )
+
+    async def update_memory(
+        self,
+        org_id: str,
+        memory_id: str,
+        patch: "MemoryPatch",
+    ) -> "StoredMemory":
+        """Apply a ``MemoryPatch`` and return the updated row.
+
+        Builds a dynamic UPDATE based on which fields the patch sets. Mirrors
+        ``PostgresStore.update_memory``: the row must exist and not be
+        expired, otherwise raises ``StoreNotFoundError``.
+
+        ``MemoryPatch`` does not carry an embedding field, so this method
+        never touches ``memory_vectors`` (and therefore doesn't need to wrap
+        in ``transaction()``).
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+        if patch.content is not None:
+            sets.append("content = ?")
+            params.append(patch.content)
+        if patch.context is not None:
+            sets.append("context = ?")
+            params.append(patch.context)
+        if patch.tags is not None:
+            sets.append("tags = ?")
+            params.append(json.dumps(list(patch.tags)))
+        if patch.confidence is not None:
+            sets.append("confidence = ?")
+            params.append(patch.confidence)
+        if patch.source is not None:
+            sets.append("source = ?")
+            params.append(patch.source)
+        if patch.project is not None:
+            sets.append("project = ?")
+            params.append(patch.project)
+        if patch.expires_at is not None:
+            sets.append("expires_at = ?")
+            params.append(patch.expires_at.isoformat())
+        if patch.meta is not None:
+            sets.append("meta = ?")
+            params.append(json.dumps(dict(patch.meta)))
+
+        if not sets:
+            existing = await self.get_memory(org_id, memory_id)
+            if existing is None:
+                raise StoreNotFoundError("memories", memory_id)
+            return existing
+
+        sets.append("updated_at = datetime('now')")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sql = (
+            "UPDATE memories "
+            f"SET {', '.join(sets)} "
+            "WHERE id = ? AND org_id = ? "
+            "  AND (expires_at IS NULL OR expires_at > ?)"
+        )
+        params.extend([memory_id, org_id, now_iso])
+
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql, tuple(params))
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if updated == 0:
+                raise StoreNotFoundError("memories", memory_id)
+            async with conn.execute(
+                f"SELECT {self._MEMORY_COLS} FROM memories "
+                "WHERE id = ? AND org_id = ?",
+                (memory_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover - should not happen post-update
+            raise StoreNotFoundError("memories", memory_id)
+        return _row_to_memory(row)
+
+    def _build_memory_filter_clauses(
+        self,
+        filter: "MemoryFilter",
+        *,
+        text_query: bool = False,
+        min_reputation: bool = False,
+    ) -> tuple[list[str], list[Any]]:
+        """Translate a ``MemoryFilter`` into a SQLite WHERE clause + params.
+
+        Mirrors ``PostgresStore``'s building of ``where``/``params`` in
+        ``list_memories`` / ``list_memories_paginated``. Tags translate
+        from PG's ``tags @> $N::jsonb`` ("contains all of") into a
+        SQLite ``json_each``-based EXISTS subquery for each requested tag.
+
+        ``text_query`` and ``min_reputation`` flags are used by the
+        paginated/exported variants which expose those filters; the basic
+        ``list_memories`` doesn't pass them.
+        """
+        where: list[str] = ["org_id = ?"]
+        params: list[Any] = [filter.org_id]
+        if filter.project is not None:
+            where.append("project = ?")
+            params.append(filter.project)
+        if filter.type is not None:
+            # PG: meta->>'type' = $N. SQLite: json_extract(meta, '$.type').
+            where.append("json_extract(meta, '$.type') = ?")
+            params.append(filter.type)
+        if filter.tier is not None:
+            where.append("json_extract(meta, '$.tier') = ?")
+            params.append(filter.tier)
+        if filter.tags:
+            # PG: tags @> '["a","b"]'::jsonb (contains-all semantics).
+            # SQLite: AND'd EXISTS (SELECT 1 FROM json_each(tags) WHERE value=?)
+            for tag in filter.tags:
+                where.append(
+                    "EXISTS (SELECT 1 FROM json_each(memories.tags) "
+                    "WHERE value = ?)"
+                )
+                params.append(tag)
+        if filter.since is not None:
+            where.append("created_at >= ?")
+            params.append(filter.since.isoformat())
+        if filter.until is not None:
+            where.append("created_at < ?")
+            params.append(filter.until.isoformat())
+        if text_query and filter.text_query is not None:
+            where.append("(content LIKE ? OR context LIKE ?)")
+            pat = f"%{filter.text_query}%"
+            params.extend([pat, pat])
+        if min_reputation and filter.min_reputation is not None:
+            where.append("reputation_score >= ?")
+            params.append(filter.min_reputation)
+        if not filter.include_expired:
+            now_iso = datetime.now(timezone.utc).isoformat()
+            where.append("(expires_at IS NULL OR expires_at > ?)")
+            params.append(now_iso)
+        return where, params
+
+    async def list_memories(
+        self, filter: "MemoryFilter"
+    ) -> Sequence["StoredMemory"]:
+        """List memories matching the filter, ordered by ``created_at`` DESC."""
+        where, params = self._build_memory_filter_clauses(filter)
+        sql = (
+            f"SELECT {self._MEMORY_COLS} FROM memories "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC"
+        )
+        if filter.limit is not None:
+            sql += " LIMIT ?"
+            params.append(filter.limit)
+        if filter.offset:
+            sql += " OFFSET ?"
+            params.append(filter.offset)
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_memory(r) for r in rows]
+
+    async def expire_memories(self) -> int:
+        """Delete rows with ``expires_at < now()`` plus their vec0 companions.
+
+        SQLite has no ``DELETE … RETURNING`` cascade across vec0, and vec0
+        has no FK, so we resolve victim rowids inside the same
+        ``BEGIN IMMEDIATE`` transaction, delete the vec0 rows, then the
+        base rows. Returns the number of base-table rows removed.
+
+        ``expires_at`` is stored as Python-side ``isoformat()`` (with ``T``
+        separator and ``+00:00`` suffix) by ``insert_memory``, while
+        SQLite's ``datetime('now')`` returns ``"YYYY-MM-DD HH:MM:SS"``.
+        Lexicographic comparison between those two TEXT shapes is unsafe
+        (``"T" > " "`` makes any ISO timestamp sort *after* the SQLite shape
+        of the same wall-clock time). To keep parity with PG's
+        ``expires_at < now()`` semantics we substitute a Python-generated
+        ``isoformat()`` for ``now()`` so both sides of the comparison share
+        the same format.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT rowid FROM memories "
+                "WHERE expires_at IS NOT NULL "
+                "  AND expires_at < ?",
+                (now_iso,),
+            ) as cur:
+                rows = await cur.fetchall()
+            if not rows:
+                return 0
+            rowids = [r["rowid"] for r in rows]
+            placeholders = ",".join(["?"] * len(rowids))
+            await tx.execute(
+                f"DELETE FROM memory_vectors WHERE memory_rowid IN ({placeholders})",
+                tuple(rowids),
+            )
+            cursor = await tx.execute(
+                f"DELETE FROM memories WHERE rowid IN ({placeholders})",
+                tuple(rowids),
+            )
+            deleted = cursor.rowcount
+            await cursor.close()
+        return int(deleted) if deleted is not None else 0
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -495,13 +757,8 @@ def _stub(method_name: str):
 
 
 _STUBBED_METHODS: Sequence[str] = (
-    # MemoryOps — insert/get/delete are implemented in Phase 3C above; the
-    # remaining slots stay stubbed pending 3D+.
-    "update_memory",
-    "list_memories", "recall_by_embedding", "expire_memories",
-    "bump_access_counts", "enrich_memory_meta", "vote_memory",
-    "list_memories_paginated", "list_memories_with_embeddings",
-    "upsert_memory_with_embedding", "import_extracted_memory",
+    # MemoryOps — Phase 3C implemented insert/get/delete; Phase 3D fills
+    # in the remaining 11 methods above. No MemoryOps stubs remain.
     # GraphOps
     "get_entity", "get_entity_by_name", "list_entities", "upsert_entity",
     "update_entity_counts", "delete_entity",
