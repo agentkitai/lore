@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 try:
-    from fastapi import FastAPI
+    from fastapi import FastAPI  # noqa: F401  (presence is the test)
     from fastapi.testclient import TestClient
     HAS_FASTAPI = True
 except ImportError:

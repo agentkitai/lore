@@ -775,7 +775,6 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     # Lazy-import command handlers to avoid circular imports and keep startup fast.
     from lore.cli.commands.capture import cmd_capture
     from lore.cli.commands.dream import cmd_dream
-    from lore.cli.commands.session_finalize import cmd_session_finalize
     from lore.cli.commands.graph import (
         cmd_entities,
         cmd_graph,
@@ -825,6 +824,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     from lore.cli.commands.recall import cmd_prompt, cmd_recall
     from lore.cli.commands.remember import cmd_remember
     from lore.cli.commands.server import cmd_mcp, cmd_serve, cmd_ui
+    from lore.cli.commands.session_finalize import cmd_session_finalize
     from lore.cli.commands.snapshot import cmd_consolidate, cmd_snapshot, cmd_snapshot_save
 
     if args.command == "keys":

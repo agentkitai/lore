@@ -12,7 +12,6 @@ Coverage:
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -23,7 +22,6 @@ from lore.cli.commands.session_finalize import (
     _format_observations_block,
     run,
 )
-
 
 # ── Format helper unit tests ──────────────────────────────────────────
 

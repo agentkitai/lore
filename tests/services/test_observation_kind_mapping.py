@@ -12,14 +12,13 @@ from __future__ import annotations
 
 import pytest
 
+from lore.persistence import NewObservation
+from lore.services.observations import _classify_kind, create_observation
+
 # Re-export the parametrized backend matrix so create_observation runs on
 # both sqlite and postgres (postgres skips automatically when the local
 # pool isn't reachable).
 from tests.persistence.conftest import _pg_pool, store  # noqa: F401
-
-from lore.persistence import NewObservation
-from lore.services.observations import _classify_kind, create_observation
-
 
 # ── Pure helper unit tests ────────────────────────────────────────────
 

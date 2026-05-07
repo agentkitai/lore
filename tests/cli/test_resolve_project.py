@@ -12,7 +12,6 @@ from lore.cli.commands._project import (
     resolve_project,
 )
 
-
 # ── _normalize_remote_url ─────────────────────────────────────────────
 
 

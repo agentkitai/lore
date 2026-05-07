@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from lore.cli.commands import capture as cap
 
-
 # ── Buffer-entry rendering ───────────────────────────────────────────
 
 

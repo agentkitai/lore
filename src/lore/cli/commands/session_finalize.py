@@ -30,8 +30,7 @@ import argparse
 import asyncio
 import os
 from pathlib import Path
-from typing import Any, Optional
-
+from typing import Optional
 
 SUMMARY_PROMPT = """\
 You are summarizing session {sid} for project {project}.
