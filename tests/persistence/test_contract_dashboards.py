@@ -14,17 +14,25 @@ import pytest
 
 from lore.persistence import Store
 from lore.persistence.types import NewRetrievalEvent
+from tests.persistence.conftest import _is_sqlite
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
 async def _ensure_org(store, org_id: str) -> None:
     """Insert an org row if it doesn't already exist (required by FK in other tables)."""
-    await store._conn.execute(
-        "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        org_id,
-        org_id,
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(
+            "INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)",
+            (org_id, org_id),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            org_id,
+            org_id,
+        )
 
 
 async def _insert_audit_entry(
@@ -41,6 +49,31 @@ async def _insert_audit_entry(
     created_at: datetime | None = None,
 ) -> int:
     metadata_json = json.dumps(dict(metadata or {}))
+    if _is_sqlite(store):
+        # SQLite has no RETURNING in the form we use; INSERT then last_insert_rowid().
+        if created_at is None:
+            cursor = await store._conn.execute(
+                """INSERT INTO audit_log (org_id, workspace_id, actor_id, actor_type, action, resource_type, resource_id, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    org_id, workspace_id, actor_id, actor_type, action,
+                    resource_type, resource_id, metadata_json,
+                ),
+            )
+        else:
+            cursor = await store._conn.execute(
+                """INSERT INTO audit_log (org_id, workspace_id, actor_id, actor_type, action, resource_type, resource_id, metadata, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    org_id, workspace_id, actor_id, actor_type, action,
+                    resource_type, resource_id, metadata_json,
+                    created_at.isoformat(),
+                ),
+            )
+        rowid = cursor.lastrowid
+        await cursor.close()
+        await store._conn.commit()
+        return int(rowid)
     if created_at is None:
         row = await store._conn.fetchrow(
             """INSERT INTO audit_log (org_id, workspace_id, actor_id, actor_type, action, resource_type, resource_id, metadata)

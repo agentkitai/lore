@@ -52,6 +52,7 @@ from lore.persistence.types import (
     ScoreDistributionBucket,
     ScoredMemory,
     StoredApiKey,
+    StoredAuditEntry,
     StoredConversationJob,
     StoredMember,
     StoredMemory,
@@ -406,6 +407,34 @@ def _row_to_conversation_job(row) -> StoredConversationJob:
         processing_time_ms=row["processing_time_ms"] or 0,
         created_at=_parse_iso(row["created_at"]),
         completed_at=_parse_iso(row["completed_at"]),
+    )
+
+
+def _row_to_audit_entry(row) -> StoredAuditEntry:
+    """Translate a SQLite ``audit_log`` row to ``StoredAuditEntry``.
+
+    ``metadata`` is JSON-decoded from TEXT; SQLite stores ``ip_address``
+    as a plain string (no INET equivalent), so it's surfaced unchanged.
+    """
+    metadata_raw = row["metadata"]
+    if isinstance(metadata_raw, str):
+        metadata = json.loads(metadata_raw) if metadata_raw else {}
+    elif metadata_raw is None:
+        metadata = {}
+    else:
+        metadata = metadata_raw
+    return StoredAuditEntry(
+        id=row["id"],
+        org_id=row["org_id"],
+        workspace_id=row["workspace_id"],
+        actor_id=row["actor_id"],
+        actor_type=row["actor_type"],
+        action=row["action"],
+        resource_type=row["resource_type"],
+        resource_id=row["resource_id"],
+        metadata=dict(metadata or {}),
+        ip_address=row["ip_address"] if row["ip_address"] else None,
+        created_at=_parse_iso(row["created_at"]),
     )
 
 
@@ -2816,6 +2845,66 @@ class SqliteStore:
             )
             await conn.commit()
 
+    # ── AuditOps (Phase 3G) ──────────────────────────────────────────
+
+    async def query_audit_log(
+        self,
+        *,
+        org_id: str,
+        workspace_id: Optional[str] = None,
+        action: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: int = 50,
+    ) -> Sequence[StoredAuditEntry]:
+        """Query the audit log with optional filters; newest-first.
+
+        Mirrors ``PostgresStore.query_audit_log``: filters by org_id and
+        any of (workspace_id, action, actor_id, since); returns up to
+        ``limit`` rows ordered by ``created_at DESC``.
+
+        ``since`` is normalized to an ISO-8601 TEXT string so comparison
+        against the SQLite ``created_at`` column (also ISO TEXT) works
+        lexicographically — same ordering as native datetime comparison.
+        """
+        where: list[str] = ["org_id = ?"]
+        params: list[Any] = [org_id]
+
+        if workspace_id is not None:
+            where.append("workspace_id = ?")
+            params.append(workspace_id)
+        if action is not None:
+            where.append("action = ?")
+            params.append(action)
+        if actor_id is not None:
+            where.append("actor_id = ?")
+            params.append(actor_id)
+        if since is not None:
+            # Normalize to ISO-8601 TEXT for lexicographic comparison.
+            if isinstance(since, str):
+                since_iso = since
+            else:
+                since_dt = since
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=timezone.utc)
+                since_iso = since_dt.isoformat()
+            where.append("created_at >= ?")
+            params.append(since_iso)
+
+        params.append(limit)
+        sql = (
+            "SELECT id, org_id, workspace_id, actor_id, actor_type, action, "
+            "resource_type, resource_id, metadata, ip_address, created_at "
+            "FROM audit_log "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC "
+            "LIMIT ?"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_audit_entry(r) for r in rows)
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -2873,8 +2962,7 @@ _STUBBED_METHODS: Sequence[str] = (
     # AnalyticsOps — implemented in Phase 3E.
     # RecommendationOps — implemented in Phase 3G.
     # ConversationOps — implemented in Phase 3G.
-    # AuditOps
-    "query_audit_log",
+    # AuditOps — implemented in Phase 3G.
     # RetentionOps
     "list_retention_policies", "get_retention_policy",
     "create_retention_policy", "update_retention_policy",
