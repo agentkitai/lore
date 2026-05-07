@@ -17,7 +17,12 @@ except ImportError:  # pragma: no cover
 
 from ulid import ULID
 
-from lore.persistence.exceptions import BackendUnavailableError, IntegrityError, StoreNotFoundError
+from lore.persistence.exceptions import (
+    BackendUnavailableError,
+    EmbeddingDimMismatch,
+    IntegrityError,
+    StoreNotFoundError,
+)
 from lore.persistence.types import (
     AgentSharingConfigData,
     AuditEventData,
@@ -74,6 +79,25 @@ from lore.persistence.types import (
     TimeseriesPoint,
     WorkspacePatch,
 )
+
+# Embedding dimension is fixed at 384 across the codebase
+# (see migrations/001_initial.sql and lore.embed defaults).
+EMBED_DIM = 384
+
+
+def _check_embedding_dim(embedding: Optional[Sequence[float]]) -> None:
+    """Validate an embedding has the configured ``EMBED_DIM``.
+
+    ``None`` is permitted (some upsert paths accept a NULL embedding); a
+    wrong-sized vector raises ``EmbeddingDimMismatch`` so the caller fails
+    fast at the boundary instead of triggering a pgvector type error deep
+    in the asyncpg encode path.
+    """
+    if embedding is None:
+        return
+    n = len(embedding)
+    if n != EMBED_DIM:
+        raise EmbeddingDimMismatch(EMBED_DIM, n)
 
 
 def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
@@ -482,6 +506,7 @@ class PostgresStore:
     # ── MemoryOps: insert, get ──────────────────────────────────────
 
     async def insert_memory(self, memory: NewMemory) -> StoredMemory:
+        _check_embedding_dim(memory.embedding)
         memory_id = f"mem_{ULID()}"
         async with self._acquire() as conn:
             row = await conn.fetchrow(
@@ -772,6 +797,7 @@ class PostgresStore:
         updated or if no change occurred (e.g. org_id mismatch silently drops
         the update — caller treats None as False).
         """
+        _check_embedding_dim(embedding)
         encoded_tags = json.dumps(list(tags))
         encoded_meta = json.dumps(dict(meta))
         encoded_embedding = json.dumps(list(embedding)) if embedding is not None else None
@@ -824,6 +850,7 @@ class PostgresStore:
     async def recall_by_embedding(
         self, params: "RecallParams"
     ) -> Sequence[ScoredMemory]:
+        _check_embedding_dim(params.query_vec)
         where: list[str] = ["org_id = $1"]
         sql_params: list[Any] = [params.org_id]
         if params.project is not None:

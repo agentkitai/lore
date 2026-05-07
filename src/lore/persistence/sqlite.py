@@ -13,6 +13,7 @@ Spec: docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -28,7 +29,10 @@ from ulid import ULID
 from lore.persistence.exceptions import (
     BackendUnavailableError,
     ConfigError,
+    EmbeddingDimMismatch,
     IntegrityError,
+    StoreBusyError,
+    StoreCorruption,
     StoreError,
     StoreNotFoundError,
 )
@@ -108,6 +112,63 @@ except ImportError:  # pragma: no cover
     HAS_SQLITE_VEC = False
 
 logger = logging.getLogger(__name__)
+
+
+# ── SQLITE_BUSY retry policy ──────────────────────────────────────────
+#
+# aiosqlite raises ``OperationalError`` for ``database is locked`` /
+# ``database table is locked`` (SQLITE_BUSY). The connection-level
+# ``PRAGMA busy_timeout`` already delays the first failure, but on heavy
+# write-write contention sqlite still surfaces the error. The retry
+# decorator below catches the typed message, sleeps with exponential
+# backoff, and surfaces ``StoreBusyError`` once the budget is exhausted.
+_BUSY_RETRY_DELAYS_S: tuple[float, ...] = (0.05, 0.1, 0.2, 0.4)
+_BUSY_MESSAGE_HINTS: tuple[str, ...] = (
+    "database is locked",
+    "database table is locked",
+)
+
+
+def _is_busy_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like a SQLITE_BUSY OperationalError."""
+    if aiosqlite is None:
+        return False  # pragma: no cover - optional dep
+    if not isinstance(exc, aiosqlite.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return any(hint in msg for hint in _BUSY_MESSAGE_HINTS)
+
+
+_CORRUPTION_MESSAGE_HINTS: tuple[str, ...] = (
+    "database disk image is malformed",
+    "vec0 corrupt",
+    "file is not a database",
+    "malformed database",
+)
+
+
+def _is_corruption_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` is a database-corruption DatabaseError."""
+    if aiosqlite is None:
+        return False  # pragma: no cover - optional dep
+    if not isinstance(exc, aiosqlite.DatabaseError):
+        return False
+    msg = str(exc).lower()
+    return any(hint in msg for hint in _CORRUPTION_MESSAGE_HINTS)
+
+
+def _check_embedding_dim(embedding: Optional[Sequence[float]]) -> None:
+    """Validate an embedding has the configured ``EMBED_DIM``.
+
+    ``None`` is permitted (some upsert paths accept a NULL embedding); a
+    wrong-sized vector raises ``EmbeddingDimMismatch`` so the caller fails
+    fast at the boundary instead of corrupting vec0.
+    """
+    if embedding is None:
+        return
+    n = len(embedding)
+    if n != EMBED_DIM:
+        raise EmbeddingDimMismatch(EMBED_DIM, n)
 
 
 # ── SLO metric SQL fragments (mirrors lore.persistence.postgres._METRIC_SQL) ──
@@ -724,7 +785,14 @@ class SqliteStore:
 
     @classmethod
     async def open(cls, database_url: str) -> "SqliteStore":
-        """Open a SqliteStore from a sqlite:// URL, applying migrations."""
+        """Open a SqliteStore from a sqlite:// URL, applying migrations.
+
+        Phase 3J: after migrations + vec0 init, bootstrap the solo org +
+        first API key on a fresh DB (skips when ``api_keys`` is already
+        populated; in-memory URLs skip entirely). The bootstrap is wrapped
+        in a try/except so a write failure (e.g. read-only FS for the
+        ``~/.lore/key.txt`` file) doesn't take down the open path.
+        """
         db_path = _resolve_db_path(database_url)
         if db_path != ":memory:":
             parent = Path(db_path).parent
@@ -734,6 +802,12 @@ class SqliteStore:
         store._owned_conn = await store._open_connection(db_path)
         await store._apply_migrations(store._owned_conn)
         await store._init_vec_tables(store._owned_conn)
+        # Bootstrap the solo org + first key on an empty DB.
+        from lore.persistence.bootstrap import bootstrap_solo_if_empty
+        try:
+            await bootstrap_solo_if_empty(store)
+        except Exception as exc:  # pragma: no cover - non-fatal
+            logger.warning("SqliteStore.open: bootstrap_solo_if_empty failed: %s", exc)
         return store
 
     @classmethod
@@ -750,10 +824,19 @@ class SqliteStore:
         conn = await aiosqlite.connect(db_path)
         conn.row_factory = aiosqlite.Row
         # WAL + reasonable concurrency defaults.
-        await conn.execute("PRAGMA journal_mode=WAL")
-        await conn.execute("PRAGMA synchronous=NORMAL")
-        await conn.execute("PRAGMA busy_timeout=5000")
-        await conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA synchronous=NORMAL")
+            await conn.execute("PRAGMA busy_timeout=5000")
+            await conn.execute("PRAGMA foreign_keys=ON")
+        except aiosqlite.DatabaseError as exc:
+            with contextlib.suppress(Exception):
+                await conn.close()
+            if _is_corruption_error(exc):
+                raise StoreCorruption(
+                    f"SQLite database at {db_path!r} is malformed: {exc}"
+                ) from exc
+            raise
         # sqlite-vec extension load. aiosqlite proxies load_extension to the
         # connection's worker thread, which is where the underlying sqlite3
         # connection lives.
@@ -828,6 +911,11 @@ class SqliteStore:
                 )
                 await conn.commit()
             except Exception as exc:
+                if _is_corruption_error(exc):
+                    raise StoreCorruption(
+                        f"SQLite database is malformed during migration "
+                        f"{path.name}: {exc}"
+                    ) from exc
                 raise StoreError(
                     f"Failed to apply SQLite migration {path.name}: {exc}"
                 ) from exc
@@ -876,11 +964,40 @@ class SqliteStore:
 
         Yields the connection so the caller can chain executes inside the
         transaction without re-acquiring it.
+
+        SQLITE_BUSY handling: ``BEGIN IMMEDIATE`` may fail with
+        ``database is locked`` under heavy write-write contention. We
+        retry with exponential backoff (50/100/200/400 ms; max 4 retries)
+        and surface ``StoreBusyError`` if the budget is exhausted. The
+        retry only wraps ``BEGIN IMMEDIATE`` itself — once we hold the
+        write lock, subsequent statements inside the transaction never
+        return SQLITE_BUSY.
         """
         conn = self._conn
         if conn is None:
             raise StoreError("SqliteStore connection is closed")
-        await conn.execute("BEGIN IMMEDIATE")
+
+        for attempt, delay in enumerate((*_BUSY_RETRY_DELAYS_S, None)):
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                break
+            except Exception as exc:
+                if not _is_busy_error(exc):
+                    if _is_corruption_error(exc):
+                        raise StoreCorruption(
+                            f"SQLite database is malformed: {exc}"
+                        ) from exc
+                    raise
+                if delay is None:
+                    raise StoreBusyError(
+                        f"SQLite write contention exceeded retry budget "
+                        f"({len(_BUSY_RETRY_DELAYS_S)} retries): {exc}"
+                    ) from exc
+                logger.debug(
+                    "SQLITE_BUSY on BEGIN IMMEDIATE; retrying in %.0fms (attempt %d)",
+                    delay * 1000, attempt + 1,
+                )
+                await asyncio.sleep(delay)
         try:
             yield conn
         except BaseException:
@@ -909,6 +1026,7 @@ class SqliteStore:
         transaction so the pair invariant holds — see Phase 3B's
         ``transaction()`` helper.
         """
+        _check_embedding_dim(memory.embedding)
         memory_id = f"mem_{ULID()}"
         async with self.transaction() as tx:
             cursor = await tx.execute(
@@ -1386,6 +1504,7 @@ class SqliteStore:
           a float. ``LEAST`` → ``MIN``. ``power(0.5, x)`` → SQLite's
           ``pow(0.5, x)`` (alias since 3.35).
         """
+        _check_embedding_dim(params.query_vec)
         # Over-fetch from vec0 since post-filtering may drop candidates.
         # 4x the limit is a generous floor; clamp to a sane upper bound.
         k = max(params.limit, 1) * 4
@@ -1507,6 +1626,7 @@ class SqliteStore:
         * Org-guard: if a row with this id exists in another org, we
           silently no-op (the update WHERE filters by org) — same as PG.
         """
+        _check_embedding_dim(embedding)
         encoded_tags = json.dumps(list(tags))
         encoded_meta = json.dumps(dict(meta))
         safe_context = context if context is not None else ""
@@ -5085,6 +5205,34 @@ class SqliteStore:
                 (str(ULID()), org_id, lesson_id, initiated_by),
             )
         return new_score
+
+
+async def check_dangling_vectors(store: "SqliteStore") -> list[str]:
+    """Return memory IDs whose ``memories`` row has no ``memory_vectors`` peer.
+
+    The ``memories`` ⇆ ``memory_vectors`` invariant is enforced by the
+    transactional pair in production code (see ``SqliteStore.transaction``),
+    so this should always return ``[]``. The diagnostic exists so a future
+    ``lore doctor`` can surface invariant breakage from a corrupt or
+    hand-edited DB.
+
+    The caller is responsible for raising ``DanglingVectorError`` if a
+    non-empty list is unacceptable for the call site.
+    """
+    conn = store._conn
+    if conn is None:
+        raise StoreError("check_dangling_vectors: SqliteStore is closed")
+    async with conn.execute(
+        """
+        SELECT m.id
+        FROM memories m
+        LEFT JOIN memory_vectors v ON v.memory_rowid = m.rowid
+        WHERE v.memory_rowid IS NULL
+        ORDER BY m.id
+        """
+    ) as cur:
+        rows = await cur.fetchall()
+    return [r["id"] for r in rows]
 
 
 class _SqliteConnCtx:

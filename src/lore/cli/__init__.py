@@ -581,8 +581,25 @@ def build_parser() -> argparse.ArgumentParser:
 
     # serve
     p_serve = sub.add_parser("serve", help="Start Lore HTTP server")
-    p_serve.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
+    p_serve.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help=(
+            "Bind address (default: 127.0.0.1). Binding to 0.0.0.0 or any "
+            "non-loopback host requires --require-auth."
+        ),
+    )
     p_serve.add_argument("--port", type=int, default=None, help="Port (default: $LORE_PORT or 8765)")
+    p_serve.add_argument(
+        "--require-auth",
+        action="store_true",
+        dest="require_auth",
+        default=False,
+        help=(
+            "Acknowledge that authentication is enforced. Required when "
+            "binding to a non-loopback host."
+        ),
+    )
 
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
