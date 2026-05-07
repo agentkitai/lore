@@ -711,6 +711,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use `apply <run_id>` to apply a deferred --review run",
     )
 
+    # doctor — diagnose key.txt vs DB drift; --fix to repair.
+    from lore.cli.commands.doctor import add_doctor_subparser
+    add_doctor_subparser(sub)
+
     return parser
 
 
@@ -848,6 +852,10 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "capture-extract": cmd_capture,
         "dream": cmd_dream,
     }
+    if args.command == "doctor":
+        from lore.cli.commands.doctor import cmd_doctor
+        cmd_doctor(args)
+        return
     handlers[args.command](args)
 
 
