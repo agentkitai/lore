@@ -243,6 +243,29 @@ class Store(Protocol):
         """
         ...
 
+    async def list_timeline_around(
+        self,
+        *,
+        anchor_id: str,
+        org_id: str,
+        direction: str,
+        limit: int,
+        max_hours: float,
+    ) -> tuple[Optional[StoredMemory], list[StoredMemory]]:
+        """Phase 6G — return ``(anchor, adjacent rows)`` where adjacent rows
+        are same-project as the anchor, within ±``max_hours`` of
+        ``anchor.created_at``, ordered by ``created_at`` ASC.
+
+        Returns ``(None, [])`` if the anchor is not found or its
+        ``org_id`` does not match the caller. ``direction`` is
+        ``'before'`` | ``'after'`` | ``'both'``; for ``'both'`` the limit
+        splits as ``before = ceil(limit/2)`` (most-recent-N before
+        the anchor, then reversed to ASC) and ``after = floor(limit/2)``
+        (oldest-N after, ASC). The anchor itself is excluded from
+        the adjacent list.
+        """
+        ...
+
     # ── GraphOps ─────────────────────────────────────────────────────
 
     # Entity ops

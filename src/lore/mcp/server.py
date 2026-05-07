@@ -625,6 +625,55 @@ def get_memories(ids: List[str]) -> str:
 
 @mcp.tool(
     description=(
+        "Phase 6G middle drill-down: return chronologically adjacent events "
+        "(±limit entries, hard cap ±max_hours) around an anchor memory ID, "
+        "scoped to the same project. Each entry: id, created_at, type, "
+        "title, narrative_1l, same_session. "
+        "USE THIS AFTER search() identifies a promising hit, BEFORE "
+        "get_memories(), to establish causality without paying for full "
+        "content. ~60 tokens/entry. "
+        "PARAMS: anchor_id (required); limit (1-50, default 10); "
+        "direction ('before'|'after'|'both', default 'both'); "
+        "max_hours (>0, ≤72, default 2.0)."
+    ),
+)
+def timeline(
+    anchor_id: str,
+    limit: int = 10,
+    direction: str = "both",
+    max_hours: float = 2.0,
+) -> str:
+    """Fetch chronologically adjacent events around an anchor."""
+    try:
+        lore = _get_lore()
+        store = getattr(lore, "_store", None)
+        request_fn = getattr(store, "_request", None)
+        if request_fn is None:
+            return (
+                "Failed to fetch timeline: Lore is not configured with an "
+                "HTTP backend. Set LORE_STORE=remote and LORE_API_URL."
+            )
+        params = {
+            "anchor_id": anchor_id,
+            "limit": max(1, min(int(limit), 50)),
+            "direction": direction,
+            "max_hours": float(max_hours),
+        }
+        resp = request_fn("GET", "/v1/timeline", params=params)
+        if resp.status_code == 404:
+            return f"Anchor {anchor_id} not found."
+        if resp.status_code == 403:
+            return "Anchor is in a different project than your API key allows."
+        if resp.status_code != 200:
+            return f"Timeline failed: HTTP {resp.status_code}"
+        data = resp.json() if resp.content else {}
+        return json.dumps(data, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Failed to fetch timeline: {e}"
+
+
+@mcp.tool(
+    description=(
         "Delete a memory by its ID. "
         "USE THIS WHEN: a memory is outdated, incorrect, or no longer relevant. "
         "Pass the memory ID from recall output."

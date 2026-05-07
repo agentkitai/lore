@@ -3841,6 +3841,105 @@ class PostgresStore:
             rows = await conn.fetch(sql, *params)
         return [_row_to_stored(r) for r in rows]
 
+    async def list_timeline_around(
+        self,
+        *,
+        anchor_id: str,
+        org_id: str,
+        direction: str,
+        limit: int,
+        max_hours: float,
+    ) -> tuple[Optional[StoredMemory], list[StoredMemory]]:
+        """Phase 6G — chronologically adjacent memories around an anchor.
+
+        Mirror of the SQLite implementation, using ``INTERVAL '<n> hours'``
+        for the time window.
+        """
+        async with self._acquire() as conn:
+            anchor_row = await conn.fetchrow(
+                """
+                SELECT id, org_id, content, context, tags, confidence, source,
+                       project, created_at, updated_at, expires_at, upvotes,
+                       downvotes, meta, importance_score, access_count,
+                       last_accessed_at, scope
+                FROM memories
+                WHERE id = $1 AND org_id = $2
+                """,
+                anchor_id,
+                org_id,
+            )
+        if anchor_row is None:
+            return (None, [])
+        anchor = _row_to_stored(anchor_row)
+        if anchor.project is None:
+            return (anchor, [])
+
+        anchor_ts = anchor.created_at
+        # Convert max_hours to a timedelta so asyncpg can bind it as INTERVAL.
+        window = timedelta(hours=float(max_hours))
+
+        async def _fetch(predicate_sql: str, order_sql: str, n: int) -> list[StoredMemory]:
+            sql = f"""
+                SELECT id, org_id, content, context, tags, confidence, source,
+                       project, created_at, updated_at, expires_at, upvotes,
+                       downvotes, meta, importance_score, access_count,
+                       last_accessed_at, scope
+                FROM memories
+                WHERE org_id = $1
+                  AND project = $2
+                  AND id != $3
+                  AND created_at BETWEEN ($4::timestamptz - $5::interval)
+                                     AND ($4::timestamptz + $5::interval)
+                  AND {predicate_sql}
+                ORDER BY {order_sql}
+                LIMIT $6
+            """
+            async with self._acquire() as conn:
+                rows = await conn.fetch(
+                    sql,
+                    org_id,
+                    anchor.project,
+                    anchor_id,
+                    anchor_ts,
+                    window,
+                    int(n),
+                )
+            return [_row_to_stored(r) for r in rows]
+
+        if direction == "before":
+            rows = await _fetch(
+                "created_at < $4::timestamptz",
+                "created_at DESC",
+                int(limit),
+            )
+            return (anchor, list(reversed(rows)))
+        if direction == "after":
+            rows = await _fetch(
+                "created_at > $4::timestamptz",
+                "created_at ASC",
+                int(limit),
+            )
+            return (anchor, rows)
+        # 'both' split: ceil(limit/2) before + floor(limit/2) after.
+        before_n = (int(limit) + 1) // 2
+        after_n = int(limit) // 2
+        before_rows: list[StoredMemory] = []
+        after_rows: list[StoredMemory] = []
+        if before_n > 0:
+            rows = await _fetch(
+                "created_at < $4::timestamptz",
+                "created_at DESC",
+                before_n,
+            )
+            before_rows = list(reversed(rows))
+        if after_n > 0:
+            after_rows = await _fetch(
+                "created_at > $4::timestamptz",
+                "created_at ASC",
+                after_n,
+            )
+        return (anchor, before_rows + after_rows)
+
 
 class _BoundConn:
     """Async context manager that returns a pre-acquired connection without closing it."""

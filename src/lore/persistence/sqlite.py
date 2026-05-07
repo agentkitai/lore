@@ -5729,6 +5729,103 @@ class SqliteStore:
                 rows = await cur.fetchall()
         return [_row_to_memory(r) for r in rows]
 
+    async def list_timeline_around(
+        self,
+        *,
+        anchor_id: str,
+        org_id: str,
+        direction: str,
+        limit: int,
+        max_hours: float,
+    ) -> tuple[Optional[StoredMemory], list[StoredMemory]]:
+        """Phase 6G — chronologically adjacent memories around an anchor.
+
+        Two queries: anchor lookup gated by ``org_id``, then a
+        same-project ±``max_hours`` window query split by direction.
+        Time-window math uses ``julianday`` (days), translating
+        ``±max_hours`` to ``±max_hours/24.0`` days. Adjacent rows are
+        returned chronologically (ASC).
+        """
+        # Anchor lookup. We don't gate by ``expires_at`` here because the
+        # caller expects a deterministic 404 vs 200 against the visible row;
+        # if a row is expired it's already been swept by ``expire_memories``.
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._MEMORY_COLS} FROM memories "
+                "WHERE id = ? AND org_id = ?",
+                (anchor_id, org_id),
+            ) as cur:
+                anchor_row = await cur.fetchone()
+        if anchor_row is None:
+            return (None, [])
+        anchor = _row_to_memory(anchor_row)
+        # NULL anchor.project → no adjacent rows (same-project requires a
+        # concrete project value; we never match NULL=NULL across rows).
+        if anchor.project is None:
+            return (anchor, [])
+
+        # Window in fractional days for julianday math.
+        days_window = float(max_hours) / 24.0
+        # ``created_at`` is stored as either the SQLite-native
+        # ``"YYYY-MM-DD HH:MM:SS"`` shape (from the column DEFAULT
+        # ``datetime('now')``) or as ISO-8601 if assigned by Python.
+        # ``julianday(...)`` accepts both, so we pass the raw column value
+        # for the anchor timestamp.
+        anchor_ts_raw = anchor_row["created_at"]
+
+        async def _fetch(predicate_sql: str, order_sql: str, n: int) -> list[StoredMemory]:
+            sql = (
+                f"SELECT {self._MEMORY_COLS} FROM memories "
+                "WHERE org_id = ? "
+                "  AND project = ? "
+                "  AND id != ? "
+                "  AND ABS(julianday(created_at) - julianday(?)) <= ? "
+                f"  AND {predicate_sql} "
+                f"ORDER BY {order_sql} "
+                "LIMIT ?"
+            )
+            params = (org_id, anchor.project, anchor_id, anchor_ts_raw,
+                      days_window, anchor_ts_raw, n)
+            async with self._acquire() as conn:
+                async with conn.execute(sql, params) as cur:
+                    rows = await cur.fetchall()
+            return [_row_to_memory(r) for r in rows]
+
+        if direction == "before":
+            rows = await _fetch(
+                "julianday(created_at) < julianday(?)",
+                "created_at DESC",
+                int(limit),
+            )
+            # most-recent-first → flip to ASC
+            return (anchor, list(reversed(rows)))
+        if direction == "after":
+            rows = await _fetch(
+                "julianday(created_at) > julianday(?)",
+                "created_at ASC",
+                int(limit),
+            )
+            return (anchor, rows)
+        # 'both' — split: ceil(limit/2) before + floor(limit/2) after.
+        before_n = (int(limit) + 1) // 2
+        after_n = int(limit) // 2
+        before_rows: list[StoredMemory] = []
+        after_rows: list[StoredMemory] = []
+        if before_n > 0:
+            rows = await _fetch(
+                "julianday(created_at) < julianday(?)",
+                "created_at DESC",
+                before_n,
+            )
+            before_rows = list(reversed(rows))
+        if after_n > 0:
+            after_rows = await _fetch(
+                "julianday(created_at) > julianday(?)",
+                "created_at ASC",
+                after_n,
+            )
+        return (anchor, before_rows + after_rows)
+
 
 async def check_dangling_vectors(store: "SqliteStore") -> list[str]:
     """Return memory IDs whose ``memories`` row has no ``memory_vectors`` peer.

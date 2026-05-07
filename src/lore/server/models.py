@@ -374,3 +374,24 @@ class ObservationListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ── Timeline (Phase 6G) ────────────────────────────────────────────
+
+
+class TimelineEntry(BaseModel):
+    """One adjacent event around a timeline anchor."""
+
+    id: str
+    created_at: str
+    type: str
+    title: str
+    narrative_1l: str
+    same_session: bool
+
+
+class TimelineResponse(BaseModel):
+    """Response for GET /v1/timeline — chronologically-ordered adjacent events."""
+
+    entries: List[TimelineEntry]
+    count: int
