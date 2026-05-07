@@ -50,6 +50,7 @@ from lore.server.routes.recommendations import router as recommendations_router
 from lore.server.routes.retention import router as retention_router
 from lore.server.routes.retrieve import router as retrieve_router
 from lore.server.routes.review import router as review_router
+from lore.server.routes.search import router as search_router
 from lore.server.routes.setup_validation import router as setup_validation_router
 from lore.server.routes.sharing import rate_router
 from lore.server.routes.sharing import router as sharing_router
@@ -146,6 +147,7 @@ app.include_router(sharing_router)
 app.include_router(rate_router)
 app.include_router(ingest_router)
 app.include_router(retrieve_router)
+app.include_router(search_router)
 app.include_router(analytics_router)
 app.include_router(conversations_router)
 app.include_router(recent_router)
