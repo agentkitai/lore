@@ -132,6 +132,7 @@ async def search_lessons(
         tags=body.tags,
         limit=body.limit,
         min_confidence=body.min_confidence,
+        scope_mode=body.scope,
     )
 
     lessons = [

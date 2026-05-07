@@ -429,6 +429,7 @@ class AsyncLore:
         project: Optional[str] = None,
         min_score: float = 0.3,
         half_life_days: int = 30,
+        scope_mode: str = "default",
     ) -> List[StoredMemory]:
         """Vector-recall memories matching ``query``.
 
@@ -436,6 +437,11 @@ class AsyncLore:
         carrying a ``.score`` attribute). Phase 4A uses the
         ``services.retrieve.retrieve`` helper but throws away the formatted
         block — the embedded API surfaces objects, not strings.
+
+        Phase 6G: ``scope_mode`` defaults to ``'default'`` — the standard
+        ``(scope='global') OR (scope='project' AND project=:current)``
+        predicate. Pass ``'all'`` to opt into cross-project recall (useful
+        in tests / admin tools).
         """
         store = self._require_store()
         vec = await self._embed_text(query)
@@ -449,6 +455,7 @@ class AsyncLore:
             project=project,
             format="raw",
             half_life_days=half_life_days,
+            scope_mode=scope_mode,
         )
         return list(result.memories)
 
@@ -900,19 +907,24 @@ class AsyncLore:
         include_metadata: bool = False,
         project: Optional[str] = None,
         verbatim: bool = False,
+        scope_mode: str = "default",
     ) -> str:
         """Recall + format the result as a prompt-ready string.
 
         Mirrors :meth:`Lore.as_prompt`: vector-recall ``query`` and pass
         the hits through :class:`PromptFormatter`. Returns ``""`` if no
         memories match.
+
+        Phase 6G: ``scope_mode`` is forwarded through to ``recall``.
         """
         from lore.prompt.formatter import PromptFormatter
         from lore.types import Memory, RecallResult
 
         # Use ``min_score`` of 0 inside recall so the formatter sees the
         # full pool; the formatter handles its own filtering.
-        hits = await self.recall(query, k=limit, project=project, min_score=0.0)
+        hits = await self.recall(
+            query, k=limit, project=project, min_score=0.0, scope_mode=scope_mode,
+        )
         if not hits:
             return ""
 

@@ -174,6 +174,10 @@ class LessonSearchRequest(BaseModel):
     project: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=50)
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Phase 6G: scope predicate selector. 'default' applies the standard
+    # ``(scope='global') OR (scope='project' AND project=:current)``
+    # predicate; 'all' skips it entirely.
+    scope: Literal["default", "all"] = "default"
 
     @field_validator("embedding")
     @classmethod
@@ -286,6 +290,10 @@ class MemorySearchRequest(BaseModel):
     project: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=50)
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Phase 6G: scope predicate selector. 'default' applies the standard
+    # ``(scope='global') OR (scope='project' AND project=:current)``
+    # predicate; 'all' skips it entirely.
+    scope: Literal["default", "all"] = "default"
 
     @field_validator("embedding")
     @classmethod

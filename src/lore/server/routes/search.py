@@ -66,6 +66,14 @@ async def search(
     profile: Optional[str] = Query(
         None, description="Retrieval profile name (e.g. precise, broad, balanced)",
     ),
+    scope: str = Query(
+        "default",
+        description=(
+            "Scope mode (Phase 6G). 'default' applies "
+            "(scope='global') OR (scope='project' AND project=:current); "
+            "'all' skips the predicate (cross-project search opt-in)."
+        ),
+    ),
     auth: AuthContext = Depends(get_auth_context),
 ) -> SearchResponse:
     """Return a compact ``[{id, title, score, signals}]`` index of relevant memories.
@@ -100,6 +108,13 @@ async def search(
             else resolved_profile.min_score
         )
 
+    # Phase 6G: validate scope mode.
+    if scope not in ("default", "all"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid scope '{scope}'. Must be 'default' or 'all'.",
+        )
+
     embedder = _get_embedder()
     query_vec = embedder.embed(query)
 
@@ -115,6 +130,7 @@ async def search(
         project=effective_project,
         profile=resolved_profile,
         min_score_override=min_score,
+        scope_mode=scope,
     )
 
     hits = [

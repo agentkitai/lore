@@ -151,6 +151,14 @@ async def retrieve(
     include_session_context: bool = Query(
         True, description="Append recent session_snapshot memories (last 24h)",
     ),
+    scope: str = Query(
+        "default",
+        description=(
+            "Scope mode (Phase 6G). 'default' applies "
+            "(scope='global') OR (scope='project' AND project=:current); "
+            "'all' skips the predicate (cross-project search opt-in)."
+        ),
+    ),
     auth: AuthContext = Depends(get_auth_context),
 ) -> RetrieveResponse:
     """Retrieve relevant memories for a query.
@@ -201,6 +209,13 @@ async def retrieve(
             detail=f"Invalid format '{format}'. Must be one of: {', '.join(sorted(VALID_FORMATS))}",
         )
 
+    # Phase 6G: validate scope mode.
+    if scope not in ("default", "all"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid scope '{scope}'. Must be 'default' or 'all'.",
+        )
+
     # Embed the query
     embedder = _get_embedder()
     query_vec = embedder.embed(query)
@@ -222,6 +237,7 @@ async def retrieve(
         project=effective_project,
         profile=resolved_profile,
         min_score_override=min_score,
+        scope_mode=scope,
     )
 
     # Convert HybridResult dataclasses to RetrieveMemory pydantic models.

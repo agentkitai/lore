@@ -750,6 +750,8 @@ class Lore:
         days_ago: Optional[int] = None,
         hours_ago: Optional[int] = None,
         window: Optional[str] = None,
+        # Phase 6G: scope predicate selector ('default' | 'all').
+        scope_mode: str = "default",
     ) -> List[RecallResult]:
         """Semantic search for memories.
 
@@ -813,6 +815,7 @@ class Lore:
                 tier=tier,
                 limit=limit,
                 min_confidence=min_confidence,
+                scope_mode=scope_mode,
             )
         else:
             effective_graph_depth = graph_depth if graph_depth is not None else getattr(self, '_graph_depth', 0)

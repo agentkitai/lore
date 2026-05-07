@@ -119,6 +119,11 @@ class RecallParams:
     project: Optional[str] = None
     half_life_days: int = 30
     exclude_expired: bool = True
+    # Phase 6G: project-vs-global scope predicate. ``'default'`` applies
+    # ``(scope='global') OR (scope='project' AND project=:current_project)``;
+    # when ``project`` is None, restrict to ``scope='global'`` only. Pass
+    # ``'all'`` to skip the predicate entirely (rare; cross-project recall).
+    scope_mode: str = "default"
 
 
 # Graph slice dataclasses

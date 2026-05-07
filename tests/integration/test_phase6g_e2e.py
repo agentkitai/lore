@@ -130,3 +130,133 @@ async def test_remember_explicit_scope_overrides_type_default(store):  # noqa: F
     fetched = await store.get_memory("solo", stored.id)
     assert fetched is not None
     assert fetched.scope == "project"
+
+
+# ── Wave B: scope filter on the read path ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_recall_does_not_return_other_project_memories(store):  # noqa: F811
+    """A ``scope='project'`` row is invisible from a different project."""
+    from lore.persistence import RecallParams
+    from lore.services.memories import create_memory
+
+    target_vec = _vec(7)
+    await create_memory(
+        store,
+        org_id="solo",
+        content="alpha-only secret",
+        embedding=target_vec,
+        project="alpha",
+        meta={"type": "note"},
+    )
+
+    results = await store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project="beta",
+        )
+    )
+    assert all(r.project != "alpha" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_recall_returns_global_memories_across_projects(store):  # noqa: F811
+    """A ``scope='global'`` row surfaces in any project."""
+    from lore.persistence import RecallParams
+    from lore.services.memories import create_memory
+
+    target_vec = _vec(8)
+    saved = await create_memory(
+        store,
+        org_id="solo",
+        content="universal lesson about exit codes",
+        embedding=target_vec,
+        project="alpha",
+        meta={"type": "lesson"},
+    )
+    assert saved.scope == "global"
+
+    results = await store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project="beta",
+        )
+    )
+    assert saved.id in {r.id for r in results}
+
+
+@pytest.mark.asyncio
+async def test_recall_scope_all_returns_other_project_memories(store):  # noqa: F811
+    """``scope_mode='all'`` skips the scope predicate entirely."""
+    from lore.persistence import RecallParams
+    from lore.services.memories import create_memory
+
+    target_vec = _vec(9)
+    saved = await create_memory(
+        store,
+        org_id="solo",
+        content="repo-specific memo",
+        embedding=target_vec,
+        project="alpha",
+        meta={"type": "note"},
+    )
+    assert saved.scope == "project"
+
+    results = await store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project=None,
+            scope_mode="all",
+        )
+    )
+    assert saved.id in {r.id for r in results}
+
+
+@pytest.mark.asyncio
+async def test_recall_with_no_current_project_returns_only_global(store):  # noqa: F811
+    """No ``project`` → only ``scope='global'`` rows surface."""
+    from lore.persistence import RecallParams
+    from lore.services.memories import create_memory
+
+    target_vec = _vec(10)
+    project_row = await create_memory(
+        store,
+        org_id="solo",
+        content="project-scoped row with project=NULL",
+        embedding=target_vec,
+        project=None,
+        meta={"type": "note"},
+    )
+    global_row = await create_memory(
+        store,
+        org_id="solo",
+        content="universal lesson",
+        embedding=target_vec,
+        project=None,
+        meta={"type": "lesson"},
+    )
+    assert project_row.scope == "project"
+    assert global_row.scope == "global"
+
+    results = await store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project=None,
+        )
+    )
+    ids = {r.id for r in results}
+    assert global_row.id in ids
+    assert project_row.id not in ids

@@ -145,6 +145,7 @@ async def search_memories(
         limit=body.limit,
         min_score=body.min_confidence,
         project=auth.project or body.project,
+        scope_mode=body.scope,
     )
     return MemorySearchResponse(
         memories=[

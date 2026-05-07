@@ -894,7 +894,19 @@ class PostgresStore:
         _check_embedding_dim(params.query_vec)
         where: list[str] = ["org_id = $1"]
         sql_params: list[Any] = [params.org_id]
-        if params.project is not None:
+        # Phase 6G: scope predicate. ``scope_mode='all'`` skips it entirely;
+        # ``'default'`` applies the standard predicate. ``project`` is a
+        # separate axis — ``scope_mode='all'`` plus an explicit project still
+        # narrows by project (the override is on scope, not project).
+        if params.scope_mode != "all":
+            if params.project is not None:
+                sql_params.append(params.project)
+                where.append(
+                    f"(scope = 'global' OR (scope = 'project' AND project = ${len(sql_params)}))"
+                )
+            else:
+                where.append("scope = 'global'")
+        elif params.project is not None:
             sql_params.append(params.project)
             where.append(f"project = ${len(sql_params)}")
         if params.exclude_expired:
@@ -1735,6 +1747,7 @@ class PostgresStore:
         *,
         limit: int = 20,
         project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, float]]:
         """Phase 6C FTS branch: ``ts_rank`` against the GIN index from 020_fts_index.sql.
 
@@ -1747,6 +1760,10 @@ class PostgresStore:
         to bring it into a more comparable scale before downstream consumers
         (RRF treats ranks not raw scores, so the multiplier doesn't change
         ordering — it only makes the per-signal breakdown more readable).
+
+        Phase 6G: ``scope_mode`` mirrors ``recall_by_embedding`` — ``'default'``
+        applies ``(scope='global') OR (scope='project' AND project=:current)``;
+        ``'all'`` skips the predicate.
         """
         if not query.strip():
             return []
@@ -1754,7 +1771,15 @@ class PostgresStore:
         sql_params: list[Any] = [org_id]
         sql_params.append(query)
         q_idx = len(sql_params)
-        if project is not None:
+        if scope_mode != "all":
+            if project is not None:
+                sql_params.append(project)
+                where.append(
+                    f"(scope = 'global' OR (scope = 'project' AND project = ${len(sql_params)}))"
+                )
+            else:
+                where.append("scope = 'global'")
+        elif project is not None:
             sql_params.append(project)
             where.append(f"project = ${len(sql_params)}")
         sql_params.append(limit)
@@ -1785,6 +1810,8 @@ class PostgresStore:
         entity_ids: Sequence[str],
         *,
         limit: int = 20,
+        project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, int]]:
         """Phase 6C graph branch: rank memories by entity-overlap count.
 
@@ -1792,11 +1819,28 @@ class PostgresStore:
         number of distinct entity ids from the input that touch each memory.
         Returns ``[(memory, n_overlapping_entities)]`` sorted by count DESC,
         then created_at DESC for stable ordering.
+
+        Phase 6G: ``scope_mode`` + ``project`` mirror ``recall_by_embedding``.
         """
         if not entity_ids:
             return []
         ids = list(entity_ids)
-        sql = """
+        where: list[str] = ["em.entity_id = ANY($1)", "m.org_id = $2"]
+        sql_params: list[Any] = [ids, org_id]
+        if scope_mode != "all":
+            if project is not None:
+                sql_params.append(project)
+                where.append(
+                    f"(m.scope = 'global' OR (m.scope = 'project' AND m.project = ${len(sql_params)}))"
+                )
+            else:
+                where.append("m.scope = 'global'")
+        elif project is not None:
+            sql_params.append(project)
+            where.append(f"m.project = ${len(sql_params)}")
+        sql_params.append(limit)
+        limit_idx = len(sql_params)
+        sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta, m.importance_score,
@@ -1804,16 +1848,16 @@ class PostgresStore:
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
-            WHERE em.entity_id = ANY($1) AND m.org_id = $2
+            WHERE {' AND '.join(where)}
             GROUP BY m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                      m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                      m.upvotes, m.downvotes, m.meta, m.importance_score,
                      m.access_count, m.last_accessed_at, m.scope
             ORDER BY overlap_count DESC, m.created_at DESC
-            LIMIT $3
+            LIMIT ${limit_idx}
         """
         async with self._acquire() as conn:
-            rows = await conn.fetch(sql, ids, org_id, limit)
+            rows = await conn.fetch(sql, *sql_params)
         return [(_row_to_stored(r), int(r["overlap_count"])) for r in rows]
 
     # ── PolicyOps ─────────────────────────────────────────────────────

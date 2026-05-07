@@ -131,7 +131,13 @@ async def test_remember_then_get_then_forget():
 
 @pytest.mark.asyncio
 async def test_recall_returns_scored_match():
-    """``recall`` returns the inserted memory when querying with the same text."""
+    """``recall`` returns the inserted memory when querying with the same text.
+
+    Phase 6G: these test memories are stored without a ``project`` and without
+    a universal ``meta.type``, so they land at ``scope='project', project=NULL``
+    and would be hidden by the default scope filter when the caller has no
+    current project. ``scope_mode='all'`` is the documented opt-out.
+    """
     from lore import AsyncLore
 
     async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
@@ -146,6 +152,7 @@ async def test_recall_returns_scored_match():
             "Use exponential backoff for HTTP 429 responses",
             k=5,
             min_score=0.0,
+            scope_mode="all",
         )
         assert len(hits) >= 1
         ids = {h.id for h in hits}
@@ -633,9 +640,13 @@ class TestAsyncLoreClassifyAndPrompt:
 
         async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
             await lore.remember("Use exponential backoff for HTTP 429 responses")
+            # Phase 6G: this no-project / no-type memory lands at
+            # scope='project'; opt into cross-project recall to retrieve it
+            # without spinning up a project context.
             out = await lore.as_prompt(
                 "Use exponential backoff for HTTP 429 responses",
                 limit=3,
+                scope_mode="all",
             )
             assert isinstance(out, str)
             assert len(out) > 0

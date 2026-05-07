@@ -1565,7 +1565,22 @@ class SqliteStore:
         # subset of filters ``RecallParams`` actually exposes.
         where: list[str] = ["m.org_id = ?"]
         sql_params: list[Any] = [params.org_id]
-        if params.project is not None:
+        # Phase 6G: scope predicate. ``scope_mode='all'`` skips this entirely
+        # (cross-project search opt-in); ``'default'`` applies
+        # ``(scope='global') OR (scope='project' AND project=:current)``,
+        # collapsing to ``scope='global'`` only when ``project`` is None so
+        # orphaned ``project=NULL`` rows can't bleed across.
+        if params.scope_mode != "all":
+            if params.project is not None:
+                where.append(
+                    "(m.scope = 'global' OR (m.scope = 'project' AND m.project = ?))"
+                )
+                sql_params.append(params.project)
+            else:
+                where.append("m.scope = 'global'")
+        elif params.project is not None:
+            # ``scope_mode='all'`` plus an explicit project still narrows by
+            # project — the override is on scope, not project.
             where.append("m.project = ?")
             sql_params.append(params.project)
         if params.exclude_expired:
@@ -5243,6 +5258,7 @@ class SqliteStore:
         *,
         limit: int = 20,
         project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, float]]:
         """Phase 6C FTS branch on SQLite.
 
@@ -5260,6 +5276,11 @@ class SqliteStore:
         * the FTS5 table or sqlite_vec extension is missing (graceful
           degradation — the service layer treats an exception here as
           "no FTS signal" and falls through to vector + graph).
+
+        Phase 6G: ``scope_mode`` mirrors ``recall_by_embedding`` —
+        ``'default'`` applies the
+        ``(scope='global') OR (scope='project' AND project=:current)``
+        predicate; ``'all'`` skips it.
         """
         match_query = self._sanitize_fts_query(query)
         if not match_query:
@@ -5267,7 +5288,15 @@ class SqliteStore:
 
         where: list[str] = ["m.org_id = ?"]
         sql_params: list[Any] = [match_query, org_id]
-        if project is not None:
+        if scope_mode != "all":
+            if project is not None:
+                where.append(
+                    "(m.scope = 'global' OR (m.scope = 'project' AND m.project = ?))"
+                )
+                sql_params.append(project)
+            else:
+                where.append("m.scope = 'global'")
+        elif project is not None:
             where.append("m.project = ?")
             sql_params.append(project)
         sql_params.append(limit)
@@ -5296,17 +5325,39 @@ class SqliteStore:
         entity_ids: Sequence[str],
         *,
         limit: int = 20,
+        project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, int]]:
         """Phase 6C graph branch on SQLite.
 
         Mirrors ``PostgresStore.recall_by_entities``: counts entity-overlap
         per memory, sorted by count DESC then created_at DESC. SQLite has no
         ``= ANY($1)`` so the entity list expands to ``IN (?, ...)``.
+
+        Phase 6G: ``scope_mode`` + ``project`` mirror the rest of the recall
+        surface; ``'default'`` applies the standard scope predicate, ``'all'``
+        skips it.
         """
         if not entity_ids:
             return []
         ids = list(entity_ids)
         ent_placeholders = ", ".join(["?"] * len(ids))
+        where: list[str] = [
+            f"em.entity_id IN ({ent_placeholders})",
+            "m.org_id = ?",
+        ]
+        params_tail: list[Any] = [*ids, org_id]
+        if scope_mode != "all":
+            if project is not None:
+                where.append(
+                    "(m.scope = 'global' OR (m.scope = 'project' AND m.project = ?))"
+                )
+                params_tail.append(project)
+            else:
+                where.append("m.scope = 'global'")
+        elif project is not None:
+            where.append("m.project = ?")
+            params_tail.append(project)
         sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
@@ -5315,12 +5366,12 @@ class SqliteStore:
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
-            WHERE em.entity_id IN ({ent_placeholders}) AND m.org_id = ?
+            WHERE {' AND '.join(where)}
             GROUP BY m.id
             ORDER BY overlap_count DESC, m.created_at DESC
             LIMIT ?
         """
-        params = (*ids, org_id, limit)
+        params = (*params_tail, limit)
         async with self._acquire() as conn:
             async with conn.execute(sql, params) as cur:
                 rows = await cur.fetchall()

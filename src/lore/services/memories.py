@@ -163,6 +163,7 @@ async def search_memories(
     min_score: float = 0.3,
     project: Optional[str] = None,
     half_life_days: int = 30,
+    scope_mode: str = "default",
 ) -> Sequence[ScoredMemory]:
     return await store.recall_by_embedding(
         RecallParams(
@@ -172,6 +173,7 @@ async def search_memories(
             min_score=min_score,
             project=project,
             half_life_days=half_life_days,
+            scope_mode=scope_mode,
         )
     )
 

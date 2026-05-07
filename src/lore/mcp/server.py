@@ -354,7 +354,9 @@ def remember_observation(
         "window (today/last_hour/last_day/last_week/last_month/last_year), "
         "before, after, date_from, date_to (ISO 8601). "
         "When knowledge graph is enabled, set graph_depth (e.g. via LORE_GRAPH_DEPTH) "
-        "to surface memories connected via entity relationships."
+        "to surface memories connected via entity relationships. "
+        "Pass scope='all' to also include memories from other projects "
+        "(rare; default scopes to current project + global pool)."
     ),
 )
 def recall(
@@ -386,6 +388,7 @@ def recall(
     date_to: Optional[str] = None,
     session_id: Optional[str] = None,
     include_session_context: bool = True,
+    scope: str = "default",
 ) -> str:
     """Search Lore memory for relevant memories. Set verbatim=true for raw original content."""
     try:
@@ -399,6 +402,7 @@ def recall(
             intent=intent, domain=domain, emotion=emotion,
             topic=topic, sentiment=sentiment, entity=entity, category=category,
             verbatim=verbatim,
+            scope_mode=scope,
             year=year, month=month, day=day,
             days_ago=days_ago, hours_ago=hours_ago, window=window,
             before=before, after=after,
@@ -534,13 +538,16 @@ def _get_session_context(
         "~300). Pair with get_memories(ids=[...]) to fetch full content "
         "for the rows worth reading. "
         "GOOD queries: 'CORS errors with FastAPI', 'Docker build fails on M1'. "
-        "Avoid 'help', 'error', 'fix this'."
+        "Avoid 'help', 'error', 'fix this'. "
+        "Pass scope='all' to also include memories from other projects "
+        "(rare; default scopes to current project + global pool)."
     ),
 )
 def search(
     query: str,
     limit: int = 20,
     min_score: float = 0.3,
+    scope: str = "default",
 ) -> str:
     """Return a compact JSON index of relevant memories."""
     try:
@@ -556,6 +563,7 @@ def search(
             "query": query,
             "limit": max(1, min(int(limit), 50)),
             "min_score": float(min_score),
+            "scope": scope,
         }
         resp = request_fn("GET", "/v1/search", params=params)
         if resp.status_code != 200:

@@ -121,6 +121,7 @@ async def search(
     tags: Optional[Sequence[str]],
     limit: int,
     min_confidence: float,
+    scope_mode: str = "default",
 ) -> list[dict]:
     """Vector recall with time-decay re-ranking.
 
@@ -129,12 +130,18 @@ async def search(
 
     The route layer translates content→problem and context→resolution for the
     response wire shape.
+
+    Phase 6G: ``scope_mode`` is forwarded to ``recall_by_embedding`` so the
+    project-vs-global predicate runs at the SQL layer alongside the
+    per-row post-filter.
     """
     wider_limit = max(50, limit * 5)
     params = RecallParams(
         org_id=org_id,
         query_vec=embedding,
         limit=wider_limit,
+        project=project,
+        scope_mode=scope_mode,
     )
     candidates = await store.recall_by_embedding(params)
 

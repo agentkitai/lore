@@ -96,12 +96,15 @@ async def retrieve(
     project: Optional[str] = None,
     format: str = "xml",
     half_life_days: int = 30,
+    scope_mode: str = "default",
 ) -> RetrieveOutput:
     """Vector recall + formatting. Returns a typed RetrieveOutput.
 
     Note: analytics recording and access-count bumping are intentionally
     left at the route layer for Phase 1A; they will move into this service
     once AnalyticsOps lands on the Store (Phase 1F).
+
+    Phase 6G: ``scope_mode`` is forwarded through to ``RecallParams``.
     """
     if format not in VALID_FORMATS:
         raise ValueError(
@@ -116,6 +119,7 @@ async def retrieve(
             min_score=min_score,
             project=project,
             half_life_days=half_life_days,
+            scope_mode=scope_mode,
         )
     )
     formatted = _FORMATTERS[format](results, query_text)
@@ -238,6 +242,10 @@ class HybridParams:
     limit: int = 5
     project: Optional[str] = None
     half_life_days: int = 30
+    # Phase 6G: project-vs-global scope predicate. ``'default'`` applies
+    # ``(scope='global') OR (scope='project' AND project=:current)``;
+    # ``'all'`` skips the predicate (rare cross-project recall).
+    scope_mode: str = "default"
 
 
 def _recency_signal(created_at: Optional[datetime], recency_bias: float) -> float:
@@ -311,12 +319,15 @@ async def _safe_text_recall(
     *,
     limit: int,
     project: Optional[str],
+    scope_mode: str = "default",
 ) -> Sequence[Tuple[StoredMemory, float]]:
     """Wrap ``store.recall_by_text`` so missing migrations / FTS errors don't kill the call."""
     if not hasattr(store, "recall_by_text"):
         return []
     try:
-        return await store.recall_by_text(org_id, query, limit=limit, project=project)
+        return await store.recall_by_text(
+            org_id, query, limit=limit, project=project, scope_mode=scope_mode
+        )
     except Exception:
         logger.warning("recall_by_text failed; falling through with no FTS signal", exc_info=True)
         return []
@@ -328,6 +339,8 @@ async def _safe_graph_recall(
     query: str,
     *,
     limit: int,
+    project: Optional[str] = None,
+    scope_mode: str = "default",
 ) -> Sequence[Tuple[StoredMemory, int]]:
     """Extract entity ids from ``query`` (best-effort) and call ``recall_by_entities``.
 
@@ -369,7 +382,9 @@ async def _safe_graph_recall(
                     entity_ids.append(ent.id)
         if not entity_ids:
             return []
-        return await store.recall_by_entities(org_id, entity_ids, limit=limit)
+        return await store.recall_by_entities(
+            org_id, entity_ids, limit=limit, project=project, scope_mode=scope_mode
+        )
     except Exception:
         logger.warning("recall_by_entities failed; falling through with no graph signal", exc_info=True)
         return []
@@ -397,13 +412,24 @@ async def _hybrid_recall(
             min_score=0.0,  # post-RRF threshold lives on the profile
             project=params.project,
             half_life_days=params.half_life_days,
+            scope_mode=params.scope_mode,
         )
     )
     fts_task = _safe_text_recall(
-        store, params.org_id, params.query_text, limit=fan_out, project=params.project
+        store,
+        params.org_id,
+        params.query_text,
+        limit=fan_out,
+        project=params.project,
+        scope_mode=params.scope_mode,
     )
     graph_task = _safe_graph_recall(
-        store, params.org_id, params.query_text, limit=graph_fan_out
+        store,
+        params.org_id,
+        params.query_text,
+        limit=graph_fan_out,
+        project=params.project,
+        scope_mode=params.scope_mode,
     )
 
     vec_raw, fts_raw, graph_raw = await asyncio.gather(
@@ -504,6 +530,7 @@ async def hybrid_retrieve(
     profile: Optional[ResolvedProfile] = None,
     half_life_days: int = 30,
     min_score_override: Optional[float] = None,
+    scope_mode: str = "default",
 ) -> Sequence[HybridResult]:
     """Public entry point for Phase 6C hybrid recall.
 
@@ -512,6 +539,9 @@ async def hybrid_retrieve(
     ``min_score_override`` to honor an HTTP-level ``min_score`` query param;
     when supplied it replaces ``profile.min_score`` so a stricter threshold
     can be applied without mutating the cached profile.
+
+    Phase 6G: ``scope_mode`` is the project-vs-global predicate switch —
+    ``'default'`` applies the standard scope filter, ``'all'`` skips it.
     """
     effective = profile or _DEFAULT_HYBRID_PROFILE
     if min_score_override is not None:
@@ -541,5 +571,6 @@ async def hybrid_retrieve(
             limit=limit,
             project=project,
             half_life_days=half_life_days,
+            scope_mode=scope_mode,
         ),
     )

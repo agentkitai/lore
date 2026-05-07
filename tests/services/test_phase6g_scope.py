@@ -174,3 +174,155 @@ def test_default_scope_for_type_helper():
     assert default_scope_for_type("") == "project"
     assert "lesson" in GLOBAL_TYPES
     assert "note" not in GLOBAL_TYPES
+
+
+# ── Wave B: scope filter on the read path ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_recall_does_not_return_other_project_memories(sqlite_store):
+    """A ``scope='project'`` row is invisible from a different project."""
+    from lore.persistence import RecallParams
+    from lore.services.memories import create_memory
+
+    # Use the same query embedding for both inserts so similarity is high
+    # regardless of content.
+    target_vec = _vec(7)
+    await create_memory(
+        sqlite_store,
+        org_id="solo",
+        content="alpha-only secret",
+        embedding=target_vec,
+        project="alpha",
+        meta={"type": "note"},
+    )
+
+    results = await sqlite_store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project="beta",
+        )
+    )
+    # Querying as project=beta with the default scope filter must hide the
+    # alpha-only row.
+    assert all(r.project != "alpha" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_recall_returns_global_memories_across_projects(sqlite_store):
+    """A ``scope='global'`` row surfaces in any project, including projects
+    that didn't author it."""
+    from lore.persistence import RecallParams
+    from lore.services.memories import create_memory
+
+    target_vec = _vec(8)
+    saved = await create_memory(
+        sqlite_store,
+        org_id="solo",
+        content="universal lesson about exit codes",
+        embedding=target_vec,
+        project="alpha",
+        meta={"type": "lesson"},  # auto → global
+    )
+    assert saved.scope == "global"
+
+    results = await sqlite_store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project="beta",
+        )
+    )
+    ids = {r.id for r in results}
+    assert saved.id in ids
+
+
+@pytest.mark.asyncio
+async def test_recall_scope_all_returns_other_project_memories(sqlite_store):
+    """``scope_mode='all'`` skips the scope predicate entirely."""
+    from lore.persistence import RecallParams
+    from lore.services.memories import create_memory
+
+    target_vec = _vec(9)
+    saved = await create_memory(
+        sqlite_store,
+        org_id="solo",
+        content="repo-specific memo",
+        embedding=target_vec,
+        project="alpha",
+        meta={"type": "note"},  # → project scope
+    )
+    assert saved.scope == "project"
+
+    # Without scope_mode='all', alpha would be hidden under project=beta.
+    default_results = await sqlite_store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project=None,  # no project: default would only see global rows
+        )
+    )
+    assert saved.id not in {r.id for r in default_results}
+
+    # With scope_mode='all' and no project, scope is fully ignored.
+    results = await sqlite_store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project=None,
+            scope_mode="all",
+        )
+    )
+    ids = {r.id for r in results}
+    assert saved.id in ids
+
+
+@pytest.mark.asyncio
+async def test_recall_with_no_current_project_returns_only_global(sqlite_store):
+    """No ``project`` (e.g. unscoped key + no body project) → only
+    ``scope='global'`` rows surface; ``scope='project'`` rows are filtered
+    out even when their ``project`` column is NULL."""
+    from lore.persistence import RecallParams
+    from lore.services.memories import create_memory
+
+    target_vec = _vec(10)
+    project_row = await create_memory(
+        sqlite_store,
+        org_id="solo",
+        content="project-scoped row with project=NULL",
+        embedding=target_vec,
+        project=None,
+        meta={"type": "note"},
+    )
+    global_row = await create_memory(
+        sqlite_store,
+        org_id="solo",
+        content="universal lesson",
+        embedding=target_vec,
+        project=None,
+        meta={"type": "lesson"},
+    )
+    assert project_row.scope == "project"
+    assert global_row.scope == "global"
+
+    results = await sqlite_store.recall_by_embedding(
+        RecallParams(
+            org_id="solo",
+            query_vec=target_vec,
+            limit=10,
+            min_score=0.0,
+            project=None,
+        )
+    )
+    ids = {r.id for r in results}
+    assert global_row.id in ids
+    assert project_row.id not in ids

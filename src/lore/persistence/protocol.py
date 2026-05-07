@@ -432,12 +432,18 @@ class Store(Protocol):
         *,
         limit: int = 20,
         project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, float]]:
         """Full-text search with backend-native ranking.
 
         Phase 6C hybrid retrieval: PG uses ``ts_rank`` against the GIN index
         introduced in 020_fts_index.sql; SQLite uses ``bm25(memories_fts)``
         against the FTS5 virtual table.
+
+        Phase 6G: ``scope_mode`` controls the project-vs-global predicate —
+        ``'default'`` applies
+        ``(scope='global') OR (scope='project' AND project=:current)``,
+        ``'all'`` skips it.
 
         Returns ``[(memory, fts_rank)]`` ordered by descending rank. Empty
         when the query yields no terms or the FTS migration hasn't been
@@ -451,6 +457,8 @@ class Store(Protocol):
         entity_ids: Sequence[str],
         *,
         limit: int = 20,
+        project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, int]]:
         """Memories tied to any of the given entities, ranked by mention count.
 
@@ -458,6 +466,8 @@ class Store(Protocol):
         ``get_memories_by_entities`` but returns the count of overlapping
         entity ids per memory so the service layer can use it as a graph
         signal in RRF fusion.
+
+        Phase 6G: ``scope_mode`` + ``project`` mirror ``recall_by_embedding``.
         """
         ...
 
