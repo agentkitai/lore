@@ -22,12 +22,25 @@ def _vec(seed: int) -> Sequence[float]:
 
 
 async def _set_reputation(store: Store, memory_id: str, score: int) -> None:
-    """Raw-SQL helper: set reputation_score on a specific memory row."""
-    await store._conn.execute(  # type: ignore[attr-defined]
-        "UPDATE memories SET reputation_score = $1 WHERE id = $2",
-        score,
-        memory_id,
-    )
+    """Raw-SQL helper: set reputation_score on a specific memory row.
+
+    Dialect-aware: PostgresStore uses asyncpg ``$N`` placeholders;
+    SqliteStore uses aiosqlite ``?`` placeholders.
+    """
+    from tests.persistence.conftest import _is_sqlite
+
+    if _is_sqlite(store):
+        await store._conn.execute(  # type: ignore[attr-defined]
+            "UPDATE memories SET reputation_score = ? WHERE id = ?",
+            (score, memory_id),
+        )
+        await store._conn.commit()  # type: ignore[attr-defined]
+    else:
+        await store._conn.execute(  # type: ignore[attr-defined]
+            "UPDATE memories SET reputation_score = $1 WHERE id = $2",
+            score,
+            memory_id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -266,14 +279,29 @@ async def test_list_with_embeddings_returns_full_shape(store: Store) -> None:
 
 @pytest.mark.asyncio
 async def test_list_with_embeddings_handles_null_embedding(store: Store) -> None:
-    """A NULL embedding column is returned as None (not an empty list)."""
+    """A NULL embedding column is returned as None (not an empty list).
+
+    Dialect-aware: PG stores embeddings inline on ``memories``; SQLite
+    stores them in the ``memory_vectors`` vec0 virtual table keyed by
+    ``memory_rowid``. ``NULL embedding`` on SQLite means "no vec0 row" —
+    we delete from ``memory_vectors`` to mirror the PG branch.
+    """
+    from tests.persistence.conftest import _is_sqlite
+
     m = await store.insert_memory(
         NewMemory(org_id="solo", content="no-embed", embedding=[0.1] * 384)
     )
-    # Raw SQL: NULL out the embedding after insert
-    await store._conn.execute(  # type: ignore[attr-defined]
-        "UPDATE memories SET embedding = NULL WHERE id = $1", m.id
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(  # type: ignore[attr-defined]
+            "DELETE FROM memory_vectors "
+            "WHERE memory_rowid = (SELECT rowid FROM memories WHERE id = ?)",
+            (m.id,),
+        )
+        await store._conn.commit()  # type: ignore[attr-defined]
+    else:
+        await store._conn.execute(  # type: ignore[attr-defined]
+            "UPDATE memories SET embedding = NULL WHERE id = $1", m.id
+        )
 
     rows = await store.list_memories_with_embeddings(MemoryFilter(org_id="solo"))
 
