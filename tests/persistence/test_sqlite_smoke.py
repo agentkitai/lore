@@ -77,21 +77,6 @@ async def test_make_store_dispatches_sqlite_url(tmp_path: Path):
         await store.close()
 
 
-@pytest.mark.asyncio
-async def test_method_stubs_raise_not_implemented(tmp_path: Path):
-    from lore.persistence.sqlite import SqliteStore
-
-    store = await SqliteStore.open(f"sqlite:///{tmp_path / 'stubs.db'}")
-    try:
-        # Phase 3D implemented all MemoryOps. Pick a still-stubbed slice
-        # method (GraphOps lands in 3E+) to assert the stub surface
-        # remains in place.
-        with pytest.raises(NotImplementedError, match="get_entity"):
-            await store.get_entity("ent_x")
-    finally:
-        await store.close()
-
-
 def test_resolve_db_path_in_memory():
     from lore.persistence.sqlite import _resolve_db_path
 

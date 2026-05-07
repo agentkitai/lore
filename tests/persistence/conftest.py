@@ -132,17 +132,14 @@ async def store(request, _pg_pool):
 # failure because the test's actual subject (e.g. ``list_workspaces``) is
 # still a SqliteStore stub pending later phases anyway.
 _SQLITE_DIALECT_SENTINELS = (
+    # Two sentinels remain after Phase 3I (24 + 6 hits across the test
+    # suite). Both come from raw asyncpg-style SQL helpers in
+    # ``tests/services/`` and ``tests/server/`` that haven't yet been
+    # made dialect-aware. The contract suite under
+    # ``tests/persistence/test_contract_*.py`` is fully green on both
+    # backends.
     "Connection.execute() takes",  # aiosqlite reject of asyncpg-style varargs
     "object has no attribute 'fetchrow'",  # asyncpg-only API
-    "object has no attribute 'fetchval'",
-    "object has no attribute 'fetch'",
-    "object has no attribute 'executemany'",
-    'no such function: now',       # PG-specific helpers in raw SQL
-    'no such function: gen_random_uuid',
-    'near "$"',                     # asyncpg $N placeholder in raw SQL
-    "::jsonb",                      # asyncpg cast syntax in raw SQL
-    "::vector",
-    "no such column: embedding",   # PG embedding column lives in vec0 in SQLite
 )
 
 
