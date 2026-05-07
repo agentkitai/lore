@@ -17,6 +17,7 @@ from lore.persistence import (
     Store,
     StoredRetentionPolicy,
 )
+from tests.persistence.conftest import _is_sqlite
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -39,22 +40,43 @@ async def _insert_policy(
     import json
 
     rw = retention_window or {"working": 3600, "short": 604800, "long": None}
-    await store._conn.execute(
-        """
-        INSERT INTO retention_policies
-            (id, org_id, name, retention_window, snapshot_schedule,
-             encryption_required, max_snapshots, is_active)
-        VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
-        """,
-        policy_id,
-        org_id,
-        name,
-        json.dumps(rw),
-        snapshot_schedule,
-        encryption_required,
-        max_snapshots,
-        is_active,
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(
+            """
+            INSERT INTO retention_policies
+                (id, org_id, name, retention_window, snapshot_schedule,
+                 encryption_required, max_snapshots, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                policy_id,
+                org_id,
+                name,
+                json.dumps(rw),
+                snapshot_schedule,
+                1 if encryption_required else 0,
+                max_snapshots,
+                1 if is_active else 0,
+            ),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            """
+            INSERT INTO retention_policies
+                (id, org_id, name, retention_window, snapshot_schedule,
+                 encryption_required, max_snapshots, is_active)
+            VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8)
+            """,
+            policy_id,
+            org_id,
+            name,
+            json.dumps(rw),
+            snapshot_schedule,
+            encryption_required,
+            max_snapshots,
+            is_active,
+        )
     return policy_id
 
 
@@ -230,33 +252,67 @@ async def _insert_snapshot(
     from ulid import ULID
 
     sid = f"snap_{ULID()}"
-    if created_at is None:
-        await store._conn.execute(
-            "INSERT INTO snapshot_metadata (id, org_id, policy_id, name, path, size_bytes, memory_count, encrypted) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-            sid,
-            org_id,
-            policy_id,
-            name,
-            path,
-            size_bytes,
-            memory_count,
-            encrypted,
-        )
+    if _is_sqlite(store):
+        if created_at is None:
+            await store._conn.execute(
+                "INSERT INTO snapshot_metadata (id, org_id, policy_id, name, path, size_bytes, memory_count, encrypted) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    sid,
+                    org_id,
+                    policy_id,
+                    name,
+                    path,
+                    size_bytes,
+                    memory_count,
+                    1 if encrypted else 0,
+                ),
+            )
+        else:
+            await store._conn.execute(
+                "INSERT INTO snapshot_metadata (id, org_id, policy_id, name, path, size_bytes, memory_count, encrypted, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    sid,
+                    org_id,
+                    policy_id,
+                    name,
+                    path,
+                    size_bytes,
+                    memory_count,
+                    1 if encrypted else 0,
+                    created_at.isoformat() if hasattr(created_at, "isoformat") else created_at,
+                ),
+            )
+        await store._conn.commit()
     else:
-        await store._conn.execute(
-            "INSERT INTO snapshot_metadata (id, org_id, policy_id, name, path, size_bytes, memory_count, encrypted, created_at) "
-            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
-            sid,
-            org_id,
-            policy_id,
-            name,
-            path,
-            size_bytes,
-            memory_count,
-            encrypted,
-            created_at,
-        )
+        if created_at is None:
+            await store._conn.execute(
+                "INSERT INTO snapshot_metadata (id, org_id, policy_id, name, path, size_bytes, memory_count, encrypted) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                sid,
+                org_id,
+                policy_id,
+                name,
+                path,
+                size_bytes,
+                memory_count,
+                encrypted,
+            )
+        else:
+            await store._conn.execute(
+                "INSERT INTO snapshot_metadata (id, org_id, policy_id, name, path, size_bytes, memory_count, encrypted, created_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                sid,
+                org_id,
+                policy_id,
+                name,
+                path,
+                size_bytes,
+                memory_count,
+                encrypted,
+                created_at,
+            )
     return sid
 
 

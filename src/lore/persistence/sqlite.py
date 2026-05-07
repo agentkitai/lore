@@ -39,25 +39,31 @@ from lore.persistence.types import (
     MemoryPatch,
     NewApiKey,
     NewConversationJob,
+    NewDrillResult,
     NewMember,
     NewMemory,
     NewProfile,
     NewRecommendationFeedback,
+    NewRetentionPolicy,
     NewRetrievalEvent,
     NewWorkspace,
     ProfilePatch,
     RecallParams,
     RecommendationCandidate,
+    RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
+    StoredDrillResult,
     StoredMember,
     StoredMemory,
     StoredProfile,
     StoredRecommendationConfig,
+    StoredRetentionPolicy,
+    StoredSnapshotMetadata,
     StoredWorkspace,
     TimeseriesPoint,
     TopQueryRow,
@@ -407,6 +413,65 @@ def _row_to_conversation_job(row) -> StoredConversationJob:
         processing_time_ms=row["processing_time_ms"] or 0,
         created_at=_parse_iso(row["created_at"]),
         completed_at=_parse_iso(row["completed_at"]),
+    )
+
+
+def _row_to_retention_policy(row) -> StoredRetentionPolicy:
+    """Translate a SQLite ``retention_policies`` row to ``StoredRetentionPolicy``.
+
+    Mirrors ``lore.persistence.postgres._row_to_retention_policy`` but parses
+    the JSON-encoded ``retention_window`` TEXT column and INTEGER 0/1 booleans.
+    """
+    rw_raw = row["retention_window"]
+    if isinstance(rw_raw, str):
+        rw = json.loads(rw_raw) if rw_raw else {}
+    elif rw_raw is None:
+        rw = {}
+    else:
+        rw = rw_raw
+    return StoredRetentionPolicy(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        retention_window=dict(rw or {}),
+        snapshot_schedule=row["snapshot_schedule"],
+        encryption_required=bool(row["encryption_required"]),
+        max_snapshots=int(row["max_snapshots"]),
+        is_active=bool(row["is_active"]),
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_snapshot_metadata(row) -> StoredSnapshotMetadata:
+    """Translate a SQLite ``snapshot_metadata`` row to ``StoredSnapshotMetadata``."""
+    return StoredSnapshotMetadata(
+        id=row["id"],
+        org_id=row["org_id"],
+        policy_id=row["policy_id"],
+        name=row["name"],
+        path=row["path"],
+        size_bytes=row["size_bytes"],
+        memory_count=row["memory_count"],
+        encrypted=bool(row["encrypted"]),
+        created_at=_parse_iso(row["created_at"]),
+    )
+
+
+def _row_to_drill_result(row) -> StoredDrillResult:
+    """Translate a SQLite ``restore_drill_results`` row to ``StoredDrillResult``."""
+    return StoredDrillResult(
+        id=row["id"],
+        org_id=row["org_id"],
+        snapshot_id=row["snapshot_id"],
+        snapshot_name=row["snapshot_name"],
+        started_at=_parse_iso(row["started_at"]),
+        completed_at=_parse_iso(row["completed_at"]),
+        recovery_time_ms=row["recovery_time_ms"],
+        memories_restored=row["memories_restored"],
+        status=row["status"],
+        error=row["error"],
+        created_at=_parse_iso(row["created_at"]),
     )
 
 
@@ -2905,6 +2970,282 @@ class SqliteStore:
                 rows = await cur.fetchall()
         return tuple(_row_to_audit_entry(r) for r in rows)
 
+    # ── RetentionOps (Phase 3H) ───────────────────────────────────────
+
+    _RETENTION_POLICY_COLS = (
+        "id, org_id, name, retention_window, snapshot_schedule, "
+        "encryption_required, max_snapshots, is_active, created_at, updated_at"
+    )
+
+    async def list_retention_policies(
+        self, org_id: str
+    ) -> Sequence[StoredRetentionPolicy]:
+        """List retention policies for an org, ordered by name.
+
+        Mirrors ``PostgresStore.list_retention_policies``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._RETENTION_POLICY_COLS} FROM retention_policies "
+                "WHERE org_id = ? ORDER BY name",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_retention_policy(r) for r in rows)
+
+    async def get_retention_policy(
+        self, policy_id: str, org_id: str
+    ) -> Optional[StoredRetentionPolicy]:
+        """Return a retention policy scoped to (id, org_id), or None.
+
+        Mirrors ``PostgresStore.get_retention_policy``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._RETENTION_POLICY_COLS} FROM retention_policies "
+                "WHERE id = ? AND org_id = ?",
+                (policy_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_retention_policy(row) if row else None
+
+    async def create_retention_policy(
+        self, policy: NewRetentionPolicy
+    ) -> StoredRetentionPolicy:
+        """Insert a new retention policy; raises IntegrityError on (org_id, name) collision.
+
+        Mirrors ``PostgresStore.create_retention_policy``: caller-side
+        ``retpol_<ULID>`` id, JSON-encoded ``retention_window`` TEXT.
+        """
+        policy_id = f"retpol_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO retention_policies
+                        (id, org_id, name, retention_window, snapshot_schedule,
+                         encryption_required, max_snapshots, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        policy_id,
+                        policy.org_id,
+                        policy.name,
+                        json.dumps(dict(policy.retention_window)),
+                        policy.snapshot_schedule,
+                        1 if policy.encryption_required else 0,
+                        policy.max_snapshots,
+                        1 if policy.is_active else 0,
+                    ),
+                )
+                await conn.commit()
+            except aiosqlite.IntegrityError as e:
+                raise IntegrityError(
+                    f"Retention policy {policy.name!r} already exists for "
+                    f"org_id={policy.org_id!r}"
+                ) from e
+            async with conn.execute(
+                f"SELECT {self._RETENTION_POLICY_COLS} FROM retention_policies WHERE id = ?",
+                (policy_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("create_retention_policy: row vanished after insert")
+        return _row_to_retention_policy(row)
+
+    async def update_retention_policy(
+        self,
+        policy_id: str,
+        org_id: str,
+        patch: RetentionPolicyPatch,
+    ) -> Optional[StoredRetentionPolicy]:
+        """Apply a patch and return the updated row, or None if absent.
+
+        Mirrors ``PostgresStore.update_retention_policy``: dynamic SET
+        clause; empty patches raise ``ValueError``.
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+
+        if patch.name is not None:
+            sets.append("name = ?")
+            params.append(patch.name)
+        if patch.retention_window is not None:
+            sets.append("retention_window = ?")
+            params.append(json.dumps(dict(patch.retention_window)))
+        if patch.snapshot_schedule is not None:
+            sets.append("snapshot_schedule = ?")
+            params.append(patch.snapshot_schedule)
+        if patch.encryption_required is not None:
+            sets.append("encryption_required = ?")
+            params.append(1 if patch.encryption_required else 0)
+        if patch.max_snapshots is not None:
+            sets.append("max_snapshots = ?")
+            params.append(patch.max_snapshots)
+        if patch.is_active is not None:
+            sets.append("is_active = ?")
+            params.append(1 if patch.is_active else 0)
+
+        if not sets:
+            raise ValueError(
+                "update_retention_policy called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sets.append("updated_at = datetime('now')")
+        params.append(policy_id)
+        params.append(org_id)
+        sql = (
+            "UPDATE retention_policies "
+            f"SET {', '.join(sets)} "
+            "WHERE id = ? AND org_id = ?"
+        )
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql, params)
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._RETENTION_POLICY_COLS} FROM retention_policies "
+                "WHERE id = ? AND org_id = ?",
+                (policy_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_retention_policy(row) if row else None
+
+    async def delete_retention_policy(self, policy_id: str, org_id: str) -> bool:
+        """Delete a retention policy scoped to (id, org_id); returns True if removed.
+
+        Mirrors ``PostgresStore.delete_retention_policy``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM retention_policies WHERE id = ? AND org_id = ?",
+                (policy_id, org_id),
+            )
+            deleted = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return bool(deleted)
+
+    async def get_latest_snapshot_for_policy(
+        self, policy_id: str, org_id: str
+    ) -> Optional[StoredSnapshotMetadata]:
+        """Return the most recent snapshot for a (policy_id, org_id), or None.
+
+        Mirrors ``PostgresStore.get_latest_snapshot_for_policy``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT id, org_id, policy_id, name, path, size_bytes, memory_count, "
+                "encrypted, created_at "
+                "FROM snapshot_metadata "
+                "WHERE policy_id = ? AND org_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (policy_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_snapshot_metadata(row) if row else None
+
+    async def count_snapshots_for_policy(self, policy_id: str) -> int:
+        """Return COUNT(*) of snapshots for a policy_id.
+
+        Mirrors ``PostgresStore.count_snapshots_for_policy``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) AS c FROM snapshot_metadata WHERE policy_id = ?",
+                (policy_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return int(row["c"]) if row else 0
+
+    async def record_drill_result(self, drill: NewDrillResult) -> StoredDrillResult:
+        """Insert a drill result; returns the freshly stored row.
+
+        Mirrors ``PostgresStore.record_drill_result``: caller-side
+        ``drill_<ULID>`` id; ISO TEXT timestamps for ``started_at`` /
+        ``completed_at``.
+        """
+        drill_id = f"drill_{ULID()}"
+        started_iso = drill.started_at.isoformat() if drill.started_at else None
+        completed_iso = drill.completed_at.isoformat() if drill.completed_at else None
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO restore_drill_results
+                    (id, org_id, snapshot_id, snapshot_name, started_at,
+                     completed_at, recovery_time_ms, memories_restored, status, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    drill_id,
+                    drill.org_id,
+                    drill.snapshot_id,
+                    drill.snapshot_name,
+                    started_iso,
+                    completed_iso,
+                    drill.recovery_time_ms,
+                    drill.memories_restored,
+                    drill.status,
+                    drill.error,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT id, org_id, snapshot_id, snapshot_name, started_at, "
+                "completed_at, recovery_time_ms, memories_restored, status, error, "
+                "created_at FROM restore_drill_results WHERE id = ?",
+                (drill_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("record_drill_result: row vanished after insert")
+        return _row_to_drill_result(row)
+
+    async def list_drill_results_for_policy(
+        self, policy_id: str, org_id: str, *, limit: int = 20
+    ) -> Sequence[StoredDrillResult]:
+        """List drill results joined to a policy's snapshots.
+
+        Mirrors ``PostgresStore.list_drill_results_for_policy``: joins
+        ``restore_drill_results`` to ``snapshot_metadata`` on snapshot id
+        and filters by policy_id + org_id; newest first.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT r.id, r.org_id, r.snapshot_id, r.snapshot_name, r.started_at, "
+                "r.completed_at, r.recovery_time_ms, r.memories_restored, "
+                "r.status, r.error, r.created_at "
+                "FROM restore_drill_results r "
+                "JOIN snapshot_metadata s ON s.id = r.snapshot_id "
+                "WHERE s.policy_id = ? AND r.org_id = ? "
+                "ORDER BY r.created_at DESC "
+                "LIMIT ?",
+                (policy_id, org_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_drill_result(r) for r in rows)
+
+    async def get_latest_drill_result(
+        self, org_id: str
+    ) -> Optional[StoredDrillResult]:
+        """Return the most recent drill result for an org, or None.
+
+        Mirrors ``PostgresStore.get_latest_drill_result``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT id, org_id, snapshot_id, snapshot_name, started_at, "
+                "completed_at, recovery_time_ms, memories_restored, status, error, "
+                "created_at FROM restore_drill_results "
+                "WHERE org_id = ? ORDER BY created_at DESC LIMIT 1",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_drill_result(row) if row else None
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -2963,12 +3304,7 @@ _STUBBED_METHODS: Sequence[str] = (
     # RecommendationOps — implemented in Phase 3G.
     # ConversationOps — implemented in Phase 3G.
     # AuditOps — implemented in Phase 3G.
-    # RetentionOps
-    "list_retention_policies", "get_retention_policy",
-    "create_retention_policy", "update_retention_policy",
-    "delete_retention_policy", "get_latest_snapshot_for_policy",
-    "count_snapshots_for_policy", "record_drill_result",
-    "list_drill_results_for_policy", "get_latest_drill_result",
+    # RetentionOps — implemented in Phase 3H.
     # SloOps
     "list_slo_definitions", "get_slo_definition",
     "create_slo_definition", "update_slo_definition",
