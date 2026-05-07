@@ -13,7 +13,10 @@ Two surfaces:
   for repos without a remote. Cached per-cwd because the caller (the
   capture pipeline) can hit it once per emitted observation.
 
-(``strip_private`` is appended below as part of Phase 6G T3.)
+* ``strip_private(text)`` — strips ``<private>...</private>`` blocks
+  before any user content reaches the buffer. Fails closed: an
+  unbalanced opening tag strips to end-of-string rather than letting
+  the unredacted tail leak out.
 """
 
 from __future__ import annotations
@@ -152,3 +155,38 @@ def resolve_project(cwd: Path) -> Optional[str]:
 # Expose ``cache_clear`` on the public name so tests can reset between
 # fixtures without poking at the underscore-prefixed inner.
 resolve_project.cache_clear = _resolve_project_cached.cache_clear  # type: ignore[attr-defined]
+
+
+# ── ``<private>`` stripping ──────────────────────────────────────────
+
+
+_PRIVATE_BLOCK_RE = re.compile(
+    r"<private>.*?</private>",
+    re.DOTALL | re.IGNORECASE,
+)
+# Fail-closed: an unbalanced opening tag strips from ``<private>`` to EOS.
+_PRIVATE_TAIL_RE = re.compile(
+    r"<private>.*$",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def strip_private(text: str) -> str:
+    """Remove ``<private>...</private>`` blocks from ``text``.
+
+    Two passes:
+    1. Non-greedy DOTALL strip of *balanced* ``<private>...</private>``
+       blocks (case-insensitive, multi-line OK).
+    2. If an unbalanced opening tag survives the first pass, strip from
+       it to end-of-string. This is the "fail closed" rule — if we can't
+       see the closing tag, we assume the rest of the input is sensitive.
+
+    Idempotent. Returns ``text`` unchanged if no ``<private>`` markers are
+    present. Empty blocks (``<private></private>``) collapse to an empty
+    string, leaving surrounding text intact.
+    """
+    if not text:
+        return text
+    cleaned = _PRIVATE_BLOCK_RE.sub("", text)
+    cleaned = _PRIVATE_TAIL_RE.sub("", cleaned)
+    return cleaned
