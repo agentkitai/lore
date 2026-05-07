@@ -25,6 +25,9 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("aiosqlite")
+pytest.importorskip("sqlite_vec")
+
 from lore.cli.commands import migrate as migrate_mod
 from lore.persistence.factory import make_store
 from lore.persistence.types import NewMemory
