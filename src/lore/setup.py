@@ -330,6 +330,263 @@ if [ -n "$OUTPUT" ]; then
 fi
 """
 
+# Note: these two templates are stored as ordinary strings (not r-strings)
+# because they go through ``str.format(server_url=..., api_key=...)`` at
+# install time — which means every literal ``{`` and ``}`` in the bash
+# source has to be doubled (``{{`` / ``}}``) to survive ``.format()``.
+# After substitution the rendered scripts are validated with ``bash -n``.
+LORE_CAPTURE_TOOL_HOOK_SCRIPT = """\
+#!/usr/bin/env bash
+# Lore auto-capture PostToolUse hook for Claude Code (Phase 6A).
+# Installed by: lore setup claude-code
+# Event: PostToolUse
+#
+# This hook is part of the auto-capture pipeline designed in
+# docs/superpowers/specs/2026-05-07-lore-auto-capture-design.md. On every
+# tool call:
+#   - Check the LORE_AUTO_SAVE master kill switch (default true).
+#   - Apply the skip list (LORE_CAPTURE_SKIP, CSV; defaults to passive
+#     read tools + the agent's own todo scratchpad). mcp__lore__* is
+#     ALWAYS skipped to prevent recursion when the subagent calls
+#     remember().
+#   - Append a single JSON line to ~/.lore/sessions/<session_id>/buffer.jsonl
+#     with seq, ts, tool, input_summary, output_summary (truncated).
+#   - Compute unprocessed_count vs the cursor; if >= LORE_CAPTURE_N (default
+#     10), spawn `lore capture-extract` as a fully detached subprocess.
+#
+# All errors are absorbed: this hook always exits 0 so Claude Code
+# never breaks because of capture failures.
+#
+# Tunables:
+#   LORE_AUTO_SAVE        master switch (default: true)
+#   LORE_CAPTURE_N        events per batch (default: 10)
+#   LORE_CAPTURE_SKIP     CSV of tool names to skip (overrides default)
+#   LORE_CAPTURE_DEBUG    if true, log each step to errors.log
+
+set +e
+
+if [ "${{LORE_AUTO_SAVE:-true}}" = "false" ]; then
+    exit 0
+fi
+
+INPUT="$(cat)"
+if [ -z "$INPUT" ]; then
+    exit 0
+fi
+
+# Default skip list. Tools listed here are filtered out before being
+# appended to the buffer; their use surfaces indirectly via subsequent
+# Edit/Bash/Write events.
+DEFAULT_SKIP="Read,Glob,Grep,LS,BashOutput,ToolSearch,ListMcpResources,TodoWrite"
+SKIP_LIST="${{LORE_CAPTURE_SKIP-$DEFAULT_SKIP}}"
+BATCH_N="${{LORE_CAPTURE_N:-10}}"
+
+# Pass the JSON payload to Python via stdin and the configuration via
+# argv. Bash here-string handling for the JSON keeps multiline tool
+# inputs/outputs intact.
+LORE_CAPTURE_INPUT="$INPUT" \\
+LORE_CAPTURE_SKIP_RUNTIME="$SKIP_LIST" \\
+LORE_CAPTURE_BATCH_N="$BATCH_N" \\
+python3 -c '
+import json, os, re, shutil, subprocess, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+lore_dir = Path.home() / ".lore"
+skip_csv = os.environ.get("LORE_CAPTURE_SKIP_RUNTIME", "")
+try:
+    batch_n = int(os.environ.get("LORE_CAPTURE_BATCH_N", "10"))
+except ValueError:
+    batch_n = 10
+debug = os.environ.get("LORE_CAPTURE_DEBUG", "").lower() in ("1","true","yes")
+
+raw = os.environ.get("LORE_CAPTURE_INPUT", "")
+try:
+    inp = json.loads(raw or "{{}}")
+except Exception:
+    sys.exit(0)
+
+tool_name = inp.get("tool_name") or ""
+session_id = inp.get("session_id") or ""
+transcript_path = inp.get("transcript_path") or ""
+tool_input = inp.get("tool_input")
+tool_response = inp.get("tool_response")
+
+if not tool_name or not session_id:
+    sys.exit(0)
+
+# mcp__lore__* is ALWAYS skipped (recursion guard for the subagents
+# own remember() calls). Then apply the user-configurable skip list.
+if tool_name.startswith("mcp__lore__"):
+    sys.exit(0)
+skip = {{s.strip() for s in skip_csv.split(",") if s.strip()}}
+if tool_name in skip:
+    sys.exit(0)
+
+safe_sid = re.sub(r"[^A-Za-z0-9_.\\-]", "_", session_id)[:64] or "unknown"
+session_dir = lore_dir / "sessions" / safe_sid
+try:
+    session_dir.mkdir(parents=True, exist_ok=True)
+except OSError:
+    sys.exit(0)
+
+buffer_path = session_dir / "buffer.jsonl"
+cursor_path = session_dir / "buffer.jsonl.cursor"
+errors_path = session_dir / "errors.log"
+
+def log_err(msg):
+    try:
+        ts = datetime.now(timezone.utc).isoformat()
+        with errors_path.open("a", encoding="utf-8") as f:
+            f.write(ts + "\\t" + msg + "\\n")
+    except OSError:
+        pass
+
+def truncate(value):
+    # Open-question #2 decision: head 100 + ellipsis + tail 80 above 200 chars.
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            value = str(value)
+    if len(value) <= 200:
+        return value
+    return value[:100] + "…" + value[-80:]
+
+seq = 1
+if buffer_path.exists():
+    try:
+        with buffer_path.open("rb") as f:
+            seq = sum(1 for _ in f) + 1
+    except OSError:
+        seq = 1
+
+entry = {{
+    "seq": seq,
+    "ts": datetime.now(timezone.utc).isoformat(),
+    "tool": tool_name,
+    "input_summary": truncate(tool_input),
+    "output_summary": truncate(tool_response),
+}}
+
+try:
+    with buffer_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\\n")
+except OSError as exc:
+    log_err("buffer append failed: " + str(exc))
+    sys.exit(0)
+
+if debug:
+    log_err("appended seq=" + str(seq) + " tool=" + tool_name)
+
+cursor = 0
+if cursor_path.exists():
+    try:
+        cursor = int(cursor_path.read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
+        cursor = 0
+
+unprocessed = seq - cursor
+if unprocessed < batch_n:
+    sys.exit(0)
+
+lore_bin = shutil.which("lore")
+if not lore_bin:
+    log_err("lore binary not found on PATH; capture-extract not spawned")
+    sys.exit(0)
+
+cmd = [lore_bin, "capture-extract", "--session-id", session_id]
+if transcript_path:
+    cmd += ["--transcript-path", transcript_path]
+
+try:
+    subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+except OSError as exc:
+    log_err("failed to spawn capture-extract: " + str(exc))
+
+sys.exit(0)
+'
+
+exit 0
+"""
+
+LORE_CAPTURE_STOP_HOOK_SCRIPT = """\
+#!/usr/bin/env bash
+# Lore auto-capture Stop hook for Claude Code (Phase 6A).
+# Installed by: lore setup claude-code
+# Event: Stop  (fires when the main agent stops; NOT SubagentStop)
+#
+# Unconditionally invokes `lore capture-extract` on whatever is in the
+# session's buffer. The PostToolUse hook only fires capture-extract once
+# every LORE_CAPTURE_N events, so the trailing N-1 events at end of
+# session would otherwise be lost. This hook ensures every session
+# flushes once at Stop.
+
+set +e
+
+if [ "${{LORE_AUTO_SAVE:-true}}" = "false" ]; then
+    exit 0
+fi
+
+INPUT="$(cat)"
+if [ -z "$INPUT" ]; then
+    exit 0
+fi
+
+SESSION_ID="$(LORE_CAPTURE_INPUT="$INPUT" python3 -c '
+import json, os, sys
+try:
+    print((json.loads(os.environ.get("LORE_CAPTURE_INPUT") or "{{}}") or {{}}).get("session_id",""))
+except Exception:
+    pass
+' 2>/dev/null)"
+
+TRANSCRIPT_PATH="$(LORE_CAPTURE_INPUT="$INPUT" python3 -c '
+import json, os, sys
+try:
+    print((json.loads(os.environ.get("LORE_CAPTURE_INPUT") or "{{}}") or {{}}).get("transcript_path",""))
+except Exception:
+    pass
+' 2>/dev/null)"
+
+if [ -z "$SESSION_ID" ]; then
+    exit 0
+fi
+
+if ! command -v lore >/dev/null 2>&1; then
+    # Best-effort log; never fail the hook.
+    SAFE_SID="$(printf '%s' "$SESSION_ID" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-64)"
+    mkdir -p "$HOME/.lore/sessions/$SAFE_SID" 2>/dev/null || true
+    printf '%s\\tlore binary not found on PATH; stop hook no-op\\n' \\
+        "$(date -u +%FT%TZ)" \\
+        >>"$HOME/.lore/sessions/$SAFE_SID/errors.log" 2>/dev/null || true
+    exit 0
+fi
+
+# Fire-and-forget: the CLI itself spawns `claude -p` detached, but we
+# wrap one more `nohup ... &` so this hook never blocks Claude Code's
+# Stop event even if the CLI takes a beat to start up.
+if [ -n "$TRANSCRIPT_PATH" ]; then
+    nohup lore capture-extract \\
+        --session-id "$SESSION_ID" \\
+        --transcript-path "$TRANSCRIPT_PATH" \\
+        >/dev/null 2>&1 &
+else
+    nohup lore capture-extract --session-id "$SESSION_ID" \\
+        >/dev/null 2>&1 &
+fi
+
+exit 0
+"""
+
 CODEX_HOOK_SCRIPT = """\
 #!/usr/bin/env bash
 # Lore auto-retrieval hook for Codex CLI
@@ -430,6 +687,16 @@ def _claude_settings_path() -> Path:
 
 def _claude_hook_path() -> Path:
     return _claude_hooks_dir() / "lore-retrieve.sh"
+
+
+def _claude_capture_tool_hook_path() -> Path:
+    """Phase 6A — PostToolUse auto-capture hook (~/.claude/hooks/lore-capture-tool.sh)."""
+    return _claude_hooks_dir() / "lore-capture-tool.sh"
+
+
+def _claude_capture_stop_hook_path() -> Path:
+    """Phase 6A — Stop auto-capture hook (~/.claude/hooks/lore-capture-stop.sh)."""
+    return _claude_hooks_dir() / "lore-capture-stop.sh"
 
 
 def _openclaw_hooks_dir() -> Path:
@@ -609,12 +876,64 @@ def _show_rollback_instructions(runtime: str, backup_paths: list[Path]) -> None:
 # ── Setup functions ────────────────────────────────────────────────
 
 
+def _claude_hook_already_registered(event_hooks: list, hook_cmd: str) -> bool:
+    """Return True if ``hook_cmd`` is already in the given event hook list.
+
+    Supports both the legacy flat shape (``[{"command": "..."}, ...]``) and
+    the current matcher-grouped shape (``[{"matcher": "", "hooks": [...]}]``)."""
+    for h in event_hooks:
+        if not isinstance(h, dict):
+            continue
+        if h.get("command") == hook_cmd:
+            return True
+        for inner in h.get("hooks", []) or []:
+            if isinstance(inner, dict) and inner.get("command") == hook_cmd:
+                return True
+    return False
+
+
+def _register_claude_hook(settings: dict, event_name: str, hook_cmd: str) -> bool:
+    """Append a hook entry under ``settings["hooks"][event_name]`` if not
+    already registered. Returns True if newly added."""
+    hooks = settings.setdefault("hooks", {})
+    event_hooks = hooks.setdefault(event_name, [])
+    if _claude_hook_already_registered(event_hooks, hook_cmd):
+        return False
+    event_hooks.append({
+        "matcher": "",
+        "hooks": [
+            {"type": "command", "command": hook_cmd},
+        ],
+    })
+    return True
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content)
+    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+
+
 def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | None = None) -> None:
-    """Install Lore auto-retrieval hook for Claude Code."""
+    """Install Lore hooks for Claude Code.
+
+    As of Phase 6A this installs three hooks under ``~/.claude/hooks/``:
+
+      * ``lore-retrieve.sh``       — UserPromptSubmit auto-retrieval
+        (existing behavior).
+      * ``lore-capture-tool.sh``   — PostToolUse buffer-append +
+        N-batched ``lore capture-extract`` spawn (Phase 6A).
+      * ``lore-capture-stop.sh``   — Stop hook that flushes the
+        trailing batch unconditionally (Phase 6A).
+
+    All three are registered in ``~/.claude/settings.json`` under the
+    appropriate Claude Code event names. The capture hooks fail open
+    and inherit the user's existing Claude Code auth — no extra
+    configuration needed.
+    """
     hooks_dir = _claude_hooks_dir()
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
-    hook_path = _claude_hook_path()
     api_key_val = api_key or os.environ.get("LORE_API_KEY") or _read_solo_key()
     if not api_key_val:
         print(
@@ -622,13 +941,31 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
             "`lore serve` once to auto-bootstrap ~/.lore/key.txt."
         )
 
-    # Write hook script
-    script = CLAUDE_CODE_HOOK_SCRIPT.format(server_url=server_url, api_key=api_key_val)
-    hook_path.write_text(script)
-    hook_path.chmod(hook_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-    print(f"  Hook script: {hook_path}")
+    # ── 1. UserPromptSubmit retrieval hook (existing) ─────────────────
+    retrieve_hook = _claude_hook_path()
+    retrieve_script = CLAUDE_CODE_HOOK_SCRIPT.format(
+        server_url=server_url, api_key=api_key_val,
+    )
+    _write_executable(retrieve_hook, retrieve_script)
+    print(f"  Retrieval hook (UserPromptSubmit): {retrieve_hook}")
 
-    # Update settings.json
+    # ── 2. PostToolUse auto-capture hook (Phase 6A) ───────────────────
+    capture_tool_hook = _claude_capture_tool_hook_path()
+    capture_tool_script = LORE_CAPTURE_TOOL_HOOK_SCRIPT.format(
+        server_url=server_url, api_key=api_key_val,
+    )
+    _write_executable(capture_tool_hook, capture_tool_script)
+    print(f"  Capture hook  (PostToolUse):       {capture_tool_hook}")
+
+    # ── 3. Stop auto-capture flush hook (Phase 6A) ────────────────────
+    capture_stop_hook = _claude_capture_stop_hook_path()
+    capture_stop_script = LORE_CAPTURE_STOP_HOOK_SCRIPT.format(
+        server_url=server_url, api_key=api_key_val,
+    )
+    _write_executable(capture_stop_hook, capture_stop_script)
+    print(f"  Capture hook  (Stop):              {capture_stop_hook}")
+
+    # ── settings.json registration ────────────────────────────────────
     settings_path = _claude_settings_path()
     settings: dict = {}
     if settings_path.exists():
@@ -637,40 +974,30 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
         except (json.JSONDecodeError, OSError):
             pass
 
-    # Add or update the hook entry (new format with matcher + hooks array)
-    hooks = settings.setdefault("hooks", {})
-    prompt_hooks = hooks.setdefault("UserPromptSubmit", [])
-
-    hook_cmd = str(hook_path)
-
-    # Check if already registered (idempotent) — check both old and new format
-    already_exists = any(
-        (isinstance(h, dict) and h.get("command") == hook_cmd)
-        or (
-            isinstance(h, dict)
-            and any(
-                inner.get("command") == hook_cmd
-                for inner in h.get("hooks", [])
-                if isinstance(inner, dict)
-            )
-        )
-        for h in prompt_hooks
+    added_retrieve = _register_claude_hook(
+        settings, "UserPromptSubmit", str(retrieve_hook),
     )
-    if not already_exists:
-        prompt_hooks.append({
-            "matcher": "",
-            "hooks": [
-                {
-                    "type": "command",
-                    "command": hook_cmd,
-                }
-            ],
-        })
+    added_capture = _register_claude_hook(
+        settings, "PostToolUse", str(capture_tool_hook),
+    )
+    added_stop = _register_claude_hook(
+        settings, "Stop", str(capture_stop_hook),
+    )
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
     print(f"  Settings:    {settings_path}")
-    print("Claude Code hook installed successfully.")
+
+    flags = []
+    if added_retrieve:
+        flags.append("UserPromptSubmit registered")
+    if added_capture:
+        flags.append("PostToolUse registered")
+    if added_stop:
+        flags.append("Stop registered")
+    if flags:
+        print("  " + "; ".join(flags))
+    print("Claude Code hooks installed successfully (3 hooks: UserPromptSubmit, PostToolUse, Stop).")
 
 
 def setup_openclaw(server_url: str = "http://localhost:8765", api_key: str | None = None) -> None:
@@ -788,28 +1115,29 @@ def show_status() -> None:
     print("=" * 40)
 
     # Claude Code
-    hook = _claude_hook_path()
+    retrieve_hook = _claude_hook_path()
+    capture_tool_hook = _claude_capture_tool_hook_path()
+    capture_stop_hook = _claude_capture_stop_hook_path()
     settings = _claude_settings_path()
     print("\nClaude Code:")
-    print(f"  Hook:     {hook} {'[installed]' if hook.exists() else '[not installed]'}")
+    print(f"  Retrieval hook (UserPromptSubmit): {retrieve_hook} "
+          f"{'[installed]' if retrieve_hook.exists() else '[not installed]'}")
+    print(f"  Capture hook   (PostToolUse):      {capture_tool_hook} "
+          f"{'[installed]' if capture_tool_hook.exists() else '[not installed]'}")
+    print(f"  Capture hook   (Stop):             {capture_stop_hook} "
+          f"{'[installed]' if capture_stop_hook.exists() else '[not installed]'}")
     if settings.exists():
         try:
             s = json.loads(settings.read_text())
-            hooks = s.get("hooks", {}).get("UserPromptSubmit", [])
-            hook_cmd = str(hook)
-            registered = any(
-                (isinstance(h, dict) and h.get("command") == hook_cmd)
-                or (
-                    isinstance(h, dict)
-                    and any(
-                        inner.get("command") == hook_cmd
-                        for inner in h.get("hooks", [])
-                        if isinstance(inner, dict)
-                    )
-                )
-                for h in hooks
-            )
-            print(f"  Settings: {settings} {'[registered]' if registered else '[not registered]'}")
+            for event, hook in (
+                ("UserPromptSubmit", retrieve_hook),
+                ("PostToolUse", capture_tool_hook),
+                ("Stop", capture_stop_hook),
+            ):
+                hooks = s.get("hooks", {}).get(event, []) or []
+                registered = _claude_hook_already_registered(hooks, str(hook))
+                print(f"  Settings ({event}): "
+                      f"{'[registered]' if registered else '[not registered]'}")
         except (json.JSONDecodeError, OSError):
             print(f"  Settings: {settings} [error reading]")
     else:
@@ -856,32 +1184,40 @@ def show_status() -> None:
 def remove_runtime(runtime: str) -> None:
     """Remove Lore hooks for a runtime."""
     if runtime == "claude-code":
-        hook = _claude_hook_path()
-        if hook.exists():
-            hook.unlink()
-            print(f"  Removed hook: {hook}")
+        # Remove all three Claude Code hook scripts (Phase 6A added two more).
+        hooks_to_remove = [
+            ("UserPromptSubmit", _claude_hook_path()),
+            ("PostToolUse", _claude_capture_tool_hook_path()),
+            ("Stop", _claude_capture_stop_hook_path()),
+        ]
+        for _, hook in hooks_to_remove:
+            if hook.exists():
+                hook.unlink()
+                print(f"  Removed hook: {hook}")
 
-        # Remove from settings.json
+        # Remove from settings.json under each event name.
         settings_path = _claude_settings_path()
         if settings_path.exists():
             try:
                 settings = json.loads(settings_path.read_text())
-                hooks = settings.get("hooks", {}).get("UserPromptSubmit", [])
-                hook_cmd = str(hook)
-                settings["hooks"]["UserPromptSubmit"] = [
-                    h for h in hooks
-                    if not (
-                        (isinstance(h, dict) and h.get("command") == hook_cmd)
-                        or (
-                            isinstance(h, dict)
-                            and any(
-                                inner.get("command") == hook_cmd
-                                for inner in h.get("hooks", [])
-                                if isinstance(inner, dict)
+                hooks_section = settings.get("hooks", {})
+                for event_name, hook in hooks_to_remove:
+                    hook_cmd = str(hook)
+                    event_list = hooks_section.get(event_name, []) or []
+                    hooks_section[event_name] = [
+                        h for h in event_list
+                        if not (
+                            (isinstance(h, dict) and h.get("command") == hook_cmd)
+                            or (
+                                isinstance(h, dict)
+                                and any(
+                                    inner.get("command") == hook_cmd
+                                    for inner in h.get("hooks", [])
+                                    if isinstance(inner, dict)
+                                )
                             )
                         )
-                    )
-                ]
+                    ]
                 settings_path.write_text(json.dumps(settings, indent=2) + "\n")
                 print(f"  Updated settings: {settings_path}")
             except (json.JSONDecodeError, OSError):
