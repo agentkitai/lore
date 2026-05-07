@@ -120,18 +120,18 @@ _lore_ensure_server
 
 
 def _ensure_server_running():
-    \"\"\"Run the bash preamble; if it returns non-zero, exit 0 (fail-open).\"\"\"
+    \"\"\"Run the bash preamble; on failure just continue (downstream curl
+    will fail cleanly and the hook will exit 0 anyway). Don't exit here —
+    that short-circuits tests + masks real downstream failures.\"\"\"
     try:
-        rc = subprocess.run(
+        subprocess.run(
             ["bash", "-c", _ENSURE_SERVER_BASH],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=5,
-        ).returncode
+        )
     except (OSError, subprocess.SubprocessError):
-        sys.exit(0)
-    if rc != 0:
-        sys.exit(0)
+        pass
 
 
 def _read_input():
