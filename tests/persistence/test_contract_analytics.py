@@ -244,10 +244,61 @@ async def _insert_snapshot_memory(
     created_at_sql: str | None = None,
     content: str = "snap",
 ) -> str:
-    """Insert a memory row directly via raw SQL and return its id."""
+    """Insert a memory row directly via raw SQL and return its id.
+
+    Dialect-aware: PG uses ``$N`` placeholders + ``::jsonb`` / ``::vector``
+    casts; SQLite uses ``?`` placeholders, JSON-as-TEXT, and goes through
+    ``insert_memory`` then conditionally bumps ``created_at`` so it can
+    place a row arbitrarily far in the past for the "older than 24h" test.
+    """
+    from tests.persistence.conftest import _is_sqlite
+
     await _ensure_org(store, org_id)
     mid = memory_id or f"mem_{ULID()}"
     meta_dict = meta if meta is not None else {"type": "session_snapshot"}
+
+    if _is_sqlite(store):
+        # ``insert_memory`` enforces the memories⇆memory_vectors invariant
+        # via the ``transaction()`` helper; reusing it keeps this helper
+        # honest. We override the freshly-inserted ``created_at`` afterward
+        # when a backdated value is requested.
+        from lore.persistence.types import NewMemory
+
+        from_store = await store.insert_memory(
+            NewMemory(
+                org_id=org_id,
+                content=content,
+                embedding=_vec(0),
+                project=project,
+                meta=meta_dict,
+            )
+        )
+        if memory_id is not None:
+            await store._conn.execute(
+                "UPDATE memories SET id = ? WHERE id = ?",
+                (memory_id, from_store.id),
+            )
+        else:
+            mid = from_store.id
+        if created_at_sql is not None:
+            # PG-style time expression "now() - interval '25 hours'" → SQLite
+            # equivalent. The contract tests only use "now() - interval 'N hours'".
+            import re
+
+            m = re.search(r"interval '(\d+) hours?'", created_at_sql)
+            if m is not None:
+                hrs = int(m.group(1))
+                await store._conn.execute(
+                    "UPDATE memories SET created_at = datetime('now', ?) WHERE id = ?",
+                    (f"-{hrs} hours", mid),
+                )
+            else:  # pragma: no cover - defensive
+                raise NotImplementedError(
+                    f"SQLite test helper can't translate {created_at_sql!r}"
+                )
+        await store._conn.commit()
+        return mid
+
     embedding_json = json.dumps(_vec(0))
     if created_at_sql is not None:
         await store._conn.execute(

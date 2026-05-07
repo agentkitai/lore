@@ -164,11 +164,21 @@ async def test_query_audit_log_respects_limit(store: Store):
 
 
 async def _ensure_org_analytics(store, org_id: str) -> None:
-    await store._conn.execute(
-        "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        org_id,
-        org_id,
-    )
+    """Insert an org row if absent. Dialect-aware (PG ``$N`` vs SQLite ``?``)."""
+    from tests.persistence.conftest import _is_sqlite
+
+    if _is_sqlite(store):
+        await store._conn.execute(
+            "INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)",
+            (org_id, org_id),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            org_id,
+            org_id,
+        )
 
 
 def _event(
@@ -201,8 +211,41 @@ def _event(
 
 
 async def _insert_event_at(store, ev: NewRetrievalEvent, created_at: datetime) -> None:
-    """Insert a retrieval event with a specific created_at timestamp."""
+    """Insert a retrieval event with a specific ``created_at`` timestamp.
+
+    Dialect-aware: PG uses ``$N`` placeholders + ``::jsonb`` casts; SQLite
+    uses ``?`` and TEXT-encoded JSON.
+    """
     import json as _json
+
+    from tests.persistence.conftest import _is_sqlite
+
+    if _is_sqlite(store):
+        await store._conn.execute(
+            """
+            INSERT INTO retrieval_events
+                (org_id, query, results_count, scores, memory_ids,
+                 avg_score, max_score, min_score_threshold, query_time_ms,
+                 project, format, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ev.org_id,
+                ev.query,
+                ev.results_count,
+                _json.dumps(list(ev.scores)),
+                _json.dumps(list(ev.memory_ids)),
+                ev.avg_score,
+                ev.max_score,
+                ev.min_score_threshold,
+                ev.query_time_ms,
+                ev.project,
+                ev.format,
+                created_at.isoformat(),
+            ),
+        )
+        await store._conn.commit()
+        return
 
     await store._conn.execute(
         """

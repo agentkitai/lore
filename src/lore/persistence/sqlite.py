@@ -32,14 +32,18 @@ from lore.persistence.exceptions import (
     StoreNotFoundError,
 )
 from lore.persistence.types import (
+    DailyStatRow,
     ExportedMemory,
     MemoryFilter,
     MemoryPatch,
     NewMemory,
     NewRetrievalEvent,
     RecallParams,
+    RetrievalAnalyticsResult,
+    ScoreDistributionBucket,
     ScoredMemory,
     StoredMemory,
+    TopQueryRow,
 )
 
 # Embedding dimension is fixed at 384 across the codebase
@@ -1283,6 +1287,265 @@ class SqliteStore:
                 row = await cur.fetchone()
         return _row_to_memory(row) if row else None
 
+    async def list_recent_session_snapshots(
+        self,
+        org_id: str,
+        *,
+        project: Optional[str] = None,
+        exclude_ids: Sequence[str] = (),
+        limit: int = 3,
+    ) -> Sequence["StoredMemory"]:
+        """List the most recent session-snapshot memories for an org.
+
+        Mirrors ``PostgresStore.list_recent_session_snapshots``:
+        * ``meta->>'type' = 'session_snapshot'`` → SQLite
+          ``json_extract(meta, '$.type') = 'session_snapshot'``.
+        * ``created_at > now() - interval '24 hours'`` → SQLite
+          ``created_at > datetime('now', '-24 hours')``.
+        * ``id != ALL($N)`` → SQLite ``id NOT IN (?, ?, …)``.
+        * Excludes already-expired rows (using a Python-side ISO-8601
+          ``now()`` for shape parity with stored ``isoformat()`` values —
+          see ``expire_memories`` for the rationale).
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        where: list[str] = [
+            "org_id = ?",
+            "(expires_at IS NULL OR expires_at > ?)",
+            "json_extract(meta, '$.type') = 'session_snapshot'",
+            "created_at > datetime('now', '-24 hours')",
+        ]
+        params: list[Any] = [org_id, now_iso]
+        if project is not None:
+            where.append("project = ?")
+            params.append(project)
+        if exclude_ids:
+            placeholders = ",".join(["?"] * len(exclude_ids))
+            where.append(f"id NOT IN ({placeholders})")
+            params.extend(exclude_ids)
+        params.append(limit)
+        sql = (
+            f"SELECT {self._MEMORY_COLS} FROM memories "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC LIMIT ?"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_memory(r) for r in rows)
+
+    async def compute_retrieval_analytics(
+        self,
+        *,
+        org_id: str,
+        days: int,
+        project: Optional[str] = None,
+    ) -> "RetrievalAnalyticsResult":
+        """Compute aggregated retrieval analytics over the last ``days`` days.
+
+        Mirrors ``PostgresStore.compute_retrieval_analytics``: issues seven
+        small queries inside a single connection (summary, p95, score
+        distribution, top queries, unique memories, total memories, daily
+        stats). PG-specific bits translated:
+
+        * ``now() - make_interval(days => $N)`` → ``datetime('now', '-N days')``
+          interpolated as a literal (parameter binding does not work inside
+          ``datetime(…)`` modifier strings).
+        * ``percentile_cont(0.95) WITHIN GROUP (ORDER BY query_time_ms)`` →
+          a CTE that ROW_NUMBERs over the ordered, non-null query_time_ms
+          column and picks the row at ``CAST(N * 0.95 AS INTEGER)`` (no
+          interpolation; small approximation tolerated by contract tests).
+        * ``jsonb_array_elements_text(scores)`` / ``memory_ids`` → SQLite
+          ``json_each(<col>)`` table-valued function (yields one row per
+          array element with the element value in ``value``).
+        * ``created_at::date`` → ``date(created_at)``.
+        """
+        # Build shared WHERE clause and params for retrieval_events queries.
+        # ``datetime('now', '-N days')`` doesn't accept a bound parameter, so
+        # the days value is interpolated as an int literal (validated by
+        # ``int(days)`` to defuse SQL injection).
+        days_int = int(days)
+        where_parts = [
+            "org_id = ?",
+            f"created_at >= datetime('now', '-{days_int} days')",
+        ]
+        params: list[Any] = [org_id]
+        if project is not None:
+            where_parts.append("project = ?")
+            params.append(project)
+        where_sql = " AND ".join(where_parts)
+        params_t = tuple(params)
+
+        async with self._acquire() as conn:
+            # ── Summary stats ──────────────────────────────────────
+            async with conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS total_queries,
+                    SUM(CASE WHEN results_count > 0 THEN 1 ELSE 0 END) AS queries_with_results,
+                    SUM(CASE WHEN results_count = 0 THEN 1 ELSE 0 END) AS queries_empty,
+                    AVG(CAST(results_count AS REAL)) AS avg_results,
+                    AVG(avg_score) AS avg_score,
+                    AVG(max_score) AS avg_max_score,
+                    AVG(query_time_ms) AS avg_latency_ms
+                FROM retrieval_events
+                WHERE {where_sql}
+                """,
+                params_t,
+            ) as cur:
+                summary = await cur.fetchone()
+
+            total = (summary["total_queries"] or 0) if summary else 0
+
+            # ── P95 latency (CTE-based percentile pick) ────────────
+            p95: Optional[float] = None
+            if total > 0:
+                async with conn.execute(
+                    f"""
+                    WITH ordered AS (
+                        SELECT query_time_ms,
+                               ROW_NUMBER() OVER (ORDER BY query_time_ms) AS rn,
+                               COUNT(*) OVER () AS total
+                        FROM retrieval_events
+                        WHERE {where_sql} AND query_time_ms IS NOT NULL
+                    )
+                    SELECT query_time_ms FROM ordered
+                    WHERE rn = MAX(1, CAST(total * 0.95 AS INTEGER))
+                    LIMIT 1
+                    """,
+                    params_t,
+                ) as cur:
+                    p95_row = await cur.fetchone()
+                if p95_row and p95_row["query_time_ms"] is not None:
+                    p95 = round(float(p95_row["query_time_ms"]), 2)
+
+            # ── Score distribution (jsonb_array_elements → json_each) ──
+            async with conn.execute(
+                f"""
+                SELECT bucket, COUNT(*) AS cnt
+                FROM (
+                    SELECT
+                        CASE
+                            WHEN CAST(je.value AS REAL) < 0.3 THEN '0.0-0.3'
+                            WHEN CAST(je.value AS REAL) < 0.5 THEN '0.3-0.5'
+                            WHEN CAST(je.value AS REAL) < 0.7 THEN '0.5-0.7'
+                            WHEN CAST(je.value AS REAL) < 0.9 THEN '0.7-0.9'
+                            ELSE '0.9-1.0'
+                        END AS bucket
+                    FROM retrieval_events,
+                         json_each(retrieval_events.scores) AS je
+                    WHERE {where_sql}
+                ) sub
+                GROUP BY bucket
+                ORDER BY bucket
+                """,
+                params_t,
+            ) as cur:
+                score_dist_rows = await cur.fetchall()
+
+            buckets_order = ["0.0-0.3", "0.3-0.5", "0.5-0.7", "0.7-0.9", "0.9-1.0"]
+            bucket_counts = {r["bucket"]: r["cnt"] for r in score_dist_rows}
+            score_distribution = [
+                ScoreDistributionBucket(bucket=b, count=bucket_counts.get(b, 0))
+                for b in buckets_order
+            ]
+
+            # ── Top queries ────────────────────────────────────────
+            async with conn.execute(
+                f"""
+                SELECT query, COUNT(*) AS cnt, AVG(avg_score) AS avg_s
+                FROM retrieval_events
+                WHERE {where_sql}
+                GROUP BY query
+                ORDER BY cnt DESC
+                LIMIT 10
+                """,
+                params_t,
+            ) as cur:
+                top_rows = await cur.fetchall()
+            top_queries = [
+                TopQueryRow(
+                    query=r["query"],
+                    count=r["cnt"],
+                    avg_score=round(float(r["avg_s"]), 4) if r["avg_s"] is not None else None,
+                )
+                for r in top_rows
+            ]
+
+            # ── Unique memories retrieved (json_each over memory_ids) ──
+            async with conn.execute(
+                f"""
+                SELECT COUNT(DISTINCT je.value) AS unique_count
+                FROM retrieval_events,
+                     json_each(retrieval_events.memory_ids) AS je
+                WHERE {where_sql}
+                """,
+                params_t,
+            ) as cur:
+                unique_row = await cur.fetchone()
+            unique_memories = (unique_row["unique_count"] or 0) if unique_row else 0
+
+            # ── Total memories (no date filter, ignores expired)
+            mem_where_parts = ["org_id = ?"]
+            mem_params: list[Any] = [org_id]
+            if project is not None:
+                mem_where_parts.append("project = ?")
+                mem_params.append(project)
+            mem_where_sql = " AND ".join(mem_where_parts)
+
+            async with conn.execute(
+                f"SELECT COUNT(*) AS total FROM memories WHERE {mem_where_sql}",
+                tuple(mem_params),
+            ) as cur:
+                total_memories_row = await cur.fetchone()
+            total_memories = (total_memories_row["total"] or 0) if total_memories_row else 0
+
+            # ── Daily stats ────────────────────────────────────────
+            async with conn.execute(
+                f"""
+                SELECT
+                    date(created_at) AS day,
+                    COUNT(*) AS queries,
+                    AVG(avg_score) AS avg_s,
+                    CAST(SUM(CASE WHEN results_count > 0 THEN 1 ELSE 0 END) AS REAL)
+                        / MAX(COUNT(*), 1) AS hit_rate
+                FROM retrieval_events
+                WHERE {where_sql}
+                GROUP BY day
+                ORDER BY day DESC
+                """,
+                params_t,
+            ) as cur:
+                daily_rows = await cur.fetchall()
+            daily_stats = [
+                DailyStatRow(
+                    date=str(r["day"]),
+                    queries=r["queries"],
+                    avg_score=round(float(r["avg_s"]), 4) if r["avg_s"] is not None else None,
+                    hit_rate=round(float(r["hit_rate"]), 4) if r["hit_rate"] is not None else 0.0,
+                )
+                for r in daily_rows
+            ]
+
+        avg_score_v = summary["avg_score"] if summary else None
+        avg_max_v = summary["avg_max_score"] if summary else None
+        avg_lat_v = summary["avg_latency_ms"] if summary else None
+        return RetrievalAnalyticsResult(
+            total_queries=total,
+            queries_with_results=(summary["queries_with_results"] or 0) if summary else 0,
+            queries_empty=(summary["queries_empty"] or 0) if summary else 0,
+            avg_results_per_query=round(float(summary["avg_results"] or 0), 2) if summary else 0.0,
+            avg_score=round(float(avg_score_v), 4) if avg_score_v is not None else None,
+            avg_max_score=round(float(avg_max_v), 4) if avg_max_v is not None else None,
+            avg_latency_ms=round(float(avg_lat_v), 2) if avg_lat_v is not None else None,
+            p95_latency_ms=p95,
+            score_distribution=score_distribution,
+            top_queries=top_queries,
+            unique_memories_retrieved=unique_memories,
+            total_memories=total_memories,
+            daily_stats=daily_stats,
+        )
+
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -1346,10 +1609,10 @@ _STUBBED_METHODS: Sequence[str] = (
     "get_api_key", "list_api_keys", "create_api_key", "revoke_api_key",
     "count_active_root_keys", "lookup_api_key_by_hash",
     "touch_api_key_last_used",
-    # AnalyticsOps — Phase 3E commits 1–3 implement all six. Commit 1
-    # ships record_retrieval_event + record_memory_access; the remaining
-    # four stay stubbed until commits 2–3.
-    "list_recent_session_snapshots", "compute_retrieval_analytics",
+    # AnalyticsOps — Phase 3E commits 1–3 implement all six. Commits 1+2
+    # have shipped record_retrieval_event, record_memory_access,
+    # list_recent_session_snapshots, and compute_retrieval_analytics; the
+    # two compute_metric_* methods stay stubbed until commit 3.
     "compute_metric_value", "compute_metric_timeseries",
     # RecommendationOps
     "get_recommendation_config", "upsert_recommendation_config",
