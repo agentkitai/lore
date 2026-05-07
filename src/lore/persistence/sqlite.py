@@ -43,6 +43,7 @@ from lore.persistence.types import (
     ScoreDistributionBucket,
     ScoredMemory,
     StoredMemory,
+    TimeseriesPoint,
     TopQueryRow,
 )
 
@@ -62,6 +63,40 @@ except ImportError:  # pragma: no cover
     HAS_SQLITE_VEC = False
 
 logger = logging.getLogger(__name__)
+
+
+# ── SLO metric SQL fragments (mirrors lore.persistence.postgres._METRIC_SQL) ──
+#
+# The percentile metrics (``p50_latency``, ``p95_latency``, ``p99_latency``,
+# ``retrieval_latency_p95``) are computed via a CTE that ROW_NUMBERs over the
+# ordered set and picks the row at ceil(N * pct). PG's ``percentile_cont``
+# does linear interpolation between adjacent rows; the SQLite row-pick
+# approximation can differ slightly on small samples — see the contract
+# test ``test_compute_metric_value_p95_latency`` which uses a wide
+# ``180.0 <= result <= 200.0`` tolerance band.
+#
+# NOTE: percentile_cont approximated via ROW_NUMBER() picking — see method
+# docstrings for ``compute_metric_value`` / ``compute_metric_timeseries``.
+_SQLITE_METRIC_SQL: dict[str, str] = {
+    # Sentinel value "PCT::<fraction>" that the methods replace with the
+    # appropriate CTE expression. Non-percentile metrics inline directly.
+    "p50_latency": "PCT::0.50",
+    "p95_latency": "PCT::0.95",
+    "p99_latency": "PCT::0.99",
+    "hit_rate": (
+        "CAST(SUM(CASE WHEN results_count > 0 THEN 1 ELSE 0 END) AS REAL) "
+        "/ MAX(COUNT(*), 1) AS value"
+    ),
+    "retrieval_latency_p95": "PCT::0.95",
+    "retrieval_recall": (
+        "CAST(SUM(CASE WHEN results_count > 0 THEN 1 ELSE 0 END) AS REAL) "
+        "/ MAX(COUNT(*), 1) AS value"
+    ),
+    "uptime_pct": (
+        "CAST(SUM(CASE WHEN query_time_ms IS NOT NULL THEN 1 ELSE 0 END) AS REAL) "
+        "/ MAX(COUNT(*), 1) * 100.0 AS value"
+    ),
+}
 
 
 # Default migrations directory (sibling of migrations/), resolved at runtime
@@ -1545,6 +1580,149 @@ class SqliteStore:
             daily_stats=daily_stats,
         )
 
+    async def compute_metric_value(
+        self,
+        *,
+        org_id: str,
+        metric: str,
+        window_minutes: int,
+    ) -> Optional[float]:
+        """Compute a single metric value over the last ``window_minutes``.
+
+        Mirrors ``PostgresStore.compute_metric_value``. Percentile metrics
+        (``p50_latency`` / ``p95_latency`` / ``p99_latency`` /
+        ``retrieval_latency_p95``) take the CTE+ROW_NUMBER pick described
+        on ``_SQLITE_METRIC_SQL``.
+
+        Returns None if the window is empty (no rows match).
+        """
+        if metric not in _SQLITE_METRIC_SQL:
+            raise ValueError(f"Unknown metric: {metric}")
+        metric_sql = _SQLITE_METRIC_SQL[metric]
+        # ``datetime('now', '-N minutes')`` doesn't accept a bound param,
+        # so the int is interpolated after coercion.
+        window = int(window_minutes)
+        where_sql = (
+            "org_id = ? AND created_at >= datetime('now', "
+            f"'-{window} minutes')"
+        )
+        async with self._acquire() as conn:
+            if metric_sql.startswith("PCT::"):
+                pct = float(metric_sql.split("::", 1)[1])
+                async with conn.execute(
+                    f"""
+                    WITH ordered AS (
+                        SELECT query_time_ms,
+                               ROW_NUMBER() OVER (ORDER BY query_time_ms) AS rn,
+                               COUNT(*) OVER () AS total
+                        FROM retrieval_events
+                        WHERE {where_sql} AND query_time_ms IS NOT NULL
+                    )
+                    SELECT query_time_ms AS value FROM ordered
+                    WHERE rn = MAX(1, CAST(total * ? AS INTEGER))
+                    LIMIT 1
+                    """,
+                    (org_id, pct),
+                ) as cur:
+                    row = await cur.fetchone()
+            else:
+                # Non-percentile: hit_rate / retrieval_recall / uptime_pct.
+                # COUNT(*) returns 0 (not NULL) on an empty set, so a guard
+                # check using a separate COUNT distinguishes "0.0 because
+                # the predicate filtered everything" from "no rows at all".
+                async with conn.execute(
+                    f"SELECT COUNT(*) AS n FROM retrieval_events WHERE {where_sql}",
+                    (org_id,),
+                ) as cur:
+                    n_row = await cur.fetchone()
+                if not n_row or (n_row["n"] or 0) == 0:
+                    return None
+                async with conn.execute(
+                    f"SELECT {metric_sql} FROM retrieval_events WHERE {where_sql}",
+                    (org_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+        if row and row["value"] is not None:
+            return round(float(row["value"]), 4)
+        return None
+
+    async def compute_metric_timeseries(
+        self,
+        *,
+        org_id: str,
+        metric: str,
+        window_hours: int,
+        bucket_minutes: int,
+    ) -> Sequence["TimeseriesPoint"]:
+        """Compute a bucketed metric timeseries for SLO charts.
+
+        Mirrors ``PostgresStore.compute_metric_timeseries``. Bucket math:
+        truncate the unix epoch of ``created_at`` to a multiple of
+        ``bucket_minutes * 60`` seconds, then convert back to a TEXT
+        timestamp via ``datetime(<seconds>, 'unixepoch')``.
+
+        Percentile metrics use the same CTE+ROW_NUMBER pick as
+        ``compute_metric_value`` but per-bucket via ``GROUP BY bucket``
+        in a sub-CTE — straightforward in SQL.
+        """
+        if metric not in _SQLITE_METRIC_SQL:
+            raise ValueError(f"Unknown metric: {metric}")
+        metric_sql = _SQLITE_METRIC_SQL[metric]
+        hours = int(window_hours)
+        bucket_secs = int(bucket_minutes) * 60
+        bucket_expr = (
+            f"datetime((CAST(strftime('%s', created_at) AS INTEGER) / "
+            f"{bucket_secs}) * {bucket_secs}, 'unixepoch')"
+        )
+        where_sql = (
+            f"org_id = ? AND created_at >= datetime('now', '-{hours} hours')"
+        )
+
+        async with self._acquire() as conn:
+            if metric_sql.startswith("PCT::"):
+                pct = float(metric_sql.split("::", 1)[1])
+                # Per-bucket CTE: rank rows within each bucket, then pick
+                # the row at MAX(1, CAST(bucket_total * pct AS INTEGER)).
+                async with conn.execute(
+                    f"""
+                    WITH bucketed AS (
+                        SELECT {bucket_expr} AS bucket,
+                               query_time_ms,
+                               ROW_NUMBER() OVER (
+                                   PARTITION BY {bucket_expr}
+                                   ORDER BY query_time_ms
+                               ) AS rn,
+                               COUNT(*) OVER (PARTITION BY {bucket_expr}) AS total
+                        FROM retrieval_events
+                        WHERE {where_sql} AND query_time_ms IS NOT NULL
+                    )
+                    SELECT bucket, query_time_ms AS value FROM bucketed
+                    WHERE rn = MAX(1, CAST(total * ? AS INTEGER))
+                    ORDER BY bucket
+                    """,
+                    (org_id, pct),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with conn.execute(
+                    f"""
+                    SELECT {bucket_expr} AS bucket, {metric_sql}
+                    FROM retrieval_events
+                    WHERE {where_sql}
+                    GROUP BY bucket
+                    ORDER BY bucket
+                    """,
+                    (org_id,),
+                ) as cur:
+                    rows = await cur.fetchall()
+
+        return tuple(
+            TimeseriesPoint(
+                timestamp=_parse_iso(r["bucket"]),
+                value=round(float(r["value"]), 4) if r["value"] is not None else None,
+            )
+            for r in rows
+        )
 
 
 class _SqliteConnCtx:
@@ -1609,11 +1787,7 @@ _STUBBED_METHODS: Sequence[str] = (
     "get_api_key", "list_api_keys", "create_api_key", "revoke_api_key",
     "count_active_root_keys", "lookup_api_key_by_hash",
     "touch_api_key_last_used",
-    # AnalyticsOps — Phase 3E commits 1–3 implement all six. Commits 1+2
-    # have shipped record_retrieval_event, record_memory_access,
-    # list_recent_session_snapshots, and compute_retrieval_analytics; the
-    # two compute_metric_* methods stay stubbed until commit 3.
-    "compute_metric_value", "compute_metric_timeseries",
+    # AnalyticsOps — implemented in Phase 3E.
     # RecommendationOps
     "get_recommendation_config", "upsert_recommendation_config",
     "record_recommendation_feedback",
