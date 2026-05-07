@@ -11,17 +11,25 @@ import pytest
 
 from lore.persistence import Store
 from lore.persistence.types import StoredApiKey
+from tests.persistence.conftest import _is_sqlite
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
 async def _ensure_org(store, org_id: str) -> None:
     """Insert an org row if it doesn't already exist (required by api_keys FK)."""
-    await store._conn.execute(
-        "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        org_id,
-        org_id,
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(
+            "INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)",
+            (org_id, org_id),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            org_id,
+            org_id,
+        )
 
 
 async def _insert_api_key(
@@ -42,22 +50,44 @@ async def _insert_api_key(
 
     key_id = key_id or f"key_{ULID()}"
     await _ensure_org(store, org_id)
-    await store._conn.execute(
-        """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
-        key_id,
-        org_id,
-        name,
-        key_hash,
-        key_prefix,
-        project,
-        is_root,
-        workspace_id,
-    )
-    if revoked:
+    if _is_sqlite(store):
         await store._conn.execute(
-            "UPDATE api_keys SET revoked_at = now() WHERE id = $1", key_id
+            """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                key_id,
+                org_id,
+                name,
+                key_hash,
+                key_prefix,
+                project,
+                1 if is_root else 0,
+                workspace_id,
+            ),
         )
+        if revoked:
+            await store._conn.execute(
+                "UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ?",
+                (key_id,),
+            )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+            key_id,
+            org_id,
+            name,
+            key_hash,
+            key_prefix,
+            project,
+            is_root,
+            workspace_id,
+        )
+        if revoked:
+            await store._conn.execute(
+                "UPDATE api_keys SET revoked_at = now() WHERE id = $1", key_id
+            )
     return key_id
 
 
@@ -300,9 +330,15 @@ async def test_lookup_api_key_by_hash_includes_role(store: Store):
     key_id = await _insert_api_key(
         store, org_id="org-role", name="role-key", key_hash="hash-role-1"
     )
-    await store._conn.execute(
-        "UPDATE api_keys SET role = $1 WHERE id = $2", "writer", key_id
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(
+            "UPDATE api_keys SET role = ? WHERE id = ?", ("writer", key_id)
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            "UPDATE api_keys SET role = $1 WHERE id = $2", "writer", key_id
+        )
 
     result = await store.lookup_api_key_by_hash("hash-role-1")
 

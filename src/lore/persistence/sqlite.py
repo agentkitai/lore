@@ -37,6 +37,7 @@ from lore.persistence.types import (
     ExportedMemory,
     MemoryFilter,
     MemoryPatch,
+    NewApiKey,
     NewMember,
     NewMemory,
     NewProfile,
@@ -47,6 +48,7 @@ from lore.persistence.types import (
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
+    StoredApiKey,
     StoredMember,
     StoredMemory,
     StoredProfile,
@@ -305,6 +307,28 @@ def _row_to_profile(row) -> StoredProfile:
         include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
         created_at=_parse_iso(row["created_at"]),
         updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_api_key(row) -> StoredApiKey:
+    """Translate a SQLite ``api_keys`` row to ``StoredApiKey``.
+
+    Mirrors ``lore.persistence.postgres._row_to_api_key`` but parses ISO-8601
+    TEXT timestamps and INTEGER 0/1 booleans.
+    """
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        key_hash=row["key_hash"],
+        key_prefix=row["key_prefix"],
+        project=row["project"],
+        is_root=bool(row["is_root"]),
+        workspace_id=row["workspace_id"],
+        revoked_at=_parse_iso(row["revoked_at"]),
+        created_at=_parse_iso(row["created_at"]),
+        last_used_at=_parse_iso(row["last_used_at"]),
+        role=row["role"],
     )
 
 
@@ -2257,6 +2281,142 @@ class SqliteStore:
             await conn.commit()
         return count > 0
 
+    # ── AuthOps (Phase 3G) ────────────────────────────────────────────
+
+    _API_KEY_COLS = (
+        "id, org_id, name, key_hash, key_prefix, project, is_root, "
+        "workspace_id, revoked_at, created_at, last_used_at, role"
+    )
+
+    async def get_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        """Return an API key by id, or None if absent.
+
+        Mirrors ``PostgresStore.get_api_key``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys WHERE id = ?",
+                (key_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_api_key(row) if row else None
+
+    async def list_api_keys(self, org_id: str) -> Sequence[StoredApiKey]:
+        """List all API keys for an org, ordered by created_at ASC.
+
+        Mirrors ``PostgresStore.list_api_keys``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys "
+                "WHERE org_id = ? ORDER BY created_at",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_api_key(r) for r in rows)
+
+    async def create_api_key(self, key: NewApiKey) -> StoredApiKey:
+        """Insert a new API key; returns the stored row.
+
+        Mirrors ``PostgresStore.create_api_key``: caller-side ULID with a
+        ``key_`` prefix, and SQLite's column DEFAULT supplies ``created_at``.
+        """
+        key_id = f"key_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO api_keys
+                    (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    key_id,
+                    key.org_id,
+                    key.name,
+                    key.key_hash,
+                    key.key_prefix,
+                    key.project,
+                    1 if key.is_root else 0,
+                    key.workspace_id,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys WHERE id = ?",
+                (key_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover - defensive
+            raise StoreError("create_api_key: row vanished after insert")
+        return _row_to_api_key(row)
+
+    async def revoke_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        """Revoke an API key; returns the updated row, or None if absent / already revoked.
+
+        SQLite has no ``UPDATE … RETURNING`` we rely on, so we issue an
+        UPDATE and a follow-up SELECT inside the same connection — same
+        single-writer guarantee as elsewhere in this module.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "UPDATE api_keys SET revoked_at = datetime('now') "
+                "WHERE id = ? AND revoked_at IS NULL",
+                (key_id,),
+            )
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys WHERE id = ?",
+                (key_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_api_key(row) if row else None
+
+    async def count_active_root_keys(self, org_id: str) -> int:
+        """Count active (non-revoked) root-level API keys for an org.
+
+        Mirrors ``PostgresStore.count_active_root_keys`` — ``is_root`` is
+        stored as INTEGER 1/0 in SQLite so the predicate uses ``= 1``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) AS cnt FROM api_keys "
+                "WHERE org_id = ? AND is_root = 1 AND revoked_at IS NULL",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return int(row["cnt"]) if row else 0
+
+    async def lookup_api_key_by_hash(self, key_hash: str) -> Optional[StoredApiKey]:
+        """Return the API key matching a sha256 ``key_hash``, or None.
+
+        Hot path: every authenticated request lands here on cache miss.
+        Mirrors ``PostgresStore.lookup_api_key_by_hash``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys WHERE key_hash = ?",
+                (key_hash,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_api_key(row) if row else None
+
+    async def touch_api_key_last_used(self, key_id: str) -> None:
+        """Bump ``last_used_at`` to now for an API key.
+
+        Fire-and-forget: missing ids do not raise. Mirrors
+        ``PostgresStore.touch_api_key_last_used``.
+        """
+        async with self._acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?",
+                (key_id,),
+            )
+            await conn.commit()
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -2310,10 +2470,7 @@ _STUBBED_METHODS: Sequence[str] = (
     "search_memories_text",
     # PolicyOps — implemented in Phase 3F.
     # WorkspaceOps — implemented in Phase 3F.
-    # AuthOps
-    "get_api_key", "list_api_keys", "create_api_key", "revoke_api_key",
-    "count_active_root_keys", "lookup_api_key_by_hash",
-    "touch_api_key_last_used",
+    # AuthOps — implemented in Phase 3G.
     # AnalyticsOps — implemented in Phase 3E.
     # RecommendationOps
     "get_recommendation_config", "upsert_recommendation_config",
