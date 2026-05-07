@@ -40,6 +40,7 @@ from lore.persistence.types import (
     NewMemory,
     NewProfile,
     NewRetrievalEvent,
+    ProfilePatch,
     RecallParams,
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
@@ -1885,6 +1886,103 @@ class SqliteStore:
             await conn.commit()
         return count > 0
 
+    async def update_profile(
+        self, profile_id: str, patch: ProfilePatch
+    ) -> Optional[StoredProfile]:
+        """Apply a patch and return the updated row, or None if absent.
+
+        Mirrors ``PostgresStore.update_profile``: builds a dynamic SET
+        clause from non-None patch fields. Empty patches raise
+        ``ValueError``. ``tier_filters`` is JSON-encoded; INTEGER 0/1
+        booleans get coerced.
+        """
+        sets: list[str] = []
+        params: list = []
+
+        if patch.name is not None:
+            params.append(patch.name)
+            sets.append("name = ?")
+        if patch.semantic_weight is not None:
+            params.append(patch.semantic_weight)
+            sets.append("semantic_weight = ?")
+        if patch.graph_weight is not None:
+            params.append(patch.graph_weight)
+            sets.append("graph_weight = ?")
+        if patch.recency_bias is not None:
+            params.append(patch.recency_bias)
+            sets.append("recency_bias = ?")
+        if patch.tier_filters is not None:
+            params.append(json.dumps(list(patch.tier_filters)))
+            sets.append("tier_filters = ?")
+        if patch.min_score is not None:
+            params.append(patch.min_score)
+            sets.append("min_score = ?")
+        if patch.max_results is not None:
+            params.append(patch.max_results)
+            sets.append("max_results = ?")
+        if patch.is_preset is not None:
+            params.append(1 if patch.is_preset else 0)
+            sets.append("is_preset = ?")
+        if patch.k is not None:
+            params.append(patch.k)
+            sets.append("k = ?")
+        if patch.threshold is not None:
+            params.append(patch.threshold)
+            sets.append("threshold = ?")
+        if patch.rerank is not None:
+            params.append(1 if patch.rerank else 0)
+            sets.append("rerank = ?")
+        if patch.include_graph is not None:
+            params.append(1 if patch.include_graph else 0)
+            sets.append("include_graph = ?")
+
+        if not sets:
+            raise ValueError(
+                "update_profile called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sets.append("updated_at = datetime('now')")
+        params.append(profile_id)
+        sql = (
+            "UPDATE retrieval_profiles "
+            f"SET {', '.join(sets)} "
+            "WHERE id = ?"
+        )
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql, params)
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._PROFILE_COLS} FROM retrieval_profiles WHERE id = ?",
+                (profile_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_profile(row) if row else None
+
+    async def resolve_profile_for_key(
+        self, org_id: str, name: str
+    ) -> Optional[StoredProfile]:
+        """Resolve effective profile for (org_id, name).
+
+        Mirrors ``PostgresStore.resolve_profile_for_key``: matches rows
+        where ``name = ? AND (org_id = ? OR org_id = '__global__')``,
+        ordered so the org-owned row wins on ties (returns the org-owned
+        match if present, otherwise the ``__global__`` preset).
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._PROFILE_COLS} FROM retrieval_profiles "
+                "WHERE name = ? AND (org_id = ? OR org_id = '__global__') "
+                "ORDER BY CASE WHEN org_id = ? THEN 0 ELSE 1 END "
+                "LIMIT 1",
+                (name, org_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_profile(row) if row else None
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -1936,10 +2034,7 @@ _STUBBED_METHODS: Sequence[str] = (
     "save_rejected_pattern", "query_relationships",
     "get_graph_stats", "get_timeline_buckets", "get_memories_by_entities",
     "search_memories_text",
-    # PolicyOps — Phase 3F implemented get/list/create/delete + by_name;
-    # update_profile + resolve_profile_for_key remain pending for the
-    # next 3F sub-commit.
-    "update_profile", "resolve_profile_for_key",
+    # PolicyOps — implemented in Phase 3F.
     # WorkspaceOps
     "get_workspace", "list_workspaces", "create_workspace",
     "update_workspace", "archive_workspace",
