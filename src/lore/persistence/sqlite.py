@@ -33,12 +33,17 @@ from lore.persistence.exceptions import (
     StoreNotFoundError,
 )
 from lore.persistence.types import (
+    AgentSharingConfigData,
+    AuditEventData,
     DailyStatRow,
+    DenyListRuleData,
     ExportedMemory,
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewAuditEvent,
     NewConversationJob,
+    NewDenyListRule,
     NewDrillResult,
     NewMember,
     NewMemory,
@@ -56,6 +61,9 @@ from lore.persistence.types import (
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
+    SharingConfigData,
+    SharingConfigPatch,
+    SharingStatsData,
     SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
@@ -3538,6 +3546,463 @@ class SqliteStore:
             raise StoreError("record_slo_alert: row vanished after insert")
         return _row_to_slo_alert(row)
 
+    # ── SharingOps (Phase 3H) ─────────────────────────────────────────
+
+    async def get_or_init_sharing_config(self, org_id: str) -> SharingConfigData:
+        """Return the sharing config for an org, creating a default row if missing.
+
+        Mirrors ``PostgresStore.get_or_init_sharing_config``: if no row
+        exists, INSERT a default row and return the dataclass with the
+        column DEFAULTs (no SELECT-after-INSERT needed since the defaults
+        are known statically).
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT enabled, human_review_enabled, rate_limit_per_hour, "
+                "volume_alert_threshold, updated_at "
+                "FROM sharing_config WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                cfg_id = str(ULID())
+                await conn.execute(
+                    "INSERT OR IGNORE INTO sharing_config (id, org_id) VALUES (?, ?)",
+                    (cfg_id, org_id),
+                )
+                await conn.commit()
+                return SharingConfigData(
+                    enabled=False,
+                    human_review_enabled=False,
+                    rate_limit_per_hour=100,
+                    volume_alert_threshold=1000,
+                    updated_at=None,
+                )
+        return SharingConfigData(
+            enabled=bool(row["enabled"]),
+            human_review_enabled=bool(row["human_review_enabled"]),
+            rate_limit_per_hour=int(row["rate_limit_per_hour"]),
+            volume_alert_threshold=int(row["volume_alert_threshold"]),
+            updated_at=_parse_iso(row["updated_at"]),
+        )
+
+    async def update_sharing_config(
+        self, org_id: str, patch: SharingConfigPatch,
+    ) -> SharingConfigData:
+        """Upsert + apply a patch to the sharing config; returns the updated row.
+
+        Mirrors ``PostgresStore.update_sharing_config``: ensures a row
+        exists (INSERT if missing) then applies a dynamic UPDATE that
+        always bumps ``updated_at``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT id FROM sharing_config WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing is None:
+                await conn.execute(
+                    "INSERT INTO sharing_config (id, org_id) VALUES (?, ?)",
+                    (str(ULID()), org_id),
+                )
+
+            sets = ["updated_at = datetime('now')"]
+            params: list[Any] = []
+            for field_name in (
+                "enabled",
+                "human_review_enabled",
+                "rate_limit_per_hour",
+                "volume_alert_threshold",
+            ):
+                val = getattr(patch, field_name)
+                if val is not None:
+                    sets.append(f"{field_name} = ?")
+                    if field_name in ("enabled", "human_review_enabled"):
+                        params.append(1 if val else 0)
+                    else:
+                        params.append(val)
+            params.append(org_id)
+            await conn.execute(
+                f"UPDATE sharing_config SET {', '.join(sets)} WHERE org_id = ?",
+                params,
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT enabled, human_review_enabled, rate_limit_per_hour, "
+                "volume_alert_threshold, updated_at "
+                "FROM sharing_config WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("update_sharing_config: row vanished after upsert")
+        return SharingConfigData(
+            enabled=bool(row["enabled"]),
+            human_review_enabled=bool(row["human_review_enabled"]),
+            rate_limit_per_hour=int(row["rate_limit_per_hour"]),
+            volume_alert_threshold=int(row["volume_alert_threshold"]),
+            updated_at=_parse_iso(row["updated_at"]),
+        )
+
+    async def list_agent_sharing_configs(
+        self, org_id: str,
+    ) -> Sequence[AgentSharingConfigData]:
+        """List per-agent sharing configs for an org, ordered by agent_id.
+
+        Mirrors ``PostgresStore.list_agent_sharing_configs``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT agent_id, enabled, categories, updated_at "
+                "FROM agent_sharing_config "
+                "WHERE org_id = ? "
+                "ORDER BY agent_id",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        results: list[AgentSharingConfigData] = []
+        for r in rows:
+            cats_raw = r["categories"]
+            if isinstance(cats_raw, str):
+                cats = json.loads(cats_raw) if cats_raw else []
+            elif cats_raw is None:
+                cats = []
+            else:
+                cats = cats_raw
+            results.append(
+                AgentSharingConfigData(
+                    agent_id=r["agent_id"],
+                    enabled=bool(r["enabled"]),
+                    categories=tuple(cats or ()),
+                    updated_at=_parse_iso(r["updated_at"]),
+                )
+            )
+        return tuple(results)
+
+    async def upsert_agent_sharing_config(
+        self,
+        org_id: str,
+        agent_id: str,
+        *,
+        enabled: bool,
+        categories: Sequence[str],
+    ) -> AgentSharingConfigData:
+        """Insert or update the sharing config for a (org, agent) pair.
+
+        Mirrors ``PostgresStore.upsert_agent_sharing_config``: uses
+        ``INSERT … ON CONFLICT (org_id, agent_id) DO UPDATE``.
+        """
+        cats_json = json.dumps(list(categories))
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_sharing_config
+                    (id, org_id, agent_id, enabled, categories, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (org_id, agent_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    categories = excluded.categories,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(ULID()),
+                    org_id,
+                    agent_id,
+                    1 if enabled else 0,
+                    cats_json,
+                    now_iso,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT agent_id, enabled, categories, updated_at "
+                "FROM agent_sharing_config WHERE org_id = ? AND agent_id = ?",
+                (org_id, agent_id),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("upsert_agent_sharing_config: row vanished after upsert")
+        cats_raw = row["categories"]
+        if isinstance(cats_raw, str):
+            cats = json.loads(cats_raw) if cats_raw else []
+        elif cats_raw is None:
+            cats = []
+        else:
+            cats = cats_raw
+        return AgentSharingConfigData(
+            agent_id=row["agent_id"],
+            enabled=bool(row["enabled"]),
+            categories=tuple(cats or ()),
+            updated_at=_parse_iso(row["updated_at"]),
+        )
+
+    async def list_deny_rules(self, org_id: str) -> Sequence[DenyListRuleData]:
+        """List deny-list rules for an org, ordered by created_at.
+
+        Mirrors ``PostgresStore.list_deny_rules``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT id, pattern, is_regex, reason, created_at "
+                "FROM deny_list_rules "
+                "WHERE org_id = ? "
+                "ORDER BY created_at",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(
+            DenyListRuleData(
+                id=r["id"],
+                pattern=r["pattern"],
+                is_regex=bool(r["is_regex"]),
+                reason=r["reason"],
+                created_at=_parse_iso(r["created_at"]),
+            )
+            for r in rows
+        )
+
+    async def create_deny_rule(self, rule: NewDenyListRule) -> DenyListRuleData:
+        """Insert a new deny-list rule; returns the stored row.
+
+        Mirrors ``PostgresStore.create_deny_rule``.
+        """
+        rule_id = str(ULID())
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO deny_list_rules (id, org_id, pattern, is_regex, reason)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    rule_id,
+                    rule.org_id,
+                    rule.pattern,
+                    1 if rule.is_regex else 0,
+                    rule.reason,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT id, pattern, is_regex, reason, created_at "
+                "FROM deny_list_rules WHERE id = ?",
+                (rule_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("create_deny_rule: row vanished after insert")
+        return DenyListRuleData(
+            id=row["id"],
+            pattern=row["pattern"],
+            is_regex=bool(row["is_regex"]),
+            reason=row["reason"],
+            created_at=_parse_iso(row["created_at"]),
+        )
+
+    async def delete_deny_rule(self, rule_id: str, org_id: str) -> bool:
+        """Delete a deny-list rule scoped to (id, org_id); True if a row was removed.
+
+        Mirrors ``PostgresStore.delete_deny_rule``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM deny_list_rules WHERE id = ? AND org_id = ?",
+                (rule_id, org_id),
+            )
+            deleted = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return bool(deleted)
+
+    async def list_audit_events(
+        self,
+        org_id: str,
+        *,
+        event_type: Optional[str] = None,
+        from_date: Optional[datetime] = None,
+        to_date: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> Sequence[AuditEventData]:
+        """List sharing audit events for an org with optional filters; newest first.
+
+        Mirrors ``PostgresStore.list_audit_events``: filters by org_id
+        always; optionally by event_type / created_at range.
+
+        ``from_date`` / ``to_date`` are normalized to ISO-8601 TEXT so
+        comparison against the SQLite ``created_at`` TEXT column works
+        lexicographically (same ordering as native datetime comparison).
+        """
+        where = ["org_id = ?"]
+        params: list[Any] = [org_id]
+        if event_type is not None:
+            where.append("event_type = ?")
+            params.append(event_type)
+        if from_date is not None:
+            fd = from_date if from_date.tzinfo else from_date.replace(tzinfo=timezone.utc)
+            where.append("created_at >= ?")
+            params.append(fd.isoformat())
+        if to_date is not None:
+            td = to_date if to_date.tzinfo else to_date.replace(tzinfo=timezone.utc)
+            where.append("created_at <= ?")
+            params.append(td.isoformat())
+        params.append(limit)
+        sql = (
+            "SELECT id, event_type, lesson_id, query_text, initiated_by, created_at "
+            "FROM sharing_audit "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC LIMIT ?"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return tuple(
+            AuditEventData(
+                id=r["id"],
+                event_type=r["event_type"],
+                lesson_id=r["lesson_id"],
+                query_text=r["query_text"],
+                initiated_by=r["initiated_by"],
+                created_at=_parse_iso(r["created_at"]),
+            )
+            for r in rows
+        )
+
+    async def record_audit_event(self, event: NewAuditEvent) -> None:
+        """Persist a sharing audit event row.
+
+        Mirrors ``PostgresStore.record_audit_event``.
+        """
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO sharing_audit
+                    (id, org_id, event_type, lesson_id, query_text, initiated_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(ULID()),
+                    event.org_id,
+                    event.event_type,
+                    event.lesson_id,
+                    event.query_text,
+                    event.initiated_by,
+                ),
+            )
+            await conn.commit()
+
+    async def get_sharing_stats(self, org_id: str) -> SharingStatsData:
+        """Compute aggregate sharing stats: lessons count, last shared, audit summary.
+
+        Mirrors ``PostgresStore.get_sharing_stats``: 3 sub-queries inside
+        a single ``_acquire()``. Operates on the ``memories`` base table
+        (post-migration 009 ``lessons`` is a view; aggregations remain
+        correct on the base table).
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) AS c FROM memories WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                count_row = await cur.fetchone()
+            async with conn.execute(
+                "SELECT MAX(created_at) AS last FROM memories WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                last_row = await cur.fetchone()
+            async with conn.execute(
+                "SELECT event_type, COUNT(*) AS cnt FROM sharing_audit "
+                "WHERE org_id = ? GROUP BY event_type",
+                (org_id,),
+            ) as cur:
+                summary_rows = await cur.fetchall()
+        summary = {r["event_type"]: int(r["cnt"]) for r in summary_rows}
+        return SharingStatsData(
+            count_shared=int(count_row["c"]) if count_row else 0,
+            last_shared=_parse_iso(last_row["last"]) if last_row else None,
+            audit_summary=summary,
+        )
+
+    async def purge_sharing(self, org_id: str) -> int:
+        """Purge all sharing-related rows for an org in a single tx.
+
+        Mirrors ``PostgresStore.purge_sharing``: counts memories first,
+        then deletes from memories / sharing_audit / deny_list_rules /
+        agent_sharing_config / sharing_config — all inside a single
+        ``transaction()``. Returns the pre-delete memories count.
+
+        Vec0 invariant: deletes ``memory_vectors`` rows for the to-be-
+        deleted memories before the ``DELETE FROM memories``, keeping
+        the memories ⇆ memory_vectors pair invariant intact (Phase 3B).
+        """
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT COUNT(*) AS c FROM memories WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                count_row = await cur.fetchone()
+            deleted_lessons = int(count_row["c"]) if count_row else 0
+            await tx.execute(
+                "DELETE FROM memory_vectors WHERE memory_rowid IN ("
+                "SELECT rowid FROM memories WHERE org_id = ?)",
+                (org_id,),
+            )
+            await tx.execute("DELETE FROM memories WHERE org_id = ?", (org_id,))
+            await tx.execute("DELETE FROM sharing_audit WHERE org_id = ?", (org_id,))
+            await tx.execute("DELETE FROM deny_list_rules WHERE org_id = ?", (org_id,))
+            await tx.execute("DELETE FROM agent_sharing_config WHERE org_id = ?", (org_id,))
+            await tx.execute("DELETE FROM sharing_config WHERE org_id = ?", (org_id,))
+        return deleted_lessons
+
+    async def rate_lesson(
+        self,
+        lesson_id: str,
+        org_id: str,
+        delta: int,
+        initiated_by: str,
+    ) -> Optional[int]:
+        """Atomically adjust a lesson's reputation_score and write a 'rate' audit event.
+
+        Returns the new reputation_score, or None if the lesson does not exist.
+
+        Mirrors ``PostgresStore.rate_lesson``: targets ``memories``
+        directly (post-migration 009 ``lessons`` is a view) within a
+        single ``transaction()``. SQLite doesn't support
+        ``UPDATE … RETURNING``; we probe-then-update-then-select inside
+        the same transaction so the audit event only fires when the
+        lesson exists.
+        """
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT 1 FROM memories WHERE id = ? AND org_id = ?",
+                (lesson_id, org_id),
+            ) as cur:
+                exists = await cur.fetchone()
+            if exists is None:
+                return None
+            await tx.execute(
+                "UPDATE memories "
+                "SET reputation_score = reputation_score + ?, "
+                "    updated_at = datetime('now') "
+                "WHERE id = ? AND org_id = ?",
+                (delta, lesson_id, org_id),
+            )
+            async with tx.execute(
+                "SELECT reputation_score FROM memories WHERE id = ? AND org_id = ?",
+                (lesson_id, org_id),
+            ) as cur:
+                score_row = await cur.fetchone()
+            new_score = int(score_row["reputation_score"]) if score_row else None
+            await tx.execute(
+                """
+                INSERT INTO sharing_audit
+                    (id, org_id, event_type, lesson_id, initiated_by)
+                VALUES (?, ?, 'rate', ?, ?)
+                """,
+                (str(ULID()), org_id, lesson_id, initiated_by),
+            )
+        return new_score
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -3598,12 +4063,7 @@ _STUBBED_METHODS: Sequence[str] = (
     # AuditOps — implemented in Phase 3G.
     # RetentionOps — implemented in Phase 3H.
     # SloOps — implemented in Phase 3H.
-    # SharingOps
-    "get_or_init_sharing_config", "update_sharing_config",
-    "list_agent_sharing_configs", "upsert_agent_sharing_config",
-    "list_deny_rules", "create_deny_rule", "delete_deny_rule",
-    "list_audit_events", "record_audit_event", "get_sharing_stats",
-    "purge_sharing", "rate_lesson",
+    # SharingOps — implemented in Phase 3H.
 )
 
 for _name in _STUBBED_METHODS:
