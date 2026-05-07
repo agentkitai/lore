@@ -37,6 +37,7 @@ from lore.persistence.types import (
     ExportedMemory,
     MemoryFilter,
     MemoryPatch,
+    NewMember,
     NewMemory,
     NewProfile,
     NewRetrievalEvent,
@@ -46,6 +47,7 @@ from lore.persistence.types import (
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
+    StoredMember,
     StoredMemory,
     StoredProfile,
     StoredWorkspace,
@@ -239,6 +241,18 @@ def _row_to_memory(row) -> StoredMemory:
         importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=_parse_iso(row["last_accessed_at"]),
+    )
+
+
+def _row_to_member(row) -> StoredMember:
+    """Translate a SQLite ``workspace_members`` row to ``StoredMember``."""
+    return StoredMember(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        user_id=row["user_id"],
+        role=row["role"],
+        invited_at=_parse_iso(row["invited_at"]),
+        accepted_at=_parse_iso(row["accepted_at"]),
     )
 
 
@@ -2146,6 +2160,103 @@ class SqliteStore:
             await conn.commit()
         return count > 0
 
+    _MEMBER_COLS = (
+        "id, workspace_id, user_id, role, invited_at, accepted_at"
+    )
+
+    async def add_workspace_member(self, member: NewMember) -> StoredMember:
+        """Add a member; raises IntegrityError on FK violation (workspace_id).
+
+        Mirrors ``PostgresStore.add_workspace_member``.
+        """
+        member_id = f"wsm_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO workspace_members (id, workspace_id, user_id, role)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        member_id,
+                        member.workspace_id,
+                        member.user_id,
+                        member.role,
+                    ),
+                )
+                await conn.commit()
+            except aiosqlite.IntegrityError as e:
+                raise IntegrityError(
+                    f"workspace_id {member.workspace_id!r} does not exist"
+                ) from e
+            async with conn.execute(
+                f"SELECT {self._MEMBER_COLS} FROM workspace_members WHERE id = ?",
+                (member_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("add_workspace_member: row vanished after insert")
+        return _row_to_member(row)
+
+    async def list_workspace_members(
+        self, workspace_id: str
+    ) -> Sequence[StoredMember]:
+        """List members of a workspace, ordered by invited_at ascending.
+
+        Mirrors ``PostgresStore.list_workspace_members``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._MEMBER_COLS} FROM workspace_members "
+                "WHERE workspace_id = ? ORDER BY invited_at",
+                (workspace_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_member(r) for r in rows)
+
+    async def update_workspace_member_role(
+        self, workspace_id: str, user_id: str, role: str
+    ) -> Optional[StoredMember]:
+        """Update a member's role; returns the updated row, or None if absent.
+
+        Mirrors ``PostgresStore.update_workspace_member_role``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "UPDATE workspace_members SET role = ? "
+                "WHERE workspace_id = ? AND user_id = ?",
+                (role, workspace_id, user_id),
+            )
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._MEMBER_COLS} FROM workspace_members "
+                "WHERE workspace_id = ? AND user_id = ?",
+                (workspace_id, user_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_member(row) if row else None
+
+    async def remove_workspace_member(
+        self, workspace_id: str, user_id: str
+    ) -> bool:
+        """Remove a member; returns True if a row was deleted.
+
+        Mirrors ``PostgresStore.remove_workspace_member``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+                (workspace_id, user_id),
+            )
+            count = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return count > 0
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -2198,10 +2309,7 @@ _STUBBED_METHODS: Sequence[str] = (
     "get_graph_stats", "get_timeline_buckets", "get_memories_by_entities",
     "search_memories_text",
     # PolicyOps — implemented in Phase 3F.
-    # WorkspaceOps — Phase 3F implemented workspace CRUD; member ops
-    # (add/list/update_role/remove) follow in the next 3F sub-commit.
-    "add_workspace_member", "list_workspace_members",
-    "update_workspace_member_role", "remove_workspace_member",
+    # WorkspaceOps — implemented in Phase 3F.
     # AuthOps
     "get_api_key", "list_api_keys", "create_api_key", "revoke_api_key",
     "count_active_root_keys", "lookup_api_key_by_hash",
