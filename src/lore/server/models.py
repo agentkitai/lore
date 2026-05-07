@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 try:
     from pydantic import BaseModel, Field, field_validator
@@ -27,6 +27,9 @@ class LessonCreateRequest(BaseModel):
     embedding: Optional[List[float]] = Field(default=None)
     expires_at: Optional[datetime] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
+    # Phase 6G: project-vs-global discriminator. ``None`` (default) means
+    # "default by meta.type at the service layer".
+    scope: Optional[Literal["project", "global"]] = None
 
     @field_validator("embedding")
     @classmethod
@@ -208,6 +211,10 @@ class MemoryCreateRequest(BaseModel):
     expires_at: Optional[datetime] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
     enrich: Optional[bool] = None
+    # Phase 6G: project-vs-global discriminator. ``None`` means "default by
+    # type at the service layer" — universal types (lesson/preference/
+    # pattern/convention) become 'global', everything else stays 'project'.
+    scope: Optional[Literal["project", "global"]] = None
 
     @field_validator("embedding")
     @classmethod
@@ -239,6 +246,8 @@ class MemoryResponse(BaseModel):
     upvotes: int = 0
     downvotes: int = 0
     meta: Dict[str, Any] = Field(default_factory=dict)
+    # Phase 6G: project-vs-global discriminator. Always present.
+    scope: str = "project"
 
 
 class MemoryUpdateRequest(BaseModel):
@@ -312,6 +321,10 @@ class ObservationCreateRequest(BaseModel):
     source: Optional[str] = None
     captured_by: str = Field(default="auto")
     session_id: Optional[str] = None
+    # Phase 6G: project-vs-global discriminator. Default 'project' keeps the
+    # observation visible only inside its repo; pass 'global' for universal
+    # lessons that should surface in any project.
+    scope: Literal["project", "global"] = "project"
 
     @field_validator("captured_by")
     @classmethod
@@ -342,6 +355,8 @@ class ObservationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     meta: Dict[str, Any] = Field(default_factory=dict)
+    # Phase 6G: project-vs-global discriminator. Always present.
+    scope: str = "project"
 
 
 class ObservationListResponse(BaseModel):

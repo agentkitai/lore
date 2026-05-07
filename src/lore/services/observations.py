@@ -62,4 +62,5 @@ async def create_observation(
         source=obs.source or "observation",
         project=obs.project,
         meta=meta,
+        scope=obs.scope,
     )

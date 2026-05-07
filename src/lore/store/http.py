@@ -169,6 +169,10 @@ class HttpStore(Store):
             payload["embedding"] = embedding
         if expires_at is not None:
             payload["expires_at"] = expires_at
+        # Phase 6G: only include scope when caller explicitly set one. None
+        # lets the server apply its type-based default.
+        if getattr(memory, "scope", None) is not None:
+            payload["scope"] = memory.scope
 
         return payload
 

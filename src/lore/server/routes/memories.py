@@ -79,6 +79,7 @@ def _row_to_response(row: dict) -> MemoryResponse:
         upvotes=row.get("upvotes", 0),
         downvotes=row.get("downvotes", 0),
         meta=meta,
+        scope=row.get("scope") or "project",
     )
 
 
@@ -111,6 +112,7 @@ async def create_memory(
         project=auth.project or body.project,
         expires_at=body.expires_at,
         meta=body.meta or {},
+        scope=body.scope,
     )
 
     # Fire-and-forget enrichment unchanged from before
@@ -160,6 +162,7 @@ async def search_memories(
                 upvotes=r.upvotes,
                 downvotes=r.downvotes,
                 meta=dict(r.meta),
+                scope=getattr(r, "scope", "project") or "project",
                 score=round(max(r.score, 0.0), 6),
             )
             for r in results
@@ -306,6 +309,7 @@ async def get_memory(
         upvotes=m.upvotes,
         downvotes=m.downvotes,
         meta=dict(m.meta),
+        scope=getattr(m, "scope", "project") or "project",
     )
 
 
@@ -397,6 +401,7 @@ def _stored_to_memory_response(m) -> MemoryResponse:
         confidence=m.confidence, source=m.source, project=m.project,
         created_at=m.created_at, updated_at=m.updated_at, expires_at=m.expires_at,
         upvotes=m.upvotes, downvotes=m.downvotes, meta=dict(m.meta),
+        scope=getattr(m, "scope", "project") or "project",
     )
 
 

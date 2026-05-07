@@ -240,6 +240,11 @@ mcp = FastMCP(
         "Optionally set tier: 'working' (auto-expires in 1h, for scratch context), "
         "'short' (auto-expires in 7d, for session learnings), "
         "or 'long' (default, no expiry, for lasting knowledge). "
+        "Optionally set scope='global' to make this memory visible across "
+        "every project (use for universal lessons, language gotchas, "
+        "framework patterns, tool quirks); leave unset to default by type "
+        "(lesson/preference/pattern/convention default to 'global', "
+        "everything else stays scoped to the current project). "
         "When enrichment is enabled, automatically extracts topics, entities, sentiment, "
         "classifies intent/domain/emotion, and extracts structured facts."
     ),
@@ -254,6 +259,7 @@ def remember(
     project: Optional[str] = None,
     ttl: Optional[int] = None,
     session_id: Optional[str] = None,
+    scope: Optional[str] = None,
 ) -> str:
     """Store a memory in Lore."""
     try:
@@ -267,6 +273,7 @@ def remember(
             source=source,
             project=project,
             ttl=ttl,
+            scope=scope,
         )
         _maybe_auto_snapshot(lore, content, session_id=session_id)
         return f"Memory saved (ID: {memory_id}, tier: {tier})"
@@ -284,7 +291,9 @@ def remember(
         "transcripts. Use the simpler remember(content, type=...) only for "
         "polished single-fact memories you're confident about. "
         "Stored with type='observation' so future retrieval can score "
-        "polished memories higher than raw observations."
+        "polished memories higher than raw observations. "
+        "Pass scope='global' for universal lessons; default 'project' keeps "
+        "the observation visible only inside its repo."
     ),
 )
 def remember_observation(
@@ -293,11 +302,12 @@ def remember_observation(
     narrative: str,
     tags: Optional[List[str]] = None,
     project: Optional[str] = None,
+    scope: Optional[str] = None,
 ) -> str:
     """Save a structured observation. Returns a confirmation with the memory ID."""
     try:
         lore = _get_lore()
-        body = {
+        body: Dict[str, Any] = {
             "title": title,
             "facts": list(facts) if facts else [],
             "narrative": narrative,
@@ -308,6 +318,10 @@ def remember_observation(
         # Drop None project so the server applies its default project resolution.
         if body["project"] is None:
             body.pop("project")
+        # Only include scope when caller specified one — None lets the server
+        # apply its default ('project').
+        if scope is not None:
+            body["scope"] = scope
 
         store = getattr(lore, "_store", None)
         request_fn = getattr(store, "_request", None)

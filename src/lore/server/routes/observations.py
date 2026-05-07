@@ -55,6 +55,7 @@ def _stored_to_observation_response(m: StoredMemory) -> ObservationResponse:
         created_at=m.created_at,
         updated_at=m.updated_at,
         meta=meta,
+        scope=getattr(m, "scope", "project") or "project",
     )
 
 
@@ -88,6 +89,7 @@ async def create_observation(
         source=body.source,
         captured_by=body.captured_by,
         session_id=body.session_id,
+        scope=body.scope,
     )
     stored = await _create_observation(store, obs, _embed)
     return ObservationCreateResponse(id=stored.id)

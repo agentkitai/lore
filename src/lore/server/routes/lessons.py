@@ -105,6 +105,7 @@ async def create_lesson(
         embedding=body.embedding,
         expires_at=body.expires_at,
         meta=body.meta,
+        scope=body.scope,
     )
     return LessonCreateResponse(id=lesson_id)
 

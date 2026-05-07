@@ -366,8 +366,16 @@ class Lore:
         project: Optional[str] = None,
         ttl: Optional[int] = None,
         confidence: float = 1.0,
+        scope: Optional[str] = None,
     ) -> str:
-        """Store a memory. Returns the memory ID (ULID)."""
+        """Store a memory. Returns the memory ID (ULID).
+
+        Phase 6G: ``scope`` is the project-vs-global discriminator. ``None``
+        (the default) lets the server derive a default from ``type`` —
+        universal types (lesson/preference/pattern/convention) become
+        'global', everything else stays 'project'. Pass ``scope='project'``
+        or ``scope='global'`` to override.
+        """
         if tier not in VALID_TIERS:
             raise ValueError(
                 f"invalid tier {tier!r}, must be one of: {VALID_TIERS}"
@@ -466,6 +474,7 @@ class Lore:
             ttl=effective_ttl,
             expires_at=expires_at,
             confidence=confidence,
+            scope=scope,
         )
         self._store.save(memory)
 
