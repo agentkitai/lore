@@ -604,6 +604,42 @@ def build_parser() -> argparse.ArgumentParser:
     # mcp
     sub.add_parser("mcp", help="Start MCP server (stdio transport)")
 
+    # migrate (Phase 5)
+    p_mig = sub.add_parser(
+        "migrate",
+        help="Migrate data between two Store backends (postgres ⇄ sqlite)",
+    )
+    p_mig.add_argument(
+        "--from", required=True, dest="src",
+        help="Source database URL (postgresql:// or sqlite://)",
+    )
+    p_mig.add_argument(
+        "--to", required=True, dest="tgt",
+        help="Target database URL (postgresql:// or sqlite://)",
+    )
+    p_mig.add_argument(
+        "--re-embed", action="store_true", default=False, dest="re_embed",
+        help=(
+            "Regenerate embeddings on the target side. Required when source "
+            "and target embedding models differ (auto-detected upfront)."
+        ),
+    )
+    p_mig.add_argument(
+        "--continue", action="store_true", default=False, dest="continue_run",
+        help=(
+            "Resume a previous run by skipping tables already fully copied "
+            "(state stored at ~/.lore/migrate-state.json)."
+        ),
+    )
+    p_mig.add_argument(
+        "--dry-run", action="store_true", default=False, dest="dry_run",
+        help="Count rows that would be copied; don't actually write to target.",
+    )
+    p_mig.add_argument(
+        "--batch-size", type=int, default=None, dest="batch_size",
+        help="Rows per batch (default: 500).",
+    )
+
     # ui
     p_ui = sub.add_parser("ui", help="Open graph visualization in browser")
     p_ui.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
@@ -642,6 +678,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         cmd_retention,
         cmd_stats,
     )
+    from lore.cli.commands.migrate import cmd_migrate
     from lore.cli.commands.misc import (
         cmd_add_conversation,
         cmd_audit,
@@ -738,6 +775,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "serve": cmd_serve,
         "mcp": cmd_mcp,
         "ui": cmd_ui,
+        "migrate": cmd_migrate,
     }
     handlers[args.command](args)
 
