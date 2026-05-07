@@ -677,6 +677,40 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the Claude Code JSONL transcript for this session",
     )
 
+    # dream (Phase 6E) — LLM-driven memory consolidation pipeline.
+    p_dream = sub.add_parser(
+        "dream",
+        help="Run memory consolidation (Phase 6E dreaming)",
+    )
+    p_dream.add_argument(
+        "--force", action="store_true", default=False,
+        help="Bypass the 24h+5-sessions eligibility check",
+    )
+    p_dream.add_argument(
+        "--review", action="store_true", default=False,
+        help="Have the subagent emit a markdown report instead of "
+             "mutating the DB; commit later via `lore dream apply <run_id>`",
+    )
+    p_dream.add_argument(
+        "--status", action="store_true", default=False,
+        help="Print last-run + next-eligible-time and exit",
+    )
+    p_dream.add_argument(
+        "--json", action="store_true", default=False, dest="as_json",
+        help="With --status, output as JSON",
+    )
+    p_dream.add_argument(
+        "--org-id", default=None, dest="org_id",
+        help="Org scope (default: solo)",
+    )
+    # ``apply <run_id>`` — variadic positional so the v1 spec syntax
+    # ``lore dream apply <run_id>`` works alongside ``lore dream``,
+    # ``lore dream --status``, etc.
+    p_dream.add_argument(
+        "dream_args", nargs="*", default=None,
+        help="Use `apply <run_id>` to apply a deferred --review run",
+    )
+
     return parser
 
 
@@ -690,6 +724,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
 
     # Lazy-import command handlers to avoid circular imports and keep startup fast.
     from lore.cli.commands.capture import cmd_capture
+    from lore.cli.commands.dream import cmd_dream
     from lore.cli.commands.graph import (
         cmd_entities,
         cmd_graph,
@@ -811,6 +846,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "migrate": cmd_migrate,
         "observations": cmd_observations,
         "capture-extract": cmd_capture,
+        "dream": cmd_dream,
     }
     handlers[args.command](args)
 
