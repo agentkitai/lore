@@ -41,10 +41,12 @@ from lore.persistence.types import (
     NewMember,
     NewMemory,
     NewProfile,
+    NewRecommendationFeedback,
     NewRetrievalEvent,
     NewWorkspace,
     ProfilePatch,
     RecallParams,
+    RecommendationCandidate,
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
@@ -52,6 +54,7 @@ from lore.persistence.types import (
     StoredMember,
     StoredMemory,
     StoredProfile,
+    StoredRecommendationConfig,
     StoredWorkspace,
     TimeseriesPoint,
     TopQueryRow,
@@ -329,6 +332,47 @@ def _row_to_api_key(row) -> StoredApiKey:
         created_at=_parse_iso(row["created_at"]),
         last_used_at=_parse_iso(row["last_used_at"]),
         role=row["role"],
+    )
+
+
+def _row_to_recommendation_config(row) -> StoredRecommendationConfig:
+    """Translate a SQLite ``recommendation_config`` row to ``StoredRecommendationConfig``."""
+    return StoredRecommendationConfig(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        agent_id=row["agent_id"],
+        aggressiveness=float(row["aggressiveness"]),
+        enabled=bool(row["enabled"]),
+        max_suggestions=int(row["max_suggestions"]),
+        cooldown_minutes=int(row["cooldown_minutes"]),
+        updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_recommendation_candidate(row) -> RecommendationCandidate:
+    """Translate a SQLite ``memories`` ⨯ ``memory_vectors`` row to a
+    ``RecommendationCandidate``.
+
+    The embedding is the ``vec_to_json(v.embedding)`` output (a JSON-array
+    string like ``"[0.1,0.2,...]"``) decoded via ``_decode_vec_to_json``;
+    meta is JSON-decoded from TEXT.
+    """
+    meta_raw = row["meta"]
+    if isinstance(meta_raw, str):
+        meta = json.loads(meta_raw) if meta_raw else {}
+    elif meta_raw is None:
+        meta = {}
+    else:
+        meta = meta_raw
+    embedding = _decode_vec_to_json(row["embedding_json"])
+    return RecommendationCandidate(
+        id=row["id"],
+        content=row["content"] or "",
+        embedding=embedding if embedding is not None else [],
+        metadata=dict(meta or {}),
+        created_at=_parse_iso(row["created_at"]),
+        access_count=row["access_count"] or 0,
+        last_accessed_at=_parse_iso(row["last_accessed_at"]),
     )
 
 
@@ -2417,6 +2461,180 @@ class SqliteStore:
             )
             await conn.commit()
 
+    # ── RecommendationOps (Phase 3G) ──────────────────────────────────
+
+    _RECOMMENDATION_CONFIG_COLS = (
+        "id, workspace_id, agent_id, aggressiveness, enabled, "
+        "max_suggestions, cooldown_minutes, updated_at"
+    )
+
+    async def get_recommendation_config(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Optional[StoredRecommendationConfig]:
+        """Return the recommendation config matching (workspace_id, agent_id).
+
+        SQLite's ``IS`` operator is NULL-safe (mirrors PG's ``IS NOT
+        DISTINCT FROM``), so the same predicate works for both
+        ``workspace_id IS NULL`` and ``workspace_id = 'ws_x'`` cases.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._RECOMMENDATION_CONFIG_COLS} "
+                "FROM recommendation_config "
+                "WHERE workspace_id IS ? AND agent_id IS ? "
+                "LIMIT 1",
+                (workspace_id, agent_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_recommendation_config(row) if row else None
+
+    async def upsert_recommendation_config(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        aggressiveness: Optional[float] = None,
+        enabled: Optional[bool] = None,
+        max_suggestions: Optional[int] = None,
+        cooldown_minutes: Optional[int] = None,
+    ) -> StoredRecommendationConfig:
+        """Insert-or-update the recommendation config for a (workspace, agent) scope.
+
+        Mirrors ``PostgresStore.upsert_recommendation_config``: caller-side
+        ULID with a ``reccfg_`` prefix; ON CONFLICT preserves None-valued
+        patch fields.
+
+        SQLite's NULL-UNIQUE quirk is bridged by the migration-019
+        expression UNIQUE index ``recommendation_config_scope_uq`` over
+        ``COALESCE(workspace_id, '__null__'), COALESCE(agent_id,
+        '__null__')`` — the conflict target below matches that index
+        expression exactly.
+
+        The ``enabled`` patch is converted to INTEGER 0/1 because SQLite
+        stores BOOLEAN as INTEGER.
+        """
+        config_id = f"reccfg_{ULID()}"
+        enabled_int = None if enabled is None else (1 if enabled else 0)
+        async with self._acquire() as conn:
+            # The four patch parameters appear twice each: once on the
+            # INSERT side (COALESCE(?, default)) and once on the UPDATE
+            # side (COALESCE(?, recommendation_config.col)). This mirrors
+            # PG's reuse of ``$N`` placeholders — using
+            # ``excluded.<col>`` instead would pull in the COALESCE-filled
+            # default and clobber the existing row's value when the patch
+            # is None.
+            await conn.execute(
+                """
+                INSERT INTO recommendation_config
+                    (id, workspace_id, agent_id, aggressiveness, enabled,
+                     max_suggestions, cooldown_minutes, updated_at)
+                VALUES (?, ?, ?,
+                        COALESCE(?, 0.5),
+                        COALESCE(?, 1),
+                        COALESCE(?, 3),
+                        COALESCE(?, 15),
+                        datetime('now'))
+                ON CONFLICT (COALESCE(workspace_id, '__null__'),
+                             COALESCE(agent_id, '__null__')) DO UPDATE
+                SET aggressiveness   = COALESCE(?, recommendation_config.aggressiveness),
+                    enabled          = COALESCE(?, recommendation_config.enabled),
+                    max_suggestions  = COALESCE(?, recommendation_config.max_suggestions),
+                    cooldown_minutes = COALESCE(?, recommendation_config.cooldown_minutes),
+                    updated_at       = datetime('now')
+                """,
+                (
+                    config_id,
+                    workspace_id,
+                    agent_id,
+                    aggressiveness,
+                    enabled_int,
+                    max_suggestions,
+                    cooldown_minutes,
+                    aggressiveness,
+                    enabled_int,
+                    max_suggestions,
+                    cooldown_minutes,
+                ),
+            )
+            await conn.commit()
+            # Re-read by scope (NULL-safe match) to get the canonical row.
+            async with conn.execute(
+                f"SELECT {self._RECOMMENDATION_CONFIG_COLS} "
+                "FROM recommendation_config "
+                "WHERE workspace_id IS ? AND agent_id IS ? "
+                "LIMIT 1",
+                (workspace_id, agent_id),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover - defensive
+            raise StoreError("upsert_recommendation_config: row vanished after upsert")
+        return _row_to_recommendation_config(row)
+
+    async def record_recommendation_feedback(
+        self, feedback: NewRecommendationFeedback,
+    ) -> None:
+        """Persist a recommendation feedback row.
+
+        Mirrors ``PostgresStore.record_recommendation_feedback``: caller-side
+        ULID with ``recfb_`` prefix; ``created_at`` defaults via column.
+        """
+        feedback_id = f"recfb_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO recommendation_feedback
+                    (id, org_id, workspace_id, memory_id, actor_id, signal,
+                     feedback, context_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    feedback.org_id,
+                    feedback.workspace_id,
+                    feedback.memory_id,
+                    feedback.actor_id,
+                    feedback.signal,
+                    feedback.feedback,
+                    feedback.context_hash,
+                ),
+            )
+            await conn.commit()
+
+    async def list_candidate_memories_for_recommendation(
+        self, org_id: str, *, limit: int = 500,
+    ) -> Sequence[RecommendationCandidate]:
+        """List candidate memories (memories with embeddings) for the
+        recommendation engine, ordered by ``importance_score`` DESC NULLS LAST.
+
+        Translation: PG selects ``embedding`` directly from ``memories``;
+        SQLite stores embeddings in the ``memory_vectors`` vec0 virtual
+        table joined by ``memory_rowid``. Memories without a vec0 row are
+        excluded (mirrors PG's ``embedding IS NOT NULL`` filter).
+
+        ``ORDER BY importance_score DESC NULLS LAST``: SQLite's NULL
+        ordering is opposite to PG's (NULLs sort first by default with
+        ``DESC``), so we use ``CASE WHEN ... IS NULL THEN 1 ELSE 0 END``
+        as a primary sort key to match PG's ``NULLS LAST`` semantics.
+        """
+        sql = (
+            "SELECT m.id, m.content, m.meta, m.created_at, "
+            "m.access_count, m.last_accessed_at, "
+            "vec_to_json(v.embedding) AS embedding_json "
+            "FROM memories m "
+            "INNER JOIN memory_vectors v ON v.memory_rowid = m.rowid "
+            "WHERE m.org_id = ? "
+            "ORDER BY CASE WHEN m.importance_score IS NULL THEN 1 ELSE 0 END, "
+            "         m.importance_score DESC "
+            "LIMIT ?"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(sql, (org_id, limit)) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_recommendation_candidate(r) for r in rows)
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -2472,10 +2690,7 @@ _STUBBED_METHODS: Sequence[str] = (
     # WorkspaceOps — implemented in Phase 3F.
     # AuthOps — implemented in Phase 3G.
     # AnalyticsOps — implemented in Phase 3E.
-    # RecommendationOps
-    "get_recommendation_config", "upsert_recommendation_config",
-    "record_recommendation_feedback",
-    "list_candidate_memories_for_recommendation",
+    # RecommendationOps — implemented in Phase 3G.
     # ConversationOps
     "create_conversation_job", "get_conversation_job",
     "mark_conversation_job_processing", "complete_conversation_job",
