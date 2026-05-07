@@ -611,6 +611,7 @@ class SqliteStore:
         *,
         text_query: bool = False,
         min_reputation: bool = False,
+        alias: str = "",
     ) -> tuple[list[str], list[Any]]:
         """Translate a ``MemoryFilter`` into a SQLite WHERE clause + params.
 
@@ -622,44 +623,49 @@ class SqliteStore:
         ``text_query`` and ``min_reputation`` flags are used by the
         paginated/exported variants which expose those filters; the basic
         ``list_memories`` doesn't pass them.
+
+        ``alias`` is an optional table alias prefix (e.g. ``"m"``) used by
+        ``list_memories_with_embeddings`` whose SELECT joins ``memory_vectors``
+        and so needs every column reference qualified.
         """
-        where: list[str] = ["org_id = ?"]
+        prefix = f"{alias}." if alias else ""
+        where: list[str] = [f"{prefix}org_id = ?"]
         params: list[Any] = [filter.org_id]
         if filter.project is not None:
-            where.append("project = ?")
+            where.append(f"{prefix}project = ?")
             params.append(filter.project)
         if filter.type is not None:
             # PG: meta->>'type' = $N. SQLite: json_extract(meta, '$.type').
-            where.append("json_extract(meta, '$.type') = ?")
+            where.append(f"json_extract({prefix}meta, '$.type') = ?")
             params.append(filter.type)
         if filter.tier is not None:
-            where.append("json_extract(meta, '$.tier') = ?")
+            where.append(f"json_extract({prefix}meta, '$.tier') = ?")
             params.append(filter.tier)
         if filter.tags:
             # PG: tags @> '["a","b"]'::jsonb (contains-all semantics).
             # SQLite: AND'd EXISTS (SELECT 1 FROM json_each(tags) WHERE value=?)
             for tag in filter.tags:
                 where.append(
-                    "EXISTS (SELECT 1 FROM json_each(memories.tags) "
+                    f"EXISTS (SELECT 1 FROM json_each({prefix}tags) "
                     "WHERE value = ?)"
                 )
                 params.append(tag)
         if filter.since is not None:
-            where.append("created_at >= ?")
+            where.append(f"{prefix}created_at >= ?")
             params.append(filter.since.isoformat())
         if filter.until is not None:
-            where.append("created_at < ?")
+            where.append(f"{prefix}created_at < ?")
             params.append(filter.until.isoformat())
         if text_query and filter.text_query is not None:
-            where.append("(content LIKE ? OR context LIKE ?)")
+            where.append(f"({prefix}content LIKE ? OR {prefix}context LIKE ?)")
             pat = f"%{filter.text_query}%"
             params.extend([pat, pat])
         if min_reputation and filter.min_reputation is not None:
-            where.append("reputation_score >= ?")
+            where.append(f"{prefix}reputation_score >= ?")
             params.append(filter.min_reputation)
         if not filter.include_expired:
             now_iso = datetime.now(timezone.utc).isoformat()
-            where.append("(expires_at IS NULL OR expires_at > ?)")
+            where.append(f"({prefix}expires_at IS NULL OR {prefix}expires_at > ?)")
             params.append(now_iso)
         return where, params
 
@@ -794,6 +800,74 @@ class SqliteStore:
             )
             await conn.commit()
 
+    async def list_memories_paginated(
+        self,
+        filter: "MemoryFilter",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, Sequence["StoredMemory"]]:
+        """Two-query paginated list (COUNT + SELECT) — mirrors PG path."""
+        where, params = self._build_memory_filter_clauses(
+            filter, text_query=True, min_reputation=True,
+        )
+        where_sql = " AND ".join(where)
+        count_sql = f"SELECT COUNT(*) AS n FROM memories WHERE {where_sql}"
+        select_sql = (
+            f"SELECT {self._MEMORY_COLS} FROM memories "
+            f"WHERE {where_sql} "
+            "ORDER BY created_at DESC "
+            "LIMIT ? OFFSET ?"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(count_sql, tuple(params)) as cur:
+                count_row = await cur.fetchone()
+            total = int(count_row["n"]) if count_row else 0
+            async with conn.execute(
+                select_sql, tuple(params) + (limit, offset)
+            ) as cur:
+                rows = await cur.fetchall()
+        return (total, tuple(_row_to_memory(r) for r in rows))
+
+    async def list_memories_with_embeddings(
+        self,
+        filter: "MemoryFilter",
+    ) -> Sequence["ExportedMemory"]:
+        """Bulk export — JOIN to ``memory_vectors`` to surface the embedding.
+
+        Mirrors ``PostgresStore.list_memories_with_embeddings``: no LIMIT,
+        ordered by ``created_at`` ASC, includes the embedding column. The
+        SQLite embedding lives in the vec0 virtual table; we LEFT JOIN
+        through ``memory_rowid`` and use ``vec_to_json`` to convert the
+        binary vector back to a JSON-array string we then parse.
+
+        ``LEFT JOIN`` so memories without an embedding (the vec0 row was
+        deleted out-of-band, or the row was inserted via a path that
+        skipped the pair invariant) surface with ``embedding=None`` —
+        same shape PG returns for a NULL embedding column.
+        """
+        where, params = self._build_memory_filter_clauses(
+            filter, text_query=True, min_reputation=True, alias="m",
+        )
+        where_sql = " AND ".join(where)
+        sql = (
+            "SELECT m.id, m.org_id, m.content, m.context, m.tags, "
+            "m.confidence, m.source, m.project, m.created_at, m.updated_at, "
+            "m.expires_at, m.upvotes, m.downvotes, m.meta, "
+            "vec_to_json(v.embedding) AS embedding_json "
+            "FROM memories m "
+            "LEFT JOIN memory_vectors v ON v.memory_rowid = m.rowid "
+            f"WHERE {where_sql} "
+            "ORDER BY m.created_at"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return tuple(
+            _row_to_exported(r, _decode_vec_to_json(r["embedding_json"]))
+            for r in rows
+        )
+
     async def recall_by_embedding(
         self,
         params: "RecallParams",
@@ -826,6 +900,8 @@ class SqliteStore:
         # 4x the limit is a generous floor; clamp to a sane upper bound.
         k = max(params.limit, 1) * 4
         # Build the post-vec0 WHERE clauses (PG path: org, project, expiry).
+        # Uses the same shape as ``_build_memory_filter_clauses`` for the
+        # subset of filters ``RecallParams`` actually exposes.
         where: list[str] = ["m.org_id = ?"]
         sql_params: list[Any] = [params.org_id]
         if params.project is not None:
