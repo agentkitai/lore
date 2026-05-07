@@ -850,11 +850,14 @@ class SqliteStore:
             filter, text_query=True, min_reputation=True, alias="m",
         )
         where_sql = " AND ".join(where)
+        # ``vec_to_json(NULL)`` errors with "Input must have type BLOB or
+        # TEXT" — guard with CASE so LEFT JOIN misses surface as NULL.
         sql = (
             "SELECT m.id, m.org_id, m.content, m.context, m.tags, "
             "m.confidence, m.source, m.project, m.created_at, m.updated_at, "
             "m.expires_at, m.upvotes, m.downvotes, m.meta, "
-            "vec_to_json(v.embedding) AS embedding_json "
+            "CASE WHEN v.embedding IS NULL THEN NULL "
+            "     ELSE vec_to_json(v.embedding) END AS embedding_json "
             "FROM memories m "
             "LEFT JOIN memory_vectors v ON v.memory_rowid = m.rowid "
             f"WHERE {where_sql} "
@@ -982,6 +985,185 @@ class SqliteStore:
                 )
             )
         return scored
+
+    async def upsert_memory_with_embedding(
+        self,
+        *,
+        memory_id: str,
+        org_id: str,
+        content: str,
+        context: Optional[str],
+        tags: Sequence[str],
+        confidence: float,
+        source: Optional[str],
+        project: Optional[str],
+        embedding: Optional[Sequence[float]],
+        expires_at: Optional[datetime],
+        upvotes: int,
+        downvotes: int,
+        meta: "Mapping[str, Any]",
+    ) -> bool:
+        """Idempotent INSERT … ON CONFLICT (id) DO UPDATE … (org-guarded).
+
+        Returns ``True`` when a brand-new row was inserted, ``False`` when
+        an existing row was updated *or* when the supplied ``org_id``
+        doesn't match the existing row (PG silently no-ops; we mirror
+        that). The vec0 companion is upserted in the same transaction
+        whether we inserted or updated; ``None`` embeddings yield no
+        ``memory_vectors`` row, matching PG's NULL-embedding shape.
+
+        Translation notes:
+        * PG returns ``(xmax = 0) AS inserted`` from the upsert to detect
+          the insert vs update case. SQLite's ``ON CONFLICT (id) DO UPDATE``
+          doesn't expose that — we resolve it by checking up-front whether
+          the row exists, then doing the upsert.
+        * Org-guard: if a row with this id exists in another org, we
+          silently no-op (the update WHERE filters by org) — same as PG.
+        """
+        encoded_tags = json.dumps(list(tags))
+        encoded_meta = json.dumps(dict(meta))
+        safe_context = context if context is not None else ""
+        expires_iso = expires_at.isoformat() if expires_at is not None else None
+        embedding_repr = repr(list(embedding)) if embedding is not None else None
+
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT id, org_id, rowid FROM memories WHERE id = ?",
+                (memory_id,),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing is None:
+                # Pure insert: write the base row, then the vec0 companion
+                # if an embedding was supplied.
+                cursor = await tx.execute(
+                    """
+                    INSERT INTO memories
+                        (id, org_id, content, context, tags, confidence,
+                         source, project, created_at, updated_at, expires_at,
+                         upvotes, downvotes, meta)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'),
+                            datetime('now'), ?, ?, ?, ?)
+                    """,
+                    (
+                        memory_id,
+                        org_id,
+                        content,
+                        safe_context,
+                        encoded_tags,
+                        confidence,
+                        source,
+                        project,
+                        expires_iso,
+                        upvotes,
+                        downvotes,
+                        encoded_meta,
+                    ),
+                )
+                rowid = cursor.lastrowid
+                await cursor.close()
+                if embedding_repr is not None:
+                    await tx.execute(
+                        "INSERT INTO memory_vectors(memory_rowid, embedding) "
+                        "VALUES (?, ?)",
+                        (rowid, embedding_repr),
+                    )
+                return True
+            # Existing row: silent no-op if the supplied org_id mismatches.
+            if existing["org_id"] != org_id:
+                return False
+            # Otherwise, update in place (same id, same org).
+            cursor = await tx.execute(
+                """
+                UPDATE memories SET
+                    content = ?,
+                    context = ?,
+                    tags = ?,
+                    confidence = ?,
+                    source = ?,
+                    project = ?,
+                    updated_at = datetime('now'),
+                    expires_at = ?,
+                    upvotes = ?,
+                    downvotes = ?,
+                    meta = ?
+                WHERE id = ? AND org_id = ?
+                """,
+                (
+                    content,
+                    safe_context,
+                    encoded_tags,
+                    confidence,
+                    source,
+                    project,
+                    expires_iso,
+                    upvotes,
+                    downvotes,
+                    encoded_meta,
+                    memory_id,
+                    org_id,
+                ),
+            )
+            await cursor.close()
+            rowid = existing["rowid"]
+            # Refresh the vec0 companion to match the new embedding (if any).
+            await tx.execute(
+                "DELETE FROM memory_vectors WHERE memory_rowid = ?",
+                (rowid,),
+            )
+            if embedding_repr is not None:
+                await tx.execute(
+                    "INSERT INTO memory_vectors(memory_rowid, embedding) "
+                    "VALUES (?, ?)",
+                    (rowid, embedding_repr),
+                )
+            return False
+
+    async def import_extracted_memory(
+        self,
+        *,
+        memory_id: str,
+        org_id: str,
+        content: str,
+        context: str,
+        tags: "Sequence[str]",
+        source: str,
+        meta: "Mapping[str, Any]",
+        confidence: float,
+    ) -> bool:
+        """INSERT … ON CONFLICT (id) DO NOTHING; returns True if inserted.
+
+        Used by the conversation-extraction pipeline to deduplicate by
+        caller-supplied ID. PG version does not include an embedding
+        column (it stays NULL); we mirror by inserting the base row only,
+        no vec0 companion. Subsequent ``upsert_memory_with_embedding``
+        from the embed-and-store pipeline will fill in the vec0 row.
+        """
+        encoded_tags = json.dumps(list(tags))
+        encoded_meta = json.dumps(dict(meta))
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO memories
+                    (id, org_id, content, context, tags, source, meta,
+                     confidence, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                ON CONFLICT (id) DO NOTHING
+                """,
+                (
+                    memory_id,
+                    org_id,
+                    content,
+                    context,
+                    encoded_tags,
+                    source,
+                    encoded_meta,
+                    confidence,
+                ),
+            )
+            inserted = cursor.rowcount == 1
+            await cursor.close()
+            await conn.commit()
+        return inserted
 
     async def vote_memory(
         self,
