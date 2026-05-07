@@ -33,7 +33,7 @@ pytest.importorskip("aiosqlite")
 pytest.importorskip("sqlite_vec")
 
 from lore.cli.commands import dream as dream_cli
-from lore.setup import LORE_DREAM_TRIGGER_HOOK_SCRIPT
+from lore.setup import LORE_DREAM_TRIGGER_HOOK_SCRIPT, _render_ensure_server_bash
 
 # DreamOps contract tests + service-layer eligibility round-trip live in
 # tests/persistence/test_contract_dreams.py so they get the parametrized
@@ -349,7 +349,9 @@ class TestCmdDreamApply:
 
 
 def _render_dream_hook() -> str:
-    return LORE_DREAM_TRIGGER_HOOK_SCRIPT.format()
+    return LORE_DREAM_TRIGGER_HOOK_SCRIPT.format(
+        ensure_server_bash=_render_ensure_server_bash(),
+    )
 
 
 class TestDreamTriggerHook:
