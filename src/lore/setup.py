@@ -282,6 +282,24 @@ fi
 
 # ── Paths ──────────────────────────────────────────────────────────
 
+def _read_solo_key() -> Optional[str]:
+    """Return the auto-bootstrapped key written by Phase 3J at ``~/.lore/key.txt``,
+    or None if the file is missing/empty.
+
+    Used as a final fallback by ``setup_*`` so users running ``lore setup
+    claude-code`` after ``lore serve`` once don't have to pass ``--api-key``
+    or set ``LORE_API_KEY`` manually.
+    """
+    key_path = Path.home() / ".lore" / "key.txt"
+    if not key_path.exists():
+        return None
+    try:
+        key = key_path.read_text().strip()
+        return key or None
+    except OSError:
+        return None
+
+
 def _claude_hooks_dir() -> Path:
     return Path.home() / ".claude" / "hooks"
 
@@ -477,7 +495,12 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     hook_path = _claude_hook_path()
-    api_key_val = api_key or os.environ.get("LORE_API_KEY", "")
+    api_key_val = api_key or os.environ.get("LORE_API_KEY") or _read_solo_key()
+    if not api_key_val:
+        print(
+            "  WARNING: no API key. Pass --api-key, set LORE_API_KEY, or run "
+            "`lore serve` once to auto-bootstrap ~/.lore/key.txt."
+        )
 
     # Write hook script
     script = CLAUDE_CODE_HOOK_SCRIPT.format(server_url=server_url, api_key=api_key_val)
@@ -536,7 +559,7 @@ def setup_openclaw(server_url: str = "http://localhost:8765", api_key: str | Non
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     hook_path = _openclaw_hook_path()
-    api_key_val = api_key or os.environ.get("LORE_API_KEY", "")
+    api_key_val = api_key or os.environ.get("LORE_API_KEY") or _read_solo_key() or ""
 
     script = OPENCLAW_HOOK_SCRIPT.format(server_url=server_url, api_key=api_key_val)
     hook_path.write_text(script)
@@ -551,7 +574,7 @@ def setup_cursor(server_url: str = "http://localhost:8765", api_key: str | None 
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     hook_path = _cursor_hook_path()
-    api_key_val = api_key or os.environ.get("LORE_API_KEY", "")
+    api_key_val = api_key or os.environ.get("LORE_API_KEY") or _read_solo_key() or ""
 
     # Write hook script
     script = CURSOR_HOOK_SCRIPT.format(server_url=server_url, api_key=api_key_val)
@@ -592,7 +615,7 @@ def setup_codex(server_url: str = "http://localhost:8765", api_key: str | None =
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     hook_path = _codex_hook_path()
-    api_key_val = api_key or os.environ.get("LORE_API_KEY", "")
+    api_key_val = api_key or os.environ.get("LORE_API_KEY") or _read_solo_key() or ""
 
     # Write hook script
     script = CODEX_HOOK_SCRIPT.format(server_url=server_url, api_key=api_key_val)
