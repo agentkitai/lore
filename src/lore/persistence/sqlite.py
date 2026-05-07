@@ -46,6 +46,8 @@ from lore.persistence.types import (
     NewRecommendationFeedback,
     NewRetentionPolicy,
     NewRetrievalEvent,
+    NewSloAlert,
+    NewSloDefinition,
     NewWorkspace,
     ProfilePatch,
     RecallParams,
@@ -54,6 +56,7 @@ from lore.persistence.types import (
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
+    SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
@@ -63,6 +66,8 @@ from lore.persistence.types import (
     StoredProfile,
     StoredRecommendationConfig,
     StoredRetentionPolicy,
+    StoredSloAlert,
+    StoredSloDefinition,
     StoredSnapshotMetadata,
     StoredWorkspace,
     TimeseriesPoint,
@@ -471,6 +476,59 @@ def _row_to_drill_result(row) -> StoredDrillResult:
         memories_restored=row["memories_restored"],
         status=row["status"],
         error=row["error"],
+        created_at=_parse_iso(row["created_at"]),
+    )
+
+
+def _row_to_slo_definition(row) -> StoredSloDefinition:
+    """Translate a SQLite ``slo_definitions`` row to ``StoredSloDefinition``.
+
+    Mirrors ``lore.persistence.postgres._row_to_slo_definition`` but parses
+    the JSON-encoded ``alert_channels`` TEXT column and INTEGER 0/1 booleans.
+    """
+    ac_raw = row["alert_channels"]
+    if isinstance(ac_raw, str):
+        ac = json.loads(ac_raw) if ac_raw else []
+    elif ac_raw is None:
+        ac = []
+    else:
+        ac = ac_raw
+    return StoredSloDefinition(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        metric=row["metric"],
+        operator=row["operator"],
+        threshold=float(row["threshold"]),
+        window_minutes=int(row["window_minutes"]),
+        enabled=bool(row["enabled"]),
+        alert_channels=tuple(ac or ()),
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_slo_alert(row) -> StoredSloAlert:
+    """Translate a SQLite ``slo_alerts`` row to ``StoredSloAlert``.
+
+    Mirrors ``lore.persistence.postgres._row_to_slo_alert`` but parses
+    the JSON-encoded ``dispatched_to`` TEXT column.
+    """
+    dt_raw = row["dispatched_to"]
+    if isinstance(dt_raw, str):
+        dt = json.loads(dt_raw) if dt_raw else []
+    elif dt_raw is None:
+        dt = []
+    else:
+        dt = dt_raw
+    return StoredSloAlert(
+        id=int(row["id"]),
+        org_id=row["org_id"],
+        slo_id=row["slo_id"],
+        metric_value=float(row["metric_value"]),
+        threshold=float(row["threshold"]),
+        status=row["status"],
+        dispatched_to=tuple(dt or ()),
         created_at=_parse_iso(row["created_at"]),
     )
 
@@ -3246,6 +3304,240 @@ class SqliteStore:
                 row = await cur.fetchone()
         return _row_to_drill_result(row) if row else None
 
+    # ── SloOps (Phase 3H) ─────────────────────────────────────────────
+
+    _SLO_DEFINITION_COLS = (
+        "id, org_id, name, metric, operator, threshold, "
+        "window_minutes, enabled, alert_channels, created_at, updated_at"
+    )
+
+    async def list_slo_definitions(
+        self, org_id: Optional[str] = None
+    ) -> Sequence[StoredSloDefinition]:
+        """List SLO definitions; if ``org_id`` is None, returns all rows.
+
+        Mirrors ``PostgresStore.list_slo_definitions`` — preserves the
+        multi-tenancy quirk where ``org_id=None`` skips the WHERE clause.
+        """
+        async with self._acquire() as conn:
+            if org_id is not None:
+                async with conn.execute(
+                    f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions "
+                    "WHERE org_id = ? ORDER BY created_at DESC",
+                    (org_id,),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with conn.execute(
+                    f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions "
+                    "ORDER BY created_at DESC"
+                ) as cur:
+                    rows = await cur.fetchall()
+        return tuple(_row_to_slo_definition(r) for r in rows)
+
+    async def get_slo_definition(
+        self, slo_id: str, org_id: str
+    ) -> Optional[StoredSloDefinition]:
+        """Return an SLO definition scoped to (id, org_id), or None.
+
+        Mirrors ``PostgresStore.get_slo_definition``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions "
+                "WHERE id = ? AND org_id = ?",
+                (slo_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_slo_definition(row) if row else None
+
+    async def create_slo_definition(
+        self, slo: NewSloDefinition
+    ) -> StoredSloDefinition:
+        """Insert a new SLO definition; returns the freshly stored row.
+
+        Mirrors ``PostgresStore.create_slo_definition``: caller-side
+        ``slo_<ULID>`` id; ``alert_channels`` JSON-encoded TEXT.
+        """
+        slo_id = f"slo_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO slo_definitions
+                    (id, org_id, name, metric, operator, threshold,
+                     window_minutes, enabled, alert_channels)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    slo_id,
+                    slo.org_id,
+                    slo.name,
+                    slo.metric,
+                    slo.operator,
+                    slo.threshold,
+                    slo.window_minutes,
+                    1 if slo.enabled else 0,
+                    json.dumps(list(slo.alert_channels)),
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions WHERE id = ?",
+                (slo_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("create_slo_definition: row vanished after insert")
+        return _row_to_slo_definition(row)
+
+    async def update_slo_definition(
+        self,
+        slo_id: str,
+        org_id: str,
+        patch: SloDefinitionPatch,
+    ) -> Optional[StoredSloDefinition]:
+        """Apply a patch and return the updated row, or None if absent.
+
+        Mirrors ``PostgresStore.update_slo_definition``: dynamic SET
+        clause; empty patches raise ``ValueError``.
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+
+        if patch.name is not None:
+            sets.append("name = ?")
+            params.append(patch.name)
+        if patch.metric is not None:
+            sets.append("metric = ?")
+            params.append(patch.metric)
+        if patch.operator is not None:
+            sets.append("operator = ?")
+            params.append(patch.operator)
+        if patch.threshold is not None:
+            sets.append("threshold = ?")
+            params.append(patch.threshold)
+        if patch.window_minutes is not None:
+            sets.append("window_minutes = ?")
+            params.append(patch.window_minutes)
+        if patch.enabled is not None:
+            sets.append("enabled = ?")
+            params.append(1 if patch.enabled else 0)
+        if patch.alert_channels is not None:
+            sets.append("alert_channels = ?")
+            params.append(json.dumps(list(patch.alert_channels)))
+
+        if not sets:
+            raise ValueError(
+                "update_slo_definition called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sets.append("updated_at = datetime('now')")
+        params.append(slo_id)
+        params.append(org_id)
+        sql = (
+            "UPDATE slo_definitions "
+            f"SET {', '.join(sets)} "
+            "WHERE id = ? AND org_id = ?"
+        )
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql, params)
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions "
+                "WHERE id = ? AND org_id = ?",
+                (slo_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_slo_definition(row) if row else None
+
+    async def delete_slo_definition(self, slo_id: str, org_id: str) -> bool:
+        """Delete an SLO definition scoped to (id, org_id); returns True if removed.
+
+        Mirrors ``PostgresStore.delete_slo_definition``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM slo_definitions WHERE id = ? AND org_id = ?",
+                (slo_id, org_id),
+            )
+            deleted = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return bool(deleted)
+
+    async def list_slo_alerts(
+        self,
+        *,
+        slo_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> Sequence[StoredSloAlert]:
+        """List SLO alerts (optionally filtered by slo_id), newest first.
+
+        Mirrors ``PostgresStore.list_slo_alerts``.
+        """
+        async with self._acquire() as conn:
+            if slo_id is not None:
+                async with conn.execute(
+                    "SELECT a.id, a.org_id, a.slo_id, a.metric_value, a.threshold, "
+                    "a.status, a.dispatched_to, a.created_at "
+                    "FROM slo_alerts a "
+                    "WHERE a.slo_id = ? "
+                    "ORDER BY a.created_at DESC "
+                    "LIMIT ?",
+                    (slo_id, limit),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with conn.execute(
+                    "SELECT a.id, a.org_id, a.slo_id, a.metric_value, a.threshold, "
+                    "a.status, a.dispatched_to, a.created_at "
+                    "FROM slo_alerts a "
+                    "ORDER BY a.created_at DESC "
+                    "LIMIT ?",
+                    (limit,),
+                ) as cur:
+                    rows = await cur.fetchall()
+        return tuple(_row_to_slo_alert(r) for r in rows)
+
+    async def record_slo_alert(self, alert: NewSloAlert) -> StoredSloAlert:
+        """Insert an SLO alert; returns the freshly stored row.
+
+        Mirrors ``PostgresStore.record_slo_alert``: ``slo_alerts.id`` is
+        AUTOINCREMENT (BIGSERIAL on PG); ``dispatched_to`` JSON-encoded TEXT.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO slo_alerts
+                    (org_id, slo_id, metric_value, threshold, status, dispatched_to)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    alert.org_id,
+                    alert.slo_id,
+                    alert.metric_value,
+                    alert.threshold,
+                    alert.status,
+                    json.dumps(list(alert.dispatched_to)),
+                ),
+            )
+            new_id = cursor.lastrowid
+            await cursor.close()
+            await conn.commit()
+            async with conn.execute(
+                "SELECT id, org_id, slo_id, metric_value, threshold, status, "
+                "dispatched_to, created_at FROM slo_alerts WHERE id = ?",
+                (new_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("record_slo_alert: row vanished after insert")
+        return _row_to_slo_alert(row)
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -3305,10 +3597,7 @@ _STUBBED_METHODS: Sequence[str] = (
     # ConversationOps — implemented in Phase 3G.
     # AuditOps — implemented in Phase 3G.
     # RetentionOps — implemented in Phase 3H.
-    # SloOps
-    "list_slo_definitions", "get_slo_definition",
-    "create_slo_definition", "update_slo_definition",
-    "delete_slo_definition", "list_slo_alerts", "record_slo_alert",
+    # SloOps — implemented in Phase 3H.
     # SharingOps
     "get_or_init_sharing_config", "update_sharing_config",
     "list_agent_sharing_configs", "upsert_agent_sharing_config",

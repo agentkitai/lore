@@ -19,6 +19,7 @@ from lore.persistence import (
     StoredSloDefinition,
 )
 from lore.persistence.types import NewRetrievalEvent
+from tests.persistence.conftest import _is_sqlite
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -40,23 +41,45 @@ async def _insert_slo(
 
     slo_id = f"slo_{ULID()}"
     ac = alert_channels or []
-    await store._conn.execute(
-        """
-        INSERT INTO slo_definitions
-            (id, org_id, name, metric, operator, threshold,
-             window_minutes, enabled, alert_channels)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
-        """,
-        slo_id,
-        org_id,
-        name,
-        metric,
-        operator,
-        threshold,
-        window_minutes,
-        enabled,
-        json.dumps(ac),
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(
+            """
+            INSERT INTO slo_definitions
+                (id, org_id, name, metric, operator, threshold,
+                 window_minutes, enabled, alert_channels)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                slo_id,
+                org_id,
+                name,
+                metric,
+                operator,
+                threshold,
+                window_minutes,
+                1 if enabled else 0,
+                json.dumps(ac),
+            ),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            """
+            INSERT INTO slo_definitions
+                (id, org_id, name, metric, operator, threshold,
+                 window_minutes, enabled, alert_channels)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+            """,
+            slo_id,
+            org_id,
+            name,
+            metric,
+            operator,
+            threshold,
+            window_minutes,
+            enabled,
+            json.dumps(ac),
+        )
     return slo_id
 
 
@@ -230,6 +253,26 @@ async def _insert_alert(
 ) -> int:
     """Insert a slo_alerts row via raw SQL and return its id."""
     dt = dispatched_to or []
+    if _is_sqlite(store):
+        cursor = await store._conn.execute(
+            """
+            INSERT INTO slo_alerts
+                (org_id, slo_id, metric_value, threshold, status, dispatched_to)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                org_id,
+                slo_id,
+                metric_value,
+                threshold,
+                status,
+                json.dumps(dt),
+            ),
+        )
+        new_id = cursor.lastrowid
+        await cursor.close()
+        await store._conn.commit()
+        return int(new_id)
     row = await store._conn.fetchrow(
         """
         INSERT INTO slo_alerts
