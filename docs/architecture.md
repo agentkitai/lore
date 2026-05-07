@@ -326,7 +326,7 @@ Lore's server-side persistence is defined by the `Store` protocol in
 Implementations:
 
 - `PostgresStore` — asyncpg + pgvector. Production default. Implements MemoryOps, GraphOps, PolicyOps, WorkspaceOps, AuthOps, AnalyticsOps, RecommendationOps, ConversationOps, AuditOps, RetentionOps, SloOps, and SharingOps.
-- `SqliteStore` (Phase 3A skeleton + 3B vector layer + 3C–3H MemoryOps + AnalyticsOps + PolicyOps + WorkspaceOps + AuthOps + RecommendationOps + ConversationOps + AuditOps + RetentionOps + SloOps + SharingOps complete; **only GraphOps + bootstrap remain**) — aiosqlite + sqlite-vec. For solo / embedded use. Currently: lifecycle (open/close/`_acquire`) + WAL pragmas (`journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`, `foreign_keys=ON`) + `sqlite-vec` extension load + migration runner reading `migrations_sqlite/` + `memory_vectors` vec0 virtual table for embeddings (created via `_init_vec_tables` after migrations apply, `distance_metric=cosine` so vec0's `distance` column matches PG's `embedding <=> $vec` cosine-distance operator; `IF NOT EXISTS` so idempotent across restarts) + `transaction()` async context manager (`BEGIN IMMEDIATE … COMMIT/ROLLBACK`) for the `memories` ⇆ `memory_vectors` invariant + the **11 implemented Store slices** (everything except GraphOps). GraphOps remains a `NotImplementedError` stub pending Phase 3I. Schema lives in `migrations_sqlite/` (17 files mirroring `migrations/`); a CI parity guard (`scripts/check_migrations_parity.py`) rejects PRs that add a Postgres migration without a SQLite sibling.
+- `SqliteStore` (Phase 3 complete — full Store-protocol parity with PostgresStore) — aiosqlite + sqlite-vec. For solo / embedded use. Lifecycle (open/close/`_acquire`) + WAL pragmas (`journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`, `foreign_keys=ON`) + `sqlite-vec` extension load + migration runner reading `migrations_sqlite/` + `memory_vectors` vec0 virtual table for embeddings (created via `_init_vec_tables` after migrations apply, `distance_metric=cosine` so vec0's `distance` column matches PG's `embedding <=> $vec` cosine-distance operator; `IF NOT EXISTS` so idempotent across restarts) + `transaction()` async context manager (`BEGIN IMMEDIATE … COMMIT/ROLLBACK`) for the `memories` ⇆ `memory_vectors` invariant + first-open auto-bootstrap of the `solo` org and a fresh API key + typed-exception parity (`StoreCorruption`, `EmbeddingDimMismatch`, `StoreBusyError`, etc.). Schema lives in `migrations_sqlite/` (17 files mirroring `migrations/`); a CI parity guard (`scripts/check_migrations_parity.py`) rejects PRs that add a Postgres migration without a SQLite sibling.
 
 The protocol is grown slice-by-slice. Phase 1A shipped `MemoryOps`; Phase 1B `GraphOps`; Phase 1C `PolicyOps`; Phase 1D `WorkspaceOps` + `AuthOps`; Phase 1E `AnalyticsOps`; Phase 1F `RecommendationOps`; Phase 1G `ConversationOps`; Phase 1H extended MemoryOps with lessons methods; Phase 1I added `AuditOps` and another AnalyticsOps extension for the dashboard bundle; Phase 1J added `RetentionOps`; Phase 1K added `SloOps` and another AnalyticsOps extension for SLO metric computation; Phase 1L added `SharingOps`; Phase 1M extended AuthOps for middleware. **Phase 1 route + middleware migration is complete**; Phase 3 (SqliteStore) is in flight.
 
@@ -338,3 +338,21 @@ Routes call services; services call the Store. Contract test suite at `tests/per
 3. Backend chosen by `database_url` URL scheme. `LORE_BACKEND` env var is just a shortcut.
 
 These invariants are guarded by `scripts/check_routes_no_sql.py` for the 22 migrated files (21 route files + the `auth.py` middleware). Phase 1M added `auth.py`. Every component in the request-handling path is now SQL-free; SQL is exclusive to Store implementations. The guard rejects reintroduction of inline SQL or `get_pool()` in any migrated file.
+
+### `lore migrate` — backend-portability tool (Phase 5)
+
+`src/lore/cli/commands/migrate.py` is the one place in the codebase that legitimately uses raw SQL outside `lore.persistence.{postgres,sqlite}`. Its purpose is bidirectional data migration between any two Store backends (`postgresql://` ⇄ `sqlite://`) while preserving server-generated IDs and timestamps bit-exact — which is why it can't go through the `Store.create_*` methods (those generate fresh ULIDs).
+
+Surface: `lore migrate --from <url> --to <url> [--re-embed] [--continue] [--dry-run] [--batch-size N]`. Default batch size 500.
+
+The migrate path:
+
+1. Opens both endpoints via `make_store()` (so target migrations apply idempotently first), then opens raw `asyncpg`/`aiosqlite` connections for the actual copy.
+2. Compares `schema_migrations` versions on both sides — if mismatched, refuses with exit code 3 before any writes.
+3. Compares embedding dimensions (probing one row of each side's embedding column / vec0 table) — if mismatched without `--re-embed`, refuses with exit code 4.
+4. Streams 26 tables in FK-dependency order. The `memories` ⇆ `memory_vectors` pair is special-cased on the SQLite target side: each batch's base-row INSERT and its vec0 companion land inside one `BEGIN IMMEDIATE`. PG-side reads pull the vector via `embedding::text`; SQLite-side reads use `vec_to_json(v.embedding)`.
+5. Emits `INSERT OR IGNORE` (SQLite) / `ON CONFLICT DO NOTHING` (PG) so the bootstrap-row collision (the `solo` org auto-created by Phase 3J) doesn't error and `--continue` re-runs are no-ops on already-copied rows.
+6. Writes per-table progress to `~/.lore/migrate-state.json` (keyed by SHA-256(source_url+target_url)). On `--continue`, tables whose target row count meets-or-exceeds the recorded progress are skipped.
+7. Validates row counts after the copy completes; refuses (exit code 6) if the target has *fewer* rows than the source for any table.
+
+After Phase 5, the SQLite solo-mode design (Phases 3 + 4 + 5 of `docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md`) is functionally complete: `pip install lore-sdk[solo]` + `lore serve` against a SQLite file, `AsyncLore` embedded in another Python process, and one-command migration to/from a shared Postgres deployment all work end-to-end.
