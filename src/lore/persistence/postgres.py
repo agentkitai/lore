@@ -76,6 +76,7 @@ from lore.persistence.types import (
     StoredSloAlert,
     StoredSloDefinition,
     StoredSnapshotMetadata,
+    StoredSupersession,
     StoredWorkspace,
     TimelineBucketRow,
     TimeseriesPoint,
@@ -3609,6 +3610,183 @@ class PostgresStore:
                 since,
             )
         return int(row["n"]) if row and row["n"] is not None else 0
+
+    # ── SupersessionOps (Phase 6F) ───────────────────────────────────
+
+    async def record_supersession(
+        self,
+        memory_id: str,
+        *,
+        superseded_by: Optional[str],
+        reason: Optional[str],
+        agent: str = "auto",
+    ) -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO memory_supersessions
+                    (memory_id, superseded_by, reason, agent)
+                VALUES ($1, $2, $3, $4)
+                """,
+                memory_id,
+                superseded_by,
+                reason,
+                agent,
+            )
+
+    async def is_superseded(
+        self,
+        memory_id: str,
+        *,
+        at: Optional[datetime] = None,
+    ) -> bool:
+        async with self._acquire() as conn:
+            if at is None:
+                row = await conn.fetchrow(
+                    """
+                    SELECT superseded_by
+                    FROM memory_supersessions
+                    WHERE memory_id = $1
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    memory_id,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT superseded_by
+                    FROM memory_supersessions
+                    WHERE memory_id = $1
+                      AND ts <= $2
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    memory_id,
+                    at,
+                )
+        if row is None:
+            return False
+        return row["superseded_by"] is not None
+
+    async def are_superseded(
+        self,
+        memory_ids: "set[str]",
+        *,
+        at: Optional[datetime] = None,
+    ) -> "set[str]":
+        if not memory_ids:
+            return set()
+        ids = list(memory_ids)
+        async with self._acquire() as conn:
+            if at is None:
+                rows = await conn.fetch(
+                    """
+                    SELECT memory_id FROM (
+                        SELECT DISTINCT ON (memory_id)
+                               memory_id, superseded_by
+                        FROM memory_supersessions
+                        WHERE memory_id = ANY($1)
+                        ORDER BY memory_id, ts DESC, id DESC
+                    ) latest
+                    WHERE superseded_by IS NOT NULL
+                    """,
+                    ids,
+                )
+            else:
+                rows = await conn.fetch(
+                    """
+                    SELECT memory_id FROM (
+                        SELECT DISTINCT ON (memory_id)
+                               memory_id, superseded_by
+                        FROM memory_supersessions
+                        WHERE memory_id = ANY($1)
+                          AND ts <= $2
+                        ORDER BY memory_id, ts DESC, id DESC
+                    ) latest
+                    WHERE superseded_by IS NOT NULL
+                    """,
+                    ids,
+                    at,
+                )
+        return {r["memory_id"] for r in rows}
+
+    async def get_supersession_chain(
+        self,
+        memory_id: str,
+    ) -> Sequence[StoredSupersession]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, memory_id, superseded_by, reason, ts, agent
+                FROM memory_supersessions
+                WHERE memory_id = $1
+                ORDER BY ts ASC, id ASC
+                """,
+                memory_id,
+            )
+        return [
+            StoredSupersession(
+                id=int(r["id"]),
+                memory_id=r["memory_id"],
+                superseded_by=r["superseded_by"],
+                reason=r["reason"],
+                ts=r["ts"],
+                agent=r["agent"],
+            )
+            for r in rows
+        ]
+
+    async def list_memories_at_time(
+        self,
+        org_id: str,
+        *,
+        at: datetime,
+        entity_name: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        # Filter (a) memories created on or before `at`, (b) excluding any
+        # whose latest supersession event ≤ `at` has superseded_by IS NOT NULL.
+        params: list[Any] = [org_id, at]
+        joins = ""
+        where = ["m.org_id = $1", "m.created_at <= $2"]
+        if entity_name is not None:
+            params.append(entity_name)
+            joins = """
+                JOIN entity_mentions em ON em.memory_id = m.id
+                JOIN entities e ON e.id = em.entity_id
+            """
+            where.append(f"e.name = ${len(params)}")
+        if type_filter is not None:
+            params.append(type_filter)
+            where.append(f"m.meta->>'type' = ${len(params)}")
+        params.append(limit)
+        sql = f"""
+            SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,
+                            m.confidence, m.source, m.project,
+                            m.created_at, m.updated_at, m.expires_at,
+                            m.upvotes, m.downvotes, m.meta,
+                            m.importance_score, m.access_count, m.last_accessed_at
+            FROM memories m
+            {joins}
+            WHERE {' AND '.join(where)}
+              AND m.id NOT IN (
+                  SELECT memory_id FROM (
+                      SELECT DISTINCT ON (memory_id)
+                             memory_id, superseded_by
+                      FROM memory_supersessions
+                      WHERE ts <= $2
+                      ORDER BY memory_id, ts DESC, id DESC
+                  ) latest
+                  WHERE superseded_by IS NOT NULL
+              )
+            ORDER BY m.created_at DESC
+            LIMIT ${len(params)}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_stored(r) for r in rows]
 
 
 class _BoundConn:

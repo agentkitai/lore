@@ -91,6 +91,7 @@ from lore.persistence.types import (
     StoredSloAlert,
     StoredSloDefinition,
     StoredSnapshotMetadata,
+    StoredSupersession,
     StoredWorkspace,
     TimelineBucketRow,
     TimeseriesPoint,
@@ -5469,6 +5470,202 @@ class SqliteStore:
             ) as cur:
                 row = await cur.fetchone()
         return int(row["n"]) if row and row["n"] is not None else 0
+
+    # ── SupersessionOps (Phase 6F) ───────────────────────────────────
+
+    @staticmethod
+    def _to_iso(at: datetime) -> str:
+        """Format a datetime as an SQLite-compatible ISO-8601 string.
+
+        SQLite's column DEFAULT ``datetime('now')`` produces UTC with the
+        ``"YYYY-MM-DD HH:MM:SS"`` shape; we normalize callers to that so
+        lexicographic compares on the TEXT column work correctly.
+        """
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+    async def record_supersession(
+        self,
+        memory_id: str,
+        *,
+        superseded_by: Optional[str],
+        reason: Optional[str],
+        agent: str = "auto",
+    ) -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO memory_supersessions
+                    (memory_id, superseded_by, reason, agent)
+                VALUES (?, ?, ?, ?)
+                """,
+                (memory_id, superseded_by, reason, agent),
+            )
+            await conn.commit()
+
+    async def is_superseded(
+        self,
+        memory_id: str,
+        *,
+        at: Optional[datetime] = None,
+    ) -> bool:
+        async with self._acquire() as conn:
+            if at is None:
+                async with conn.execute(
+                    """
+                    SELECT superseded_by
+                    FROM memory_supersessions
+                    WHERE memory_id = ?
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (memory_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+            else:
+                async with conn.execute(
+                    """
+                    SELECT superseded_by
+                    FROM memory_supersessions
+                    WHERE memory_id = ?
+                      AND ts <= ?
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (memory_id, self._to_iso(at)),
+                ) as cur:
+                    row = await cur.fetchone()
+        if row is None:
+            return False
+        return row["superseded_by"] is not None
+
+    async def are_superseded(
+        self,
+        memory_ids: "set[str]",
+        *,
+        at: Optional[datetime] = None,
+    ) -> "set[str]":
+        if not memory_ids:
+            return set()
+        ids = list(memory_ids)
+        placeholders = ",".join("?" * len(ids))
+        # Use ROW_NUMBER() OVER (PARTITION BY memory_id ORDER BY ts DESC) to
+        # pick the latest row per memory_id; SQLite ≥ 3.25 supports window
+        # functions and we already require modern SQLite for FTS5/vec.
+        if at is None:
+            sql = (
+                "SELECT memory_id FROM ("
+                "  SELECT memory_id, superseded_by,"
+                "         ROW_NUMBER() OVER ("
+                "             PARTITION BY memory_id ORDER BY ts DESC, id DESC"
+                "         ) AS rn"
+                "  FROM memory_supersessions"
+                f"  WHERE memory_id IN ({placeholders})"
+                ") latest "
+                "WHERE rn = 1 AND superseded_by IS NOT NULL"
+            )
+            params: tuple = tuple(ids)
+        else:
+            sql = (
+                "SELECT memory_id FROM ("
+                "  SELECT memory_id, superseded_by,"
+                "         ROW_NUMBER() OVER ("
+                "             PARTITION BY memory_id ORDER BY ts DESC, id DESC"
+                "         ) AS rn"
+                "  FROM memory_supersessions"
+                f"  WHERE memory_id IN ({placeholders})"
+                "    AND ts <= ?"
+                ") latest "
+                "WHERE rn = 1 AND superseded_by IS NOT NULL"
+            )
+            params = tuple(ids) + (self._to_iso(at),)
+        async with self._acquire() as conn:
+            async with conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+        return {r["memory_id"] for r in rows}
+
+    async def get_supersession_chain(
+        self,
+        memory_id: str,
+    ) -> Sequence[StoredSupersession]:
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, memory_id, superseded_by, reason, ts, agent
+                FROM memory_supersessions
+                WHERE memory_id = ?
+                ORDER BY ts ASC, id ASC
+                """,
+                (memory_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            StoredSupersession(
+                id=int(r["id"]),
+                memory_id=r["memory_id"],
+                superseded_by=r["superseded_by"],
+                reason=r["reason"],
+                ts=_parse_iso(r["ts"]),
+                agent=r["agent"],
+            )
+            for r in rows
+        ]
+
+    async def list_memories_at_time(
+        self,
+        org_id: str,
+        *,
+        at: datetime,
+        entity_name: Optional[str] = None,
+        type_filter: Optional[str] = None,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        at_iso = self._to_iso(at)
+        params: list[Any] = [org_id, at_iso]
+        joins = ""
+        where = ["m.org_id = ?", "m.created_at <= ?"]
+        if entity_name is not None:
+            params.append(entity_name)
+            joins = (
+                " JOIN entity_mentions em ON em.memory_id = m.id "
+                " JOIN entities e ON e.id = em.entity_id "
+            )
+            where.append("e.name = ?")
+        if type_filter is not None:
+            params.append(type_filter)
+            where.append("json_extract(m.meta, '$.type') = ?")
+        # The "not currently superseded as of `at`" subquery: latest row per
+        # memory_id (≤ at) with non-null superseded_by.
+        params.append(at_iso)
+        params.append(limit)
+        sql = f"""
+            SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,
+                            m.confidence, m.source, m.project,
+                            m.created_at, m.updated_at, m.expires_at,
+                            m.upvotes, m.downvotes, m.meta,
+                            m.importance_score, m.access_count, m.last_accessed_at
+            FROM memories m
+            {joins}
+            WHERE {' AND '.join(where)}
+              AND m.id NOT IN (
+                  SELECT memory_id FROM (
+                      SELECT memory_id, superseded_by,
+                             ROW_NUMBER() OVER (
+                                 PARTITION BY memory_id ORDER BY ts DESC, id DESC
+                             ) AS rn
+                      FROM memory_supersessions
+                      WHERE ts <= ?
+                  ) latest
+                  WHERE rn = 1 AND superseded_by IS NOT NULL
+              )
+            ORDER BY m.created_at DESC
+            LIMIT ?
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_memory(r) for r in rows]
 
 
 async def check_dangling_vectors(store: "SqliteStore") -> list[str]:
