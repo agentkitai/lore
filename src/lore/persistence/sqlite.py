@@ -3,8 +3,10 @@
 Phase 3A — foundation: lifecycle + WAL pragmas + sqlite-vec extension load
 + migration runner. Phase 3B — vec0 virtual table for embeddings + a
 transactional helper enforcing the `memories` ⇆ `memory_vectors` invariant
-in a single `BEGIN IMMEDIATE … COMMIT`. Per-method Store implementations
-land in 3C–3F; the protocol methods are still `NotImplementedError` stubs.
+in a single `BEGIN IMMEDIATE … COMMIT`. Phase 3C — first three MemoryOps
+methods (`insert_memory`, `get_memory`, `delete_memory`) wired through that
+transactional pair. Remaining MemoryOps + AnalyticsOps + the other six Store
+slices stay as `NotImplementedError` stubs pending 3D–3F.
 
 Spec: docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md
 """
@@ -12,18 +14,23 @@ Spec: docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md
 from __future__ import annotations
 
 import contextlib
+import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Sequence
 from urllib.parse import urlparse
+
+from ulid import ULID
 
 from lore.persistence.exceptions import (
     BackendUnavailableError,
     ConfigError,
     StoreError,
 )
+from lore.persistence.types import NewMemory, StoredMemory
 
 # Embedding dimension is fixed at 384 across the codebase
 # (see migrations/001_initial.sql and lore.embed defaults).
@@ -82,6 +89,56 @@ def _resolve_db_path(database_url: str) -> str:
     return raw
 
 
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    """Parse a SQLite TEXT timestamp into an aware UTC ``datetime``.
+
+    SQLite ``datetime('now')`` produces ``"YYYY-MM-DD HH:MM:SS"`` (space
+    separator, no timezone). ``datetime.fromisoformat`` handles both space
+    and ``T`` separators in 3.11+, but the result is naïve. We attach UTC
+    explicitly to mirror Postgres' ``TIMESTAMPTZ now()`` returning aware
+    UTC datetimes.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    dt = datetime.fromisoformat(value)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _row_to_memory(row) -> StoredMemory:
+    """Translate a SQLite ``memories`` row to ``StoredMemory``.
+
+    Mirrors ``lore.persistence.postgres._row_to_stored`` but parses TEXT-as-JSON
+    columns (``tags``, ``meta``) and ISO-8601 TEXT timestamps. ``aiosqlite.Row``
+    supports both index-by-column-name and ``dict(row)`` access.
+    """
+    tags_raw = row["tags"]
+    tags = json.loads(tags_raw) if isinstance(tags_raw, str) else (tags_raw or [])
+    meta_raw = row["meta"]
+    meta = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
+    raw_context = row["context"]
+    return StoredMemory(
+        id=row["id"],
+        org_id=row["org_id"],
+        content=row["content"],
+        context=raw_context if raw_context else None,
+        tags=tuple(tags or ()),
+        confidence=float(row["confidence"]) if row["confidence"] is not None else 0.5,
+        source=row["source"],
+        project=row["project"],
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
+        expires_at=_parse_iso(row["expires_at"]),
+        upvotes=row["upvotes"] or 0,
+        downvotes=row["downvotes"] or 0,
+        meta=dict(meta or {}),
+        importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
+        access_count=row["access_count"] or 0,
+        last_accessed_at=_parse_iso(row["last_accessed_at"]),
+    )
+
+
 class SqliteStore:
     """Store implementation backed by SQLite + sqlite-vec.
 
@@ -105,9 +162,20 @@ class SqliteStore:
                 "sqlite-vec is not installed. Install with: pip install lore-sdk[solo]"
             )
         self._db_path = db_path
-        self._conn = conn  # bound-connection mode (used by tests)
+        self._bound_conn = conn  # bound-connection mode (used by tests)
         self._owned_conn: Optional[Any] = None  # owned-by-store mode
         self._closed = False
+
+    @property
+    def _conn(self):
+        """Return the active connection (bound or owned).
+
+        Mirrors PostgresStore.from_connection's ``_conn`` attribute so contract
+        tests and other callers can use ``store._conn.execute(...)`` regardless
+        of whether the SqliteStore is bound to an externally-owned connection
+        or owns its own. Returns None if both are unset (closed store).
+        """
+        return self._bound_conn or self._owned_conn
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -127,7 +195,12 @@ class SqliteStore:
 
     @classmethod
     def from_connection(cls, conn) -> "SqliteStore":
-        """Bind to an externally-owned aiosqlite connection (used by tests)."""
+        """Bind to an externally-owned aiosqlite connection (used by tests).
+
+        The provided connection is exposed via ``store._conn`` (and through
+        ``_acquire()`` / ``transaction()``) for parity with PostgresStore's
+        bound-mode shape.
+        """
         return cls(db_path=":bound:", conn=conn)
 
     async def _open_connection(self, db_path: str):
@@ -254,7 +327,7 @@ class SqliteStore:
         Yields the connection so the caller can chain executes inside the
         transaction without re-acquiring it.
         """
-        conn = self._conn or self._owned_conn
+        conn = self._conn
         if conn is None:
             raise StoreError("SqliteStore connection is closed")
         await conn.execute("BEGIN IMMEDIATE")
@@ -273,7 +346,117 @@ class SqliteStore:
         SQLite is a single-process backend; we don't need a real pool. The
         same connection is re-used.
         """
-        return _SqliteConnCtx(self._conn or self._owned_conn)
+        return _SqliteConnCtx(self._conn)
+
+    # ── MemoryOps: insert, get, delete (Phase 3C) ─────────────────────
+
+    async def insert_memory(self, memory: "NewMemory") -> "StoredMemory":
+        """Insert a memory + its embedding inside a single transaction.
+
+        Mirrors ``PostgresStore.insert_memory``: generates an id, encodes
+        JSON columns, and returns the freshly inserted row as ``StoredMemory``.
+        The vec0 ``memory_vectors`` companion row is inserted in the same
+        transaction so the pair invariant holds — see Phase 3B's
+        ``transaction()`` helper.
+        """
+        memory_id = f"mem_{ULID()}"
+        async with self.transaction() as tx:
+            cursor = await tx.execute(
+                """
+                INSERT INTO memories
+                    (id, org_id, content, context, tags, confidence, source,
+                     project, expires_at, meta)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    memory_id,
+                    memory.org_id,
+                    memory.content,
+                    memory.context or "",  # NOT NULL in PG schema; mirror
+                    json.dumps(list(memory.tags)),
+                    memory.confidence,
+                    memory.source,
+                    memory.project,
+                    memory.expires_at.isoformat() if memory.expires_at else None,
+                    json.dumps(dict(memory.meta)),
+                ),
+            )
+            rowid = cursor.lastrowid
+            await cursor.close()
+
+            await tx.execute(
+                "INSERT INTO memory_vectors(memory_rowid, embedding) VALUES (?, ?)",
+                (rowid, repr(list(memory.embedding))),
+            )
+
+            async with tx.execute(
+                """
+                SELECT id, org_id, content, context, tags, confidence, source,
+                       project, created_at, updated_at, expires_at, upvotes,
+                       downvotes, meta, importance_score, access_count,
+                       last_accessed_at
+                FROM memories WHERE rowid = ?
+                """,
+                (rowid,),
+            ) as cur:
+                row = await cur.fetchone()
+
+        if row is None:  # pragma: no cover - defensive
+            raise StoreError(f"insert_memory: row {rowid} disappeared after insert")
+        return _row_to_memory(row)
+
+    async def get_memory(self, org_id: str, memory_id: str) -> Optional["StoredMemory"]:
+        """Fetch a memory by ``(id, org_id)``; excludes already-expired rows.
+
+        Mirrors PostgresStore: an expired row is invisible to ``get_memory``
+        even though it physically still lives in the table until the next
+        ``expire_memories`` sweep.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, org_id, content, context, tags, confidence, source,
+                       project, created_at, updated_at, expires_at, upvotes,
+                       downvotes, meta, importance_score, access_count,
+                       last_accessed_at
+                FROM memories
+                WHERE id = ?
+                  AND org_id = ?
+                  AND (expires_at IS NULL OR expires_at > ?)
+                """,
+                (memory_id, org_id, now_iso),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_memory(row) if row else None
+
+    async def delete_memory(self, org_id: str, memory_id: str) -> bool:
+        """Delete a memory and its companion vector inside one transaction.
+
+        The vec0 row is keyed by ``memory_vectors.memory_rowid`` which equals
+        the base table's rowid. We resolve the rowid up-front, then delete
+        the vector first followed by the base row (vec0 has no FK so order
+        is informational only — both succeed or both roll back).
+        """
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT rowid FROM memories WHERE id = ? AND org_id = ?",
+                (memory_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                return False
+            rowid = row["rowid"]
+            await tx.execute(
+                "DELETE FROM memory_vectors WHERE memory_rowid = ?", (rowid,)
+            )
+            cursor = await tx.execute(
+                "DELETE FROM memories WHERE id = ? AND org_id = ?",
+                (memory_id, org_id),
+            )
+            deleted = cursor.rowcount
+            await cursor.close()
+        return deleted == 1
 
 
 class _SqliteConnCtx:
@@ -312,30 +495,33 @@ def _stub(method_name: str):
 
 
 _STUBBED_METHODS: Sequence[str] = (
-    # MemoryOps
-    "insert_memory", "get_memory", "update_memory", "delete_memory",
-    "list_memories", "recall_memories", "expire_memories",
+    # MemoryOps — insert/get/delete are implemented in Phase 3C above; the
+    # remaining slots stay stubbed pending 3D+.
+    "update_memory",
+    "list_memories", "recall_by_embedding", "expire_memories",
     "bump_access_counts", "enrich_memory_meta", "vote_memory",
     "list_memories_paginated", "list_memories_with_embeddings",
     "upsert_memory_with_embedding", "import_extracted_memory",
     # GraphOps
-    "create_entity", "get_entity", "list_entities", "update_entity",
-    "delete_entity", "merge_entities", "search_entities",
-    "create_mention", "list_mentions_for_memory", "list_mentions_for_entity",
-    "create_relationship", "get_relationship", "list_relationships",
-    "list_pending_relationships", "approve_relationship",
-    "reject_relationship", "bulk_review_relationships",
-    "delete_relationship", "list_related_memories",
-    "graph_stats", "list_topics", "topic_memory_count",
-    "get_topic", "list_memories_for_topic", "search_text",
+    "get_entity", "get_entity_by_name", "list_entities", "upsert_entity",
+    "update_entity_counts", "delete_entity",
+    "get_mentions_for_memory", "get_mentions_for_entity", "save_mention",
+    "count_memories_for_entity",
+    "get_relationship", "get_active_relationship",
+    "list_relationships_for_entity", "save_relationship",
+    "update_relationship_status", "update_relationship_weight",
+    "expire_relationship", "list_pending_relationships",
+    "save_rejected_pattern", "query_relationships",
+    "get_graph_stats", "get_timeline_buckets", "get_memories_by_entities",
+    "search_memories_text",
     # PolicyOps
-    "list_profiles", "get_profile", "create_profile",
+    "get_profile", "get_profile_by_name", "list_profiles", "create_profile",
     "update_profile", "delete_profile", "resolve_profile_for_key",
-    "set_default_profile",
     # WorkspaceOps
-    "list_workspaces", "get_workspace", "get_workspace_by_slug",
-    "create_workspace", "update_workspace", "delete_workspace",
-    "list_workspace_members", "add_workspace_member", "remove_workspace_member",
+    "get_workspace", "list_workspaces", "create_workspace",
+    "update_workspace", "archive_workspace",
+    "add_workspace_member", "list_workspace_members",
+    "update_workspace_member_role", "remove_workspace_member",
     # AuthOps
     "get_api_key", "list_api_keys", "create_api_key", "revoke_api_key",
     "count_active_root_keys", "lookup_api_key_by_hash",
@@ -359,7 +545,7 @@ _STUBBED_METHODS: Sequence[str] = (
     "create_retention_policy", "update_retention_policy",
     "delete_retention_policy", "get_latest_snapshot_for_policy",
     "count_snapshots_for_policy", "record_drill_result",
-    "list_drill_results", "get_latest_drill_for_org",
+    "list_drill_results_for_policy", "get_latest_drill_result",
     # SloOps
     "list_slo_definitions", "get_slo_definition",
     "create_slo_definition", "update_slo_definition",

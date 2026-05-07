@@ -83,8 +83,11 @@ async def test_method_stubs_raise_not_implemented(tmp_path: Path):
 
     store = await SqliteStore.open(f"sqlite:///{tmp_path / 'stubs.db'}")
     try:
-        with pytest.raises(NotImplementedError, match="get_memory"):
-            await store.get_memory("mem_x", org_id="org-x")
+        # Pick a method that is still a stub in the current sub-phase.
+        # Phase 3C implements insert/get/delete; ``update_memory`` is one
+        # of the next-up MemoryOps slots and stays NotImplementedError.
+        with pytest.raises(NotImplementedError, match="update_memory"):
+            await store.update_memory("solo", "mem_x", patch=None)
     finally:
         await store.close()
 
