@@ -2,12 +2,25 @@
 
 from __future__ import annotations
 
-from lore.cli.commands import graph, keys, manage, misc, recall, remember, server, snapshot
+from lore.cli.commands import (
+    capture,
+    graph,
+    keys,
+    manage,
+    migrate,
+    misc,
+    recall,
+    remember,
+    server,
+    snapshot,
+)
 
 __all__ = [
+    "capture",
     "graph",
     "keys",
     "manage",
+    "migrate",
     "misc",
     "recall",
     "remember",

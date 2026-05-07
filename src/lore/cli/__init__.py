@@ -646,6 +646,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_ui.add_argument("--port", type=int, default=8766, help="Port (default: 8766)")
     p_ui.add_argument("--no-open", action="store_true", dest="no_open", help="Don't open browser")
 
+    # capture-extract (Phase 6A) — internal subagent entry point invoked
+    # by the PostToolUse and Stop hooks. Users do not normally call this
+    # directly. ``--session-id`` is required; ``--transcript-path`` is
+    # optional (used to enrich the extraction prompt with recent turns).
+    p_cap = sub.add_parser(
+        "capture-extract",
+        help="Auto-capture subagent entry point (called by Claude Code hooks)",
+    )
+    p_cap.add_argument(
+        "--session-id", required=True, dest="session_id",
+        help="Claude Code session id (used for buffer/cursor paths)",
+    )
+    p_cap.add_argument(
+        "--transcript-path", default=None, dest="transcript_path",
+        help="Path to the Claude Code JSONL transcript for this session",
+    )
+
     return parser
 
 
@@ -658,6 +675,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         sys.exit(1)
 
     # Lazy-import command handlers to avoid circular imports and keep startup fast.
+    from lore.cli.commands.capture import cmd_capture
     from lore.cli.commands.graph import (
         cmd_entities,
         cmd_graph,
@@ -776,6 +794,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "mcp": cmd_mcp,
         "ui": cmd_ui,
         "migrate": cmd_migrate,
+        "capture-extract": cmd_capture,
     }
     handlers[args.command](args)
 
