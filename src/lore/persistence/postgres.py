@@ -27,6 +27,7 @@ from lore.persistence.types import (
     AgentSharingConfigData,
     AuditEventData,
     DenyListRuleData,
+    DreamRun,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
@@ -35,6 +36,7 @@ from lore.persistence.types import (
     NewAuditEvent,
     NewConversationJob,
     NewDenyListRule,
+    NewDreamRun,
     NewDrillResult,
     NewEntity,
     NewMember,
@@ -299,6 +301,28 @@ def _row_to_recommendation_config(row: "asyncpg.Record") -> StoredRecommendation
         max_suggestions=int(row["max_suggestions"]),
         cooldown_minutes=int(row["cooldown_minutes"]),
         updated_at=row["updated_at"],
+    )
+
+
+def _row_to_dream_run(row: "asyncpg.Record") -> DreamRun:
+    """Translate a ``dream_runs`` row to ``DreamRun``.
+
+    ``summary`` is JSONB on PG; asyncpg may return either a dict or a
+    JSON string depending on codecs. Decode if string.
+    """
+    summary_raw = row["summary"]
+    if isinstance(summary_raw, str):
+        summary = json.loads(summary_raw) if summary_raw else None
+    else:
+        summary = summary_raw  # dict, list, or None
+    return DreamRun(
+        id=row["id"],
+        org_id=row["org_id"],
+        started_at=row["started_at"],
+        completed_at=row["completed_at"],
+        status=row["status"],
+        summary=summary,
+        error=row["error"],
     )
 
 
@@ -3502,6 +3526,89 @@ class PostgresStore:
                     initiated_by,
                 )
         return int(row["reputation_score"])
+
+    # ── DreamOps (Phase 6E) ──────────────────────────────────────────
+
+    async def start_dream(self, run: NewDreamRun) -> DreamRun:
+        """Insert a ``running`` dream-run row; returns the stored row."""
+        run_id = str(ULID())
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO dream_runs (id, org_id, status)
+                VALUES ($1, $2, 'running')
+                RETURNING id, org_id, started_at, completed_at, status, summary, error
+                """,
+                run_id,
+                run.org_id,
+            )
+        return _row_to_dream_run(row)
+
+    async def complete_dream(
+        self, run_id: str, summary: "Mapping[str, Any]",
+    ) -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE dream_runs SET
+                    status = 'completed',
+                    summary = $2::jsonb,
+                    completed_at = now()
+                WHERE id = $1
+                """,
+                run_id,
+                json.dumps(dict(summary)),
+            )
+
+    async def fail_dream(self, run_id: str, error: str) -> None:
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE dream_runs SET
+                    status = 'failed',
+                    error = $2,
+                    completed_at = now()
+                WHERE id = $1
+                """,
+                run_id,
+                error,
+            )
+
+    async def get_last_dream_run(self, org_id: str) -> "Optional[DreamRun]":
+        # Tie-break by ``id DESC`` so two runs created in the same
+        # microsecond resolve to the lexicographically-greater ULID
+        # (which is the more recent one — ULIDs are time-ordered).
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, org_id, started_at, completed_at, status, summary, error
+                FROM dream_runs
+                WHERE org_id = $1
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                """,
+                org_id,
+            )
+        return _row_to_dream_run(row) if row else None
+
+    async def count_distinct_sessions_since(
+        self, org_id: str, since: datetime,
+    ) -> int:
+        """Distinct session_id count from memories.meta since a timestamp."""
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT COUNT(DISTINCT meta->>'session_id') AS n
+                FROM memories
+                WHERE org_id = $1
+                  AND created_at >= $2
+                  AND meta ? 'session_id'
+                  AND meta->>'session_id' IS NOT NULL
+                """,
+                org_id,
+                since,
+            )
+        return int(row["n"]) if row and row["n"] is not None else 0
 
 
 class _BoundConn:

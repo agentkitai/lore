@@ -659,6 +659,57 @@ fi
 exit 0
 """
 
+LORE_DREAM_TRIGGER_HOOK_SCRIPT = """\
+#!/usr/bin/env bash
+# Lore dream trigger hook for Claude Code (Phase 6E).
+# Installed by: lore setup claude-code
+# Event: Stop (chained alongside the Phase 6A capture-stop hook)
+#
+# Checks `lore dream --status --json` for ``next_eligible_at``; if the
+# 24h+5-sessions condition is met, fires `lore dream` as a fully detached
+# subprocess and returns. Always exits 0 (fail-open) so Claude Code is
+# never blocked by a dream check.
+#
+# Honors:
+#   LORE_DREAM_AUTO        if false, exits 0 immediately (default true)
+#   LORE_DATABASE_URL      passed through to `lore dream` subprocess
+
+set +e
+
+if [ "${{LORE_DREAM_AUTO:-true}}" = "false" ]; then
+    exit 0
+fi
+
+if ! command -v lore >/dev/null 2>&1; then
+    exit 0
+fi
+
+# Drain stdin so the Stop event payload doesn't backfill the pipe; we
+# don't actually need any of it for the trigger check.
+cat >/dev/null 2>&1 || true
+
+STATUS_JSON="$(lore dream --status --json 2>/dev/null)"
+if [ -z "$STATUS_JSON" ]; then
+    exit 0
+fi
+
+ELIGIBLE="$(LORE_STATUS_JSON="$STATUS_JSON" python3 -c '
+import json, os, sys
+try:
+    d = json.loads(os.environ.get("LORE_STATUS_JSON") or "{{}}") or {{}}
+    print("yes" if d.get("eligible_now") else "no")
+except Exception:
+    print("no")
+' 2>/dev/null)"
+
+if [ "$ELIGIBLE" = "yes" ]; then
+    nohup lore dream >/dev/null 2>&1 &
+fi
+
+exit 0
+"""
+
+
 CODEX_HOOK_SCRIPT = """\
 #!/usr/bin/env bash
 # Lore auto-retrieval hook for Codex CLI
@@ -769,6 +820,11 @@ def _claude_capture_tool_hook_path() -> Path:
 def _claude_capture_stop_hook_path() -> Path:
     """Phase 6A — Stop auto-capture hook (~/.claude/hooks/lore-capture-stop.sh)."""
     return _claude_hooks_dir() / "lore-capture-stop.sh"
+
+
+def _claude_dream_trigger_hook_path() -> Path:
+    """Phase 6E — Stop dream trigger hook (~/.claude/hooks/lore-dream-trigger.sh)."""
+    return _claude_hooks_dir() / "lore-dream-trigger.sh"
 
 
 def _openclaw_hooks_dir() -> Path:
@@ -989,18 +1045,21 @@ def _write_executable(path: Path, content: str) -> None:
 def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | None = None) -> None:
     """Install Lore hooks for Claude Code.
 
-    As of Phase 6A this installs three hooks under ``~/.claude/hooks/``:
+    As of Phase 6E this installs four hooks under ``~/.claude/hooks/``:
 
-      * ``lore-retrieve.sh``       — UserPromptSubmit auto-retrieval
+      * ``lore-retrieve.sh``        — UserPromptSubmit auto-retrieval
         (existing behavior).
-      * ``lore-capture-tool.sh``   — PostToolUse buffer-append +
+      * ``lore-capture-tool.sh``    — PostToolUse buffer-append +
         N-batched ``lore capture-extract`` spawn (Phase 6A).
-      * ``lore-capture-stop.sh``   — Stop hook that flushes the
-        trailing batch unconditionally (Phase 6A).
+      * ``lore-capture-stop.sh``    — Stop hook that flushes the
+        trailing capture batch unconditionally (Phase 6A).
+      * ``lore-dream-trigger.sh``   — Stop hook that fires
+        ``lore dream`` when the 24h+5-sessions condition is met
+        (Phase 6E). Coexists with the capture-stop hook on Stop.
 
-    All three are registered in ``~/.claude/settings.json`` under the
-    appropriate Claude Code event names. The capture hooks fail open
-    and inherit the user's existing Claude Code auth — no extra
+    All are registered in ``~/.claude/settings.json`` under the
+    appropriate Claude Code event names. The capture/dream hooks fail
+    open and inherit the user's existing Claude Code auth — no extra
     configuration needed.
     """
     hooks_dir = _claude_hooks_dir()
@@ -1037,6 +1096,13 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
     _write_executable(capture_stop_hook, capture_stop_script)
     print(f"  Capture hook  (Stop):              {capture_stop_hook}")
 
+    # ── 4. Dream trigger hook (Phase 6E) ──────────────────────────────
+    # Wired alongside the capture-stop hook on the Stop event chain.
+    dream_trigger_hook = _claude_dream_trigger_hook_path()
+    dream_trigger_script = LORE_DREAM_TRIGGER_HOOK_SCRIPT.format()
+    _write_executable(dream_trigger_hook, dream_trigger_script)
+    print(f"  Dream hook    (Stop):              {dream_trigger_hook}")
+
     # ── settings.json registration ────────────────────────────────────
     settings_path = _claude_settings_path()
     settings: dict = {}
@@ -1055,6 +1121,9 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
     added_stop = _register_claude_hook(
         settings, "Stop", str(capture_stop_hook),
     )
+    added_dream = _register_claude_hook(
+        settings, "Stop", str(dream_trigger_hook),
+    )
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
@@ -1067,9 +1136,11 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
         flags.append("PostToolUse registered")
     if added_stop:
         flags.append("Stop registered")
+    if added_dream:
+        flags.append("Stop dream trigger registered")
     if flags:
         print("  " + "; ".join(flags))
-    print("Claude Code hooks installed successfully (3 hooks: UserPromptSubmit, PostToolUse, Stop).")
+    print("Claude Code hooks installed successfully (4 hooks: UserPromptSubmit, PostToolUse, Stop x2).")
 
 
 def setup_openclaw(server_url: str = "http://localhost:8765", api_key: str | None = None) -> None:

@@ -774,3 +774,37 @@ class SharingStatsData:
     count_shared: int
     last_shared: Optional[datetime]
     audit_summary: Mapping[str, int]
+
+
+# ── Dream slice dataclasses (Phase 6E) ─────────────────────────────
+
+
+@dataclass(frozen=True, slots=True)
+class NewDreamRun:
+    """Insert payload for a new dream run.
+
+    The store assigns ``id`` (ULID) and ``started_at`` (now()) on insert;
+    the dataclass carries only the org scope. ``status`` always starts as
+    ``'running'``.
+    """
+
+    org_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DreamRun:
+    """A row from ``dream_runs``.
+
+    Lifecycle: ``status='running'`` on insert; ``complete_dream()`` flips
+    it to ``'completed'`` and sets ``summary`` + ``completed_at``;
+    ``fail_dream()`` flips it to ``'failed'`` and sets ``error`` +
+    ``completed_at``.
+    """
+
+    id: str
+    org_id: str
+    started_at: datetime
+    completed_at: Optional[datetime]
+    status: str  # "running" | "completed" | "failed"
+    summary: Optional[Mapping[str, Any]]
+    error: Optional[str]
