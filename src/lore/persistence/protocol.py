@@ -15,6 +15,7 @@ from lore.persistence.types import (
     AgentSharingConfigData,
     AuditEventData,
     DenyListRuleData,
+    DreamRun,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
@@ -23,6 +24,7 @@ from lore.persistence.types import (
     NewAuditEvent,
     NewConversationJob,
     NewDenyListRule,
+    NewDreamRun,
     NewDrillResult,
     NewEntity,
     NewMember,
@@ -749,5 +751,36 @@ class Store(Protocol):
         """Atomically adjust a lesson's reputation_score and write an audit event.
 
         Returns the new reputation_score, or None if the lesson does not exist.
+        """
+        ...
+
+    # ── DreamOps (Phase 6E) ──────────────────────────────────────────
+
+    async def start_dream(self, run: NewDreamRun) -> DreamRun:
+        """Insert a new dream-run row in ``running`` status; returns the stored row."""
+        ...
+
+    async def complete_dream(
+        self, run_id: str, summary: Mapping[str, Any],
+    ) -> None:
+        """Mark a dream run as completed with the given summary blob."""
+        ...
+
+    async def fail_dream(self, run_id: str, error: str) -> None:
+        """Mark a dream run as failed with the given error string."""
+        ...
+
+    async def get_last_dream_run(self, org_id: str) -> Optional[DreamRun]:
+        """Return the most recent dream run for an org, or None if absent."""
+        ...
+
+    async def count_distinct_sessions_since(
+        self, org_id: str, since: datetime,
+    ) -> int:
+        """Count distinct ``meta->>'session_id'`` values across memories created
+        for an org since the given timestamp.
+
+        Used by the eligibility check (≥5 distinct sessions since last dream).
+        Memories without a ``session_id`` in their meta are ignored.
         """
         ...

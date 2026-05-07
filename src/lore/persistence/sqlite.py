@@ -41,6 +41,7 @@ from lore.persistence.types import (
     AuditEventData,
     DailyStatRow,
     DenyListRuleData,
+    DreamRun,
     ExportedMemory,
     GraphStats,
     MemoryFilter,
@@ -49,6 +50,7 @@ from lore.persistence.types import (
     NewAuditEvent,
     NewConversationJob,
     NewDenyListRule,
+    NewDreamRun,
     NewDrillResult,
     NewEntity,
     NewMember,
@@ -481,6 +483,29 @@ def _row_to_recommendation_candidate(row) -> RecommendationCandidate:
         created_at=_parse_iso(row["created_at"]),
         access_count=row["access_count"] or 0,
         last_accessed_at=_parse_iso(row["last_accessed_at"]),
+    )
+
+
+def _row_to_dream_run(row) -> DreamRun:
+    """Translate a SQLite ``dream_runs`` row to ``DreamRun``.
+
+    ``summary`` is JSON TEXT; decode if non-empty. Mirrors the PG variant.
+    """
+    summary_raw = row["summary"]
+    if isinstance(summary_raw, str) and summary_raw:
+        summary = json.loads(summary_raw)
+    elif summary_raw is None or summary_raw == "":
+        summary = None
+    else:
+        summary = summary_raw  # already a dict (defensive)
+    return DreamRun(
+        id=row["id"],
+        org_id=row["org_id"],
+        started_at=_parse_iso(row["started_at"]),
+        completed_at=_parse_iso(row["completed_at"]),
+        status=row["status"],
+        summary=summary,
+        error=row["error"],
     )
 
 
@@ -5337,6 +5362,113 @@ class SqliteStore:
                 (str(ULID()), org_id, lesson_id, initiated_by),
             )
         return new_score
+
+    # ── DreamOps (Phase 6E) ──────────────────────────────────────────
+
+    _DREAM_RUN_COLS = (
+        "id, org_id, started_at, completed_at, status, summary, error"
+    )
+
+    async def start_dream(self, run: NewDreamRun) -> DreamRun:
+        """Insert a 'running' dream-run row; returns the stored row.
+
+        Mirrors ``PostgresStore.start_dream``: caller-side ULID, status
+        defaults to 'running', ``started_at`` from the column DEFAULT.
+        """
+        run_id = str(ULID())
+        async with self._acquire() as conn:
+            await conn.execute(
+                "INSERT INTO dream_runs (id, org_id, status) VALUES (?, ?, 'running')",
+                (run_id, run.org_id),
+            )
+            await conn.commit()
+            async with conn.execute(
+                f"SELECT {self._DREAM_RUN_COLS} FROM dream_runs WHERE id = ?",
+                (run_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover — defensive
+            raise StoreError("start_dream: row vanished after insert")
+        return _row_to_dream_run(row)
+
+    async def complete_dream(
+        self, run_id: str, summary: Mapping[str, Any],
+    ) -> None:
+        """Mark a dream run completed with a JSON summary blob.
+
+        Silent on missing ids. Mirrors ``PostgresStore.complete_dream``.
+        """
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE dream_runs SET
+                    status = 'completed',
+                    summary = ?,
+                    completed_at = datetime('now')
+                WHERE id = ?
+                """,
+                (json.dumps(dict(summary)), run_id),
+            )
+            await conn.commit()
+
+    async def fail_dream(self, run_id: str, error: str) -> None:
+        """Mark a dream run failed. Silent on missing ids."""
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE dream_runs SET
+                    status = 'failed',
+                    error = ?,
+                    completed_at = datetime('now')
+                WHERE id = ?
+                """,
+                (error, run_id),
+            )
+            await conn.commit()
+
+    async def get_last_dream_run(self, org_id: str) -> Optional[DreamRun]:
+        """Most recent dream run for an org (by ``started_at`` DESC), or None.
+
+        Tie-break by ``id DESC`` so two runs created in the same second
+        resolve to the lexicographically-greater ULID (which is the more
+        recent one — ULIDs are time-ordered).
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._DREAM_RUN_COLS} FROM dream_runs "
+                "WHERE org_id = ? ORDER BY started_at DESC, id DESC LIMIT 1",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_dream_run(row) if row else None
+
+    async def count_distinct_sessions_since(
+        self, org_id: str, since: datetime,
+    ) -> int:
+        """Distinct memory ``meta.session_id`` count since a timestamp.
+
+        Mirrors ``PostgresStore.count_distinct_sessions_since``. SQLite's
+        ``json_extract`` reads ``$.session_id`` from the TEXT meta column;
+        rows with NULL session_id are excluded.
+        """
+        # Normalize datetime to ISO string for lexicographic comparison
+        # (SQLite created_at is TEXT).
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        since_iso = since.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT COUNT(DISTINCT json_extract(meta, '$.session_id')) AS n
+                FROM memories
+                WHERE org_id = ?
+                  AND created_at >= ?
+                  AND json_extract(meta, '$.session_id') IS NOT NULL
+                """,
+                (org_id, since_iso),
+            ) as cur:
+                row = await cur.fetchone()
+        return int(row["n"]) if row and row["n"] is not None else 0
 
 
 async def check_dangling_vectors(store: "SqliteStore") -> list[str]:
