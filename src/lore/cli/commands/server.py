@@ -47,7 +47,28 @@ def cmd_serve(args: argparse.Namespace) -> None:
             "acknowledge that authentication is enforced before exposing "
             "Lore on a non-loopback address."
         )
-    print(f"Starting Lore server on {host}:{port}")
+
+    # Lazy-server idle-timeout: prefer --idle-timeout, fall back to env
+    # var, default 0 (disabled). Push the resolved value back into
+    # LORE_IDLE_TIMEOUT so the FastAPI app (which reads the env at
+    # lifespan-start time) sees a single source of truth even when the
+    # flag was the one that supplied it.
+    idle_timeout_arg = getattr(args, "idle_timeout", None)
+    if idle_timeout_arg is None:
+        idle_timeout = int(os.environ.get("LORE_IDLE_TIMEOUT", "0") or "0")
+    else:
+        idle_timeout = int(idle_timeout_arg)
+    if idle_timeout < 0:
+        idle_timeout = 0
+    os.environ["LORE_IDLE_TIMEOUT"] = str(idle_timeout)
+
+    if idle_timeout > 0:
+        print(
+            f"Starting Lore server on {host}:{port} "
+            f"(idle-timeout: {idle_timeout}s)"
+        )
+    else:
+        print(f"Starting Lore server on {host}:{port}")
     uvicorn.run("lore.server.app:app", host=host, port=port)
 
 

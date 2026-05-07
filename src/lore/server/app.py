@@ -83,6 +83,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global _pgvector_available
     slo_task = None
     scheduler_task = None
+    idle_task = None
 
     if is_sqlite:
         # Solo SQLite path: open the Store (handles migrations + bootstrap)
@@ -119,12 +120,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         slo_task = asyncio.create_task(slo_checker_loop(slo_check_interval))
         scheduler_task = asyncio.create_task(policy_scheduler_loop(60))
 
+    # Lazy-server idle watcher (solo mode): only spawned when the
+    # operator passed --idle-timeout (or LORE_IDLE_TIMEOUT). Runs for
+    # both SQLite and Postgres paths.
+    from lore.server.idle import get_configured_timeout, idle_watcher_loop
+    idle_timeout = get_configured_timeout()
+    if idle_timeout > 0:
+        import asyncio as _asyncio  # local alias; the top branch may not have imported asyncio yet
+        idle_task = _asyncio.create_task(idle_watcher_loop(idle_timeout))
+
     yield
 
     if slo_task is not None:
         slo_task.cancel()
     if scheduler_task is not None:
         scheduler_task.cancel()
+    if idle_task is not None:
+        idle_task.cancel()
     await close_store()
     if not is_sqlite:
         await close_pool()

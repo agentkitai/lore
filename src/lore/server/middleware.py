@@ -293,4 +293,12 @@ def install_middleware(app: FastAPI) -> None:
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(RequestContextMiddleware)
+
+    # Idle tracker (lazy-server mode): only added when the timeout is
+    # configured. Outermost so it runs first and counts every request,
+    # including ones rejected by RateLimit / BodySize below.
+    from lore.server.idle import LastRequestTracker, get_configured_timeout
+    if get_configured_timeout() > 0:
+        app.add_middleware(LastRequestTracker)
+
     install_error_handlers(app)
