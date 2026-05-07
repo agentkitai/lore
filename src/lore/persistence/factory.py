@@ -31,11 +31,10 @@ async def make_store(database_url: str) -> Store:
         pool = await asyncpg.create_pool(database_url, min_size=2, max_size=10)
         return PostgresStore.from_pool(pool)
     if scheme == "sqlite":
-        raise ConfigError(
-            "sqlite:// URLs are not yet supported (Phase 3 of solo-mode work). "
-            "Use a postgresql:// URL until then."
-        )
+        from lore.persistence.sqlite import SqliteStore
+
+        return await SqliteStore.open(database_url)
     raise ConfigError(
         f"Unsupported database_url scheme: {scheme!r}. "
-        "Supported schemes: postgresql://, sqlite:// (coming in Phase 3)."
+        "Supported schemes: postgresql://, sqlite://."
     )
