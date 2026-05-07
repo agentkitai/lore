@@ -21,17 +21,25 @@ from lore.persistence import (
     SharingStatsData,
     Store,
 )
+from tests.persistence.conftest import _is_sqlite
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 
 async def _ensure_org(store, org_id: str) -> None:
     """Insert an org row if it doesn't already exist (required by sharing FKs)."""
-    await store._conn.execute(
-        "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        org_id,
-        org_id,
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(
+            "INSERT OR IGNORE INTO orgs (id, name) VALUES (?, ?)",
+            (org_id, org_id),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            "INSERT INTO orgs (id, name) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+            org_id,
+            org_id,
+        )
 
 
 async def _insert_lesson(
@@ -49,27 +57,51 @@ async def _insert_lesson(
     from ulid import ULID
 
     lesson_id = lesson_id or str(ULID())
-    if created_at is None:
-        await store._conn.execute(
-            """
-            INSERT INTO memories (id, org_id, content, context, reputation_score)
-            VALUES ($1, $2, 'problem', 'resolution', $3)
-            """,
-            lesson_id,
-            org_id,
-            reputation_score,
-        )
+    if _is_sqlite(store):
+        if created_at is None:
+            await store._conn.execute(
+                """
+                INSERT INTO memories (id, org_id, content, context, reputation_score)
+                VALUES (?, ?, 'problem', 'resolution', ?)
+                """,
+                (lesson_id, org_id, reputation_score),
+            )
+        else:
+            ts_iso = (
+                created_at.isoformat()
+                if hasattr(created_at, "isoformat")
+                else created_at
+            )
+            await store._conn.execute(
+                """
+                INSERT INTO memories (id, org_id, content, context, reputation_score, created_at, updated_at)
+                VALUES (?, ?, 'problem', 'resolution', ?, ?, ?)
+                """,
+                (lesson_id, org_id, reputation_score, ts_iso, ts_iso),
+            )
+        await store._conn.commit()
     else:
-        await store._conn.execute(
-            """
-            INSERT INTO memories (id, org_id, content, context, reputation_score, created_at, updated_at)
-            VALUES ($1, $2, 'problem', 'resolution', $3, $4, $4)
-            """,
-            lesson_id,
-            org_id,
-            reputation_score,
-            created_at,
-        )
+        if created_at is None:
+            await store._conn.execute(
+                """
+                INSERT INTO memories (id, org_id, content, context, reputation_score)
+                VALUES ($1, $2, 'problem', 'resolution', $3)
+                """,
+                lesson_id,
+                org_id,
+                reputation_score,
+            )
+        else:
+            await store._conn.execute(
+                """
+                INSERT INTO memories (id, org_id, content, context, reputation_score, created_at, updated_at)
+                VALUES ($1, $2, 'problem', 'resolution', $3, $4, $4)
+                """,
+                lesson_id,
+                org_id,
+                reputation_score,
+                created_at,
+            )
     return lesson_id
 
 
@@ -89,23 +121,40 @@ async def test_get_or_init_creates_default_when_missing(store: Store):
     assert cfg.volume_alert_threshold == 1000
 
     # Row was actually inserted
-    row = await store._conn.fetchrow(
-        "SELECT enabled FROM sharing_config WHERE org_id = $1", "org-init",
-    )
+    if _is_sqlite(store):
+        async with store._conn.execute(
+            "SELECT enabled FROM sharing_config WHERE org_id = ?", ("org-init",),
+        ) as cur:
+            row = await cur.fetchone()
+    else:
+        row = await store._conn.fetchrow(
+            "SELECT enabled FROM sharing_config WHERE org_id = $1", "org-init",
+        )
     assert row is not None
 
 
 @pytest.mark.asyncio
 async def test_get_or_init_returns_existing_row(store: Store):
     await _ensure_org(store, "org-existing")
-    await store._conn.execute(
-        """
-        INSERT INTO sharing_config (id, org_id, enabled, human_review_enabled,
-                                     rate_limit_per_hour, volume_alert_threshold)
-        VALUES ('cfg-1', $1, TRUE, TRUE, 250, 5000)
-        """,
-        "org-existing",
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(
+            """
+            INSERT INTO sharing_config (id, org_id, enabled, human_review_enabled,
+                                         rate_limit_per_hour, volume_alert_threshold)
+            VALUES ('cfg-1', ?, 1, 1, 250, 5000)
+            """,
+            ("org-existing",),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            """
+            INSERT INTO sharing_config (id, org_id, enabled, human_review_enabled,
+                                         rate_limit_per_hour, volume_alert_threshold)
+            VALUES ('cfg-1', $1, TRUE, TRUE, 250, 5000)
+            """,
+            "org-existing",
+        )
 
     cfg = await store.get_or_init_sharing_config("org-existing")
 
@@ -333,24 +382,41 @@ async def test_list_audit_events_filters_by_date_range(store: Store):
 
     from ulid import ULID
 
-    await store._conn.execute(
-        """
-        INSERT INTO sharing_audit (id, org_id, event_type, initiated_by, created_at)
-        VALUES ($1, $2, 'share', 'k', $3)
-        """,
-        str(ULID()),
-        "org-audit-date",
-        old,
-    )
-    await store._conn.execute(
-        """
-        INSERT INTO sharing_audit (id, org_id, event_type, initiated_by, created_at)
-        VALUES ($1, $2, 'share', 'k', $3)
-        """,
-        str(ULID()),
-        "org-audit-date",
-        recent,
-    )
+    if _is_sqlite(store):
+        await store._conn.execute(
+            """
+            INSERT INTO sharing_audit (id, org_id, event_type, initiated_by, created_at)
+            VALUES (?, ?, 'share', 'k', ?)
+            """,
+            (str(ULID()), "org-audit-date", old.isoformat()),
+        )
+        await store._conn.execute(
+            """
+            INSERT INTO sharing_audit (id, org_id, event_type, initiated_by, created_at)
+            VALUES (?, ?, 'share', 'k', ?)
+            """,
+            (str(ULID()), "org-audit-date", recent.isoformat()),
+        )
+        await store._conn.commit()
+    else:
+        await store._conn.execute(
+            """
+            INSERT INTO sharing_audit (id, org_id, event_type, initiated_by, created_at)
+            VALUES ($1, $2, 'share', 'k', $3)
+            """,
+            str(ULID()),
+            "org-audit-date",
+            old,
+        )
+        await store._conn.execute(
+            """
+            INSERT INTO sharing_audit (id, org_id, event_type, initiated_by, created_at)
+            VALUES ($1, $2, 'share', 'k', $3)
+            """,
+            str(ULID()),
+            "org-audit-date",
+            recent,
+        )
 
     results = await store.list_audit_events(
         "org-audit-date", from_date=now - timedelta(days=1),
@@ -441,9 +507,17 @@ async def test_purge_returns_predelete_lesson_count_and_clears_tables(store: Sto
         "agent_sharing_config",
         "sharing_config",
     ):
-        cnt = await store._conn.fetchval(
-            f"SELECT COUNT(*) FROM {tbl} WHERE org_id = $1", "org-purge",
-        )
+        if _is_sqlite(store):
+            async with store._conn.execute(
+                f"SELECT COUNT(*) AS c FROM {tbl} WHERE org_id = ?",
+                ("org-purge",),
+            ) as cur:
+                row = await cur.fetchone()
+            cnt = row["c"] if row else 0
+        else:
+            cnt = await store._conn.fetchval(
+                f"SELECT COUNT(*) FROM {tbl} WHERE org_id = $1", "org-purge",
+            )
         assert cnt == 0, f"{tbl} not cleared for org-purge"
 
 
@@ -457,9 +531,16 @@ async def test_purge_does_not_affect_other_orgs(store: Store):
     deleted = await store.purge_sharing("org-zap")
     assert deleted == 1
 
-    cnt = await store._conn.fetchval(
-        "SELECT COUNT(*) FROM lessons WHERE org_id = $1", "org-keep",
-    )
+    if _is_sqlite(store):
+        async with store._conn.execute(
+            "SELECT COUNT(*) AS c FROM lessons WHERE org_id = ?", ("org-keep",),
+        ) as cur:
+            row = await cur.fetchone()
+        cnt = row["c"] if row else 0
+    else:
+        cnt = await store._conn.fetchval(
+            "SELECT COUNT(*) FROM lessons WHERE org_id = $1", "org-keep",
+        )
     assert cnt == 1
 
 
@@ -480,11 +561,19 @@ async def test_rate_lesson_increments_score_and_writes_audit(store: Store):
     assert score == 5
 
     # Two rate audit events should have been written
-    rows = await store._conn.fetch(
-        "SELECT event_type, lesson_id, initiated_by FROM sharing_audit "
-        "WHERE org_id = $1 AND event_type = 'rate'",
-        "org-rate",
-    )
+    if _is_sqlite(store):
+        async with store._conn.execute(
+            "SELECT event_type, lesson_id, initiated_by FROM sharing_audit "
+            "WHERE org_id = ? AND event_type = 'rate'",
+            ("org-rate",),
+        ) as cur:
+            rows = await cur.fetchall()
+    else:
+        rows = await store._conn.fetch(
+            "SELECT event_type, lesson_id, initiated_by FROM sharing_audit "
+            "WHERE org_id = $1 AND event_type = 'rate'",
+            "org-rate",
+        )
     assert len(rows) == 2
     for r in rows:
         assert r["lesson_id"] == lesson_id
@@ -498,9 +587,17 @@ async def test_rate_lesson_missing_returns_none_and_no_audit(store: Store):
     score = await store.rate_lesson("does-not-exist", "org-rate-missing", 1, "k")
     assert score is None
 
-    cnt = await store._conn.fetchval(
-        "SELECT COUNT(*) FROM sharing_audit WHERE org_id = $1", "org-rate-missing",
-    )
+    if _is_sqlite(store):
+        async with store._conn.execute(
+            "SELECT COUNT(*) AS c FROM sharing_audit WHERE org_id = ?",
+            ("org-rate-missing",),
+        ) as cur:
+            row = await cur.fetchone()
+        cnt = row["c"] if row else 0
+    else:
+        cnt = await store._conn.fetchval(
+            "SELECT COUNT(*) FROM sharing_audit WHERE org_id = $1", "org-rate-missing",
+        )
     assert cnt == 0
 
 
@@ -514,7 +611,14 @@ async def test_rate_lesson_wrong_org_returns_none(store: Store):
     assert score is None
 
     # Original lesson reputation unchanged
-    rep = await store._conn.fetchval(
-        "SELECT reputation_score FROM lessons WHERE id = $1", lesson_id,
-    )
+    if _is_sqlite(store):
+        async with store._conn.execute(
+            "SELECT reputation_score FROM lessons WHERE id = ?", (lesson_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        rep = row["reputation_score"] if row else None
+    else:
+        rep = await store._conn.fetchval(
+            "SELECT reputation_score FROM lessons WHERE id = $1", lesson_id,
+        )
     assert rep == 0

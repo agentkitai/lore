@@ -33,31 +33,50 @@ from lore.persistence.exceptions import (
     StoreNotFoundError,
 )
 from lore.persistence.types import (
+    AgentSharingConfigData,
+    AuditEventData,
     DailyStatRow,
+    DenyListRuleData,
     ExportedMemory,
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
+    NewAuditEvent,
     NewConversationJob,
+    NewDenyListRule,
+    NewDrillResult,
     NewMember,
     NewMemory,
     NewProfile,
     NewRecommendationFeedback,
+    NewRetentionPolicy,
     NewRetrievalEvent,
+    NewSloAlert,
+    NewSloDefinition,
     NewWorkspace,
     ProfilePatch,
     RecallParams,
     RecommendationCandidate,
+    RetentionPolicyPatch,
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
+    SharingConfigData,
+    SharingConfigPatch,
+    SharingStatsData,
+    SloDefinitionPatch,
     StoredApiKey,
     StoredAuditEntry,
     StoredConversationJob,
+    StoredDrillResult,
     StoredMember,
     StoredMemory,
     StoredProfile,
     StoredRecommendationConfig,
+    StoredRetentionPolicy,
+    StoredSloAlert,
+    StoredSloDefinition,
+    StoredSnapshotMetadata,
     StoredWorkspace,
     TimeseriesPoint,
     TopQueryRow,
@@ -407,6 +426,118 @@ def _row_to_conversation_job(row) -> StoredConversationJob:
         processing_time_ms=row["processing_time_ms"] or 0,
         created_at=_parse_iso(row["created_at"]),
         completed_at=_parse_iso(row["completed_at"]),
+    )
+
+
+def _row_to_retention_policy(row) -> StoredRetentionPolicy:
+    """Translate a SQLite ``retention_policies`` row to ``StoredRetentionPolicy``.
+
+    Mirrors ``lore.persistence.postgres._row_to_retention_policy`` but parses
+    the JSON-encoded ``retention_window`` TEXT column and INTEGER 0/1 booleans.
+    """
+    rw_raw = row["retention_window"]
+    if isinstance(rw_raw, str):
+        rw = json.loads(rw_raw) if rw_raw else {}
+    elif rw_raw is None:
+        rw = {}
+    else:
+        rw = rw_raw
+    return StoredRetentionPolicy(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        retention_window=dict(rw or {}),
+        snapshot_schedule=row["snapshot_schedule"],
+        encryption_required=bool(row["encryption_required"]),
+        max_snapshots=int(row["max_snapshots"]),
+        is_active=bool(row["is_active"]),
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_snapshot_metadata(row) -> StoredSnapshotMetadata:
+    """Translate a SQLite ``snapshot_metadata`` row to ``StoredSnapshotMetadata``."""
+    return StoredSnapshotMetadata(
+        id=row["id"],
+        org_id=row["org_id"],
+        policy_id=row["policy_id"],
+        name=row["name"],
+        path=row["path"],
+        size_bytes=row["size_bytes"],
+        memory_count=row["memory_count"],
+        encrypted=bool(row["encrypted"]),
+        created_at=_parse_iso(row["created_at"]),
+    )
+
+
+def _row_to_drill_result(row) -> StoredDrillResult:
+    """Translate a SQLite ``restore_drill_results`` row to ``StoredDrillResult``."""
+    return StoredDrillResult(
+        id=row["id"],
+        org_id=row["org_id"],
+        snapshot_id=row["snapshot_id"],
+        snapshot_name=row["snapshot_name"],
+        started_at=_parse_iso(row["started_at"]),
+        completed_at=_parse_iso(row["completed_at"]),
+        recovery_time_ms=row["recovery_time_ms"],
+        memories_restored=row["memories_restored"],
+        status=row["status"],
+        error=row["error"],
+        created_at=_parse_iso(row["created_at"]),
+    )
+
+
+def _row_to_slo_definition(row) -> StoredSloDefinition:
+    """Translate a SQLite ``slo_definitions`` row to ``StoredSloDefinition``.
+
+    Mirrors ``lore.persistence.postgres._row_to_slo_definition`` but parses
+    the JSON-encoded ``alert_channels`` TEXT column and INTEGER 0/1 booleans.
+    """
+    ac_raw = row["alert_channels"]
+    if isinstance(ac_raw, str):
+        ac = json.loads(ac_raw) if ac_raw else []
+    elif ac_raw is None:
+        ac = []
+    else:
+        ac = ac_raw
+    return StoredSloDefinition(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        metric=row["metric"],
+        operator=row["operator"],
+        threshold=float(row["threshold"]),
+        window_minutes=int(row["window_minutes"]),
+        enabled=bool(row["enabled"]),
+        alert_channels=tuple(ac or ()),
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_slo_alert(row) -> StoredSloAlert:
+    """Translate a SQLite ``slo_alerts`` row to ``StoredSloAlert``.
+
+    Mirrors ``lore.persistence.postgres._row_to_slo_alert`` but parses
+    the JSON-encoded ``dispatched_to`` TEXT column.
+    """
+    dt_raw = row["dispatched_to"]
+    if isinstance(dt_raw, str):
+        dt = json.loads(dt_raw) if dt_raw else []
+    elif dt_raw is None:
+        dt = []
+    else:
+        dt = dt_raw
+    return StoredSloAlert(
+        id=int(row["id"]),
+        org_id=row["org_id"],
+        slo_id=row["slo_id"],
+        metric_value=float(row["metric_value"]),
+        threshold=float(row["threshold"]),
+        status=row["status"],
+        dispatched_to=tuple(dt or ()),
+        created_at=_parse_iso(row["created_at"]),
     )
 
 
@@ -2905,6 +3036,973 @@ class SqliteStore:
                 rows = await cur.fetchall()
         return tuple(_row_to_audit_entry(r) for r in rows)
 
+    # ── RetentionOps (Phase 3H) ───────────────────────────────────────
+
+    _RETENTION_POLICY_COLS = (
+        "id, org_id, name, retention_window, snapshot_schedule, "
+        "encryption_required, max_snapshots, is_active, created_at, updated_at"
+    )
+
+    async def list_retention_policies(
+        self, org_id: str
+    ) -> Sequence[StoredRetentionPolicy]:
+        """List retention policies for an org, ordered by name.
+
+        Mirrors ``PostgresStore.list_retention_policies``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._RETENTION_POLICY_COLS} FROM retention_policies "
+                "WHERE org_id = ? ORDER BY name",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_retention_policy(r) for r in rows)
+
+    async def get_retention_policy(
+        self, policy_id: str, org_id: str
+    ) -> Optional[StoredRetentionPolicy]:
+        """Return a retention policy scoped to (id, org_id), or None.
+
+        Mirrors ``PostgresStore.get_retention_policy``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._RETENTION_POLICY_COLS} FROM retention_policies "
+                "WHERE id = ? AND org_id = ?",
+                (policy_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_retention_policy(row) if row else None
+
+    async def create_retention_policy(
+        self, policy: NewRetentionPolicy
+    ) -> StoredRetentionPolicy:
+        """Insert a new retention policy; raises IntegrityError on (org_id, name) collision.
+
+        Mirrors ``PostgresStore.create_retention_policy``: caller-side
+        ``retpol_<ULID>`` id, JSON-encoded ``retention_window`` TEXT.
+        """
+        policy_id = f"retpol_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO retention_policies
+                        (id, org_id, name, retention_window, snapshot_schedule,
+                         encryption_required, max_snapshots, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        policy_id,
+                        policy.org_id,
+                        policy.name,
+                        json.dumps(dict(policy.retention_window)),
+                        policy.snapshot_schedule,
+                        1 if policy.encryption_required else 0,
+                        policy.max_snapshots,
+                        1 if policy.is_active else 0,
+                    ),
+                )
+                await conn.commit()
+            except aiosqlite.IntegrityError as e:
+                raise IntegrityError(
+                    f"Retention policy {policy.name!r} already exists for "
+                    f"org_id={policy.org_id!r}"
+                ) from e
+            async with conn.execute(
+                f"SELECT {self._RETENTION_POLICY_COLS} FROM retention_policies WHERE id = ?",
+                (policy_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("create_retention_policy: row vanished after insert")
+        return _row_to_retention_policy(row)
+
+    async def update_retention_policy(
+        self,
+        policy_id: str,
+        org_id: str,
+        patch: RetentionPolicyPatch,
+    ) -> Optional[StoredRetentionPolicy]:
+        """Apply a patch and return the updated row, or None if absent.
+
+        Mirrors ``PostgresStore.update_retention_policy``: dynamic SET
+        clause; empty patches raise ``ValueError``.
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+
+        if patch.name is not None:
+            sets.append("name = ?")
+            params.append(patch.name)
+        if patch.retention_window is not None:
+            sets.append("retention_window = ?")
+            params.append(json.dumps(dict(patch.retention_window)))
+        if patch.snapshot_schedule is not None:
+            sets.append("snapshot_schedule = ?")
+            params.append(patch.snapshot_schedule)
+        if patch.encryption_required is not None:
+            sets.append("encryption_required = ?")
+            params.append(1 if patch.encryption_required else 0)
+        if patch.max_snapshots is not None:
+            sets.append("max_snapshots = ?")
+            params.append(patch.max_snapshots)
+        if patch.is_active is not None:
+            sets.append("is_active = ?")
+            params.append(1 if patch.is_active else 0)
+
+        if not sets:
+            raise ValueError(
+                "update_retention_policy called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sets.append("updated_at = datetime('now')")
+        params.append(policy_id)
+        params.append(org_id)
+        sql = (
+            "UPDATE retention_policies "
+            f"SET {', '.join(sets)} "
+            "WHERE id = ? AND org_id = ?"
+        )
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql, params)
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._RETENTION_POLICY_COLS} FROM retention_policies "
+                "WHERE id = ? AND org_id = ?",
+                (policy_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_retention_policy(row) if row else None
+
+    async def delete_retention_policy(self, policy_id: str, org_id: str) -> bool:
+        """Delete a retention policy scoped to (id, org_id); returns True if removed.
+
+        Mirrors ``PostgresStore.delete_retention_policy``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM retention_policies WHERE id = ? AND org_id = ?",
+                (policy_id, org_id),
+            )
+            deleted = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return bool(deleted)
+
+    async def get_latest_snapshot_for_policy(
+        self, policy_id: str, org_id: str
+    ) -> Optional[StoredSnapshotMetadata]:
+        """Return the most recent snapshot for a (policy_id, org_id), or None.
+
+        Mirrors ``PostgresStore.get_latest_snapshot_for_policy``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT id, org_id, policy_id, name, path, size_bytes, memory_count, "
+                "encrypted, created_at "
+                "FROM snapshot_metadata "
+                "WHERE policy_id = ? AND org_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (policy_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_snapshot_metadata(row) if row else None
+
+    async def count_snapshots_for_policy(self, policy_id: str) -> int:
+        """Return COUNT(*) of snapshots for a policy_id.
+
+        Mirrors ``PostgresStore.count_snapshots_for_policy``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) AS c FROM snapshot_metadata WHERE policy_id = ?",
+                (policy_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return int(row["c"]) if row else 0
+
+    async def record_drill_result(self, drill: NewDrillResult) -> StoredDrillResult:
+        """Insert a drill result; returns the freshly stored row.
+
+        Mirrors ``PostgresStore.record_drill_result``: caller-side
+        ``drill_<ULID>`` id; ISO TEXT timestamps for ``started_at`` /
+        ``completed_at``.
+        """
+        drill_id = f"drill_{ULID()}"
+        started_iso = drill.started_at.isoformat() if drill.started_at else None
+        completed_iso = drill.completed_at.isoformat() if drill.completed_at else None
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO restore_drill_results
+                    (id, org_id, snapshot_id, snapshot_name, started_at,
+                     completed_at, recovery_time_ms, memories_restored, status, error)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    drill_id,
+                    drill.org_id,
+                    drill.snapshot_id,
+                    drill.snapshot_name,
+                    started_iso,
+                    completed_iso,
+                    drill.recovery_time_ms,
+                    drill.memories_restored,
+                    drill.status,
+                    drill.error,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT id, org_id, snapshot_id, snapshot_name, started_at, "
+                "completed_at, recovery_time_ms, memories_restored, status, error, "
+                "created_at FROM restore_drill_results WHERE id = ?",
+                (drill_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("record_drill_result: row vanished after insert")
+        return _row_to_drill_result(row)
+
+    async def list_drill_results_for_policy(
+        self, policy_id: str, org_id: str, *, limit: int = 20
+    ) -> Sequence[StoredDrillResult]:
+        """List drill results joined to a policy's snapshots.
+
+        Mirrors ``PostgresStore.list_drill_results_for_policy``: joins
+        ``restore_drill_results`` to ``snapshot_metadata`` on snapshot id
+        and filters by policy_id + org_id; newest first.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT r.id, r.org_id, r.snapshot_id, r.snapshot_name, r.started_at, "
+                "r.completed_at, r.recovery_time_ms, r.memories_restored, "
+                "r.status, r.error, r.created_at "
+                "FROM restore_drill_results r "
+                "JOIN snapshot_metadata s ON s.id = r.snapshot_id "
+                "WHERE s.policy_id = ? AND r.org_id = ? "
+                "ORDER BY r.created_at DESC "
+                "LIMIT ?",
+                (policy_id, org_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_drill_result(r) for r in rows)
+
+    async def get_latest_drill_result(
+        self, org_id: str
+    ) -> Optional[StoredDrillResult]:
+        """Return the most recent drill result for an org, or None.
+
+        Mirrors ``PostgresStore.get_latest_drill_result``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT id, org_id, snapshot_id, snapshot_name, started_at, "
+                "completed_at, recovery_time_ms, memories_restored, status, error, "
+                "created_at FROM restore_drill_results "
+                "WHERE org_id = ? ORDER BY created_at DESC LIMIT 1",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_drill_result(row) if row else None
+
+    # ── SloOps (Phase 3H) ─────────────────────────────────────────────
+
+    _SLO_DEFINITION_COLS = (
+        "id, org_id, name, metric, operator, threshold, "
+        "window_minutes, enabled, alert_channels, created_at, updated_at"
+    )
+
+    async def list_slo_definitions(
+        self, org_id: Optional[str] = None
+    ) -> Sequence[StoredSloDefinition]:
+        """List SLO definitions; if ``org_id`` is None, returns all rows.
+
+        Mirrors ``PostgresStore.list_slo_definitions`` — preserves the
+        multi-tenancy quirk where ``org_id=None`` skips the WHERE clause.
+        """
+        async with self._acquire() as conn:
+            if org_id is not None:
+                async with conn.execute(
+                    f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions "
+                    "WHERE org_id = ? ORDER BY created_at DESC",
+                    (org_id,),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with conn.execute(
+                    f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions "
+                    "ORDER BY created_at DESC"
+                ) as cur:
+                    rows = await cur.fetchall()
+        return tuple(_row_to_slo_definition(r) for r in rows)
+
+    async def get_slo_definition(
+        self, slo_id: str, org_id: str
+    ) -> Optional[StoredSloDefinition]:
+        """Return an SLO definition scoped to (id, org_id), or None.
+
+        Mirrors ``PostgresStore.get_slo_definition``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions "
+                "WHERE id = ? AND org_id = ?",
+                (slo_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_slo_definition(row) if row else None
+
+    async def create_slo_definition(
+        self, slo: NewSloDefinition
+    ) -> StoredSloDefinition:
+        """Insert a new SLO definition; returns the freshly stored row.
+
+        Mirrors ``PostgresStore.create_slo_definition``: caller-side
+        ``slo_<ULID>`` id; ``alert_channels`` JSON-encoded TEXT.
+        """
+        slo_id = f"slo_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO slo_definitions
+                    (id, org_id, name, metric, operator, threshold,
+                     window_minutes, enabled, alert_channels)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    slo_id,
+                    slo.org_id,
+                    slo.name,
+                    slo.metric,
+                    slo.operator,
+                    slo.threshold,
+                    slo.window_minutes,
+                    1 if slo.enabled else 0,
+                    json.dumps(list(slo.alert_channels)),
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions WHERE id = ?",
+                (slo_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("create_slo_definition: row vanished after insert")
+        return _row_to_slo_definition(row)
+
+    async def update_slo_definition(
+        self,
+        slo_id: str,
+        org_id: str,
+        patch: SloDefinitionPatch,
+    ) -> Optional[StoredSloDefinition]:
+        """Apply a patch and return the updated row, or None if absent.
+
+        Mirrors ``PostgresStore.update_slo_definition``: dynamic SET
+        clause; empty patches raise ``ValueError``.
+        """
+        sets: list[str] = []
+        params: list[Any] = []
+
+        if patch.name is not None:
+            sets.append("name = ?")
+            params.append(patch.name)
+        if patch.metric is not None:
+            sets.append("metric = ?")
+            params.append(patch.metric)
+        if patch.operator is not None:
+            sets.append("operator = ?")
+            params.append(patch.operator)
+        if patch.threshold is not None:
+            sets.append("threshold = ?")
+            params.append(patch.threshold)
+        if patch.window_minutes is not None:
+            sets.append("window_minutes = ?")
+            params.append(patch.window_minutes)
+        if patch.enabled is not None:
+            sets.append("enabled = ?")
+            params.append(1 if patch.enabled else 0)
+        if patch.alert_channels is not None:
+            sets.append("alert_channels = ?")
+            params.append(json.dumps(list(patch.alert_channels)))
+
+        if not sets:
+            raise ValueError(
+                "update_slo_definition called with empty patch — caller must ensure at least one field is set"
+            )
+
+        sets.append("updated_at = datetime('now')")
+        params.append(slo_id)
+        params.append(org_id)
+        sql = (
+            "UPDATE slo_definitions "
+            f"SET {', '.join(sets)} "
+            "WHERE id = ? AND org_id = ?"
+        )
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql, params)
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._SLO_DEFINITION_COLS} FROM slo_definitions "
+                "WHERE id = ? AND org_id = ?",
+                (slo_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_slo_definition(row) if row else None
+
+    async def delete_slo_definition(self, slo_id: str, org_id: str) -> bool:
+        """Delete an SLO definition scoped to (id, org_id); returns True if removed.
+
+        Mirrors ``PostgresStore.delete_slo_definition``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM slo_definitions WHERE id = ? AND org_id = ?",
+                (slo_id, org_id),
+            )
+            deleted = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return bool(deleted)
+
+    async def list_slo_alerts(
+        self,
+        *,
+        slo_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> Sequence[StoredSloAlert]:
+        """List SLO alerts (optionally filtered by slo_id), newest first.
+
+        Mirrors ``PostgresStore.list_slo_alerts``.
+        """
+        async with self._acquire() as conn:
+            if slo_id is not None:
+                async with conn.execute(
+                    "SELECT a.id, a.org_id, a.slo_id, a.metric_value, a.threshold, "
+                    "a.status, a.dispatched_to, a.created_at "
+                    "FROM slo_alerts a "
+                    "WHERE a.slo_id = ? "
+                    "ORDER BY a.created_at DESC "
+                    "LIMIT ?",
+                    (slo_id, limit),
+                ) as cur:
+                    rows = await cur.fetchall()
+            else:
+                async with conn.execute(
+                    "SELECT a.id, a.org_id, a.slo_id, a.metric_value, a.threshold, "
+                    "a.status, a.dispatched_to, a.created_at "
+                    "FROM slo_alerts a "
+                    "ORDER BY a.created_at DESC "
+                    "LIMIT ?",
+                    (limit,),
+                ) as cur:
+                    rows = await cur.fetchall()
+        return tuple(_row_to_slo_alert(r) for r in rows)
+
+    async def record_slo_alert(self, alert: NewSloAlert) -> StoredSloAlert:
+        """Insert an SLO alert; returns the freshly stored row.
+
+        Mirrors ``PostgresStore.record_slo_alert``: ``slo_alerts.id`` is
+        AUTOINCREMENT (BIGSERIAL on PG); ``dispatched_to`` JSON-encoded TEXT.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO slo_alerts
+                    (org_id, slo_id, metric_value, threshold, status, dispatched_to)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    alert.org_id,
+                    alert.slo_id,
+                    alert.metric_value,
+                    alert.threshold,
+                    alert.status,
+                    json.dumps(list(alert.dispatched_to)),
+                ),
+            )
+            new_id = cursor.lastrowid
+            await cursor.close()
+            await conn.commit()
+            async with conn.execute(
+                "SELECT id, org_id, slo_id, metric_value, threshold, status, "
+                "dispatched_to, created_at FROM slo_alerts WHERE id = ?",
+                (new_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("record_slo_alert: row vanished after insert")
+        return _row_to_slo_alert(row)
+
+    # ── SharingOps (Phase 3H) ─────────────────────────────────────────
+
+    async def get_or_init_sharing_config(self, org_id: str) -> SharingConfigData:
+        """Return the sharing config for an org, creating a default row if missing.
+
+        Mirrors ``PostgresStore.get_or_init_sharing_config``: if no row
+        exists, INSERT a default row and return the dataclass with the
+        column DEFAULTs (no SELECT-after-INSERT needed since the defaults
+        are known statically).
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT enabled, human_review_enabled, rate_limit_per_hour, "
+                "volume_alert_threshold, updated_at "
+                "FROM sharing_config WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                cfg_id = str(ULID())
+                await conn.execute(
+                    "INSERT OR IGNORE INTO sharing_config (id, org_id) VALUES (?, ?)",
+                    (cfg_id, org_id),
+                )
+                await conn.commit()
+                return SharingConfigData(
+                    enabled=False,
+                    human_review_enabled=False,
+                    rate_limit_per_hour=100,
+                    volume_alert_threshold=1000,
+                    updated_at=None,
+                )
+        return SharingConfigData(
+            enabled=bool(row["enabled"]),
+            human_review_enabled=bool(row["human_review_enabled"]),
+            rate_limit_per_hour=int(row["rate_limit_per_hour"]),
+            volume_alert_threshold=int(row["volume_alert_threshold"]),
+            updated_at=_parse_iso(row["updated_at"]),
+        )
+
+    async def update_sharing_config(
+        self, org_id: str, patch: SharingConfigPatch,
+    ) -> SharingConfigData:
+        """Upsert + apply a patch to the sharing config; returns the updated row.
+
+        Mirrors ``PostgresStore.update_sharing_config``: ensures a row
+        exists (INSERT if missing) then applies a dynamic UPDATE that
+        always bumps ``updated_at``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT id FROM sharing_config WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                existing = await cur.fetchone()
+            if existing is None:
+                await conn.execute(
+                    "INSERT INTO sharing_config (id, org_id) VALUES (?, ?)",
+                    (str(ULID()), org_id),
+                )
+
+            sets = ["updated_at = datetime('now')"]
+            params: list[Any] = []
+            for field_name in (
+                "enabled",
+                "human_review_enabled",
+                "rate_limit_per_hour",
+                "volume_alert_threshold",
+            ):
+                val = getattr(patch, field_name)
+                if val is not None:
+                    sets.append(f"{field_name} = ?")
+                    if field_name in ("enabled", "human_review_enabled"):
+                        params.append(1 if val else 0)
+                    else:
+                        params.append(val)
+            params.append(org_id)
+            await conn.execute(
+                f"UPDATE sharing_config SET {', '.join(sets)} WHERE org_id = ?",
+                params,
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT enabled, human_review_enabled, rate_limit_per_hour, "
+                "volume_alert_threshold, updated_at "
+                "FROM sharing_config WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("update_sharing_config: row vanished after upsert")
+        return SharingConfigData(
+            enabled=bool(row["enabled"]),
+            human_review_enabled=bool(row["human_review_enabled"]),
+            rate_limit_per_hour=int(row["rate_limit_per_hour"]),
+            volume_alert_threshold=int(row["volume_alert_threshold"]),
+            updated_at=_parse_iso(row["updated_at"]),
+        )
+
+    async def list_agent_sharing_configs(
+        self, org_id: str,
+    ) -> Sequence[AgentSharingConfigData]:
+        """List per-agent sharing configs for an org, ordered by agent_id.
+
+        Mirrors ``PostgresStore.list_agent_sharing_configs``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT agent_id, enabled, categories, updated_at "
+                "FROM agent_sharing_config "
+                "WHERE org_id = ? "
+                "ORDER BY agent_id",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        results: list[AgentSharingConfigData] = []
+        for r in rows:
+            cats_raw = r["categories"]
+            if isinstance(cats_raw, str):
+                cats = json.loads(cats_raw) if cats_raw else []
+            elif cats_raw is None:
+                cats = []
+            else:
+                cats = cats_raw
+            results.append(
+                AgentSharingConfigData(
+                    agent_id=r["agent_id"],
+                    enabled=bool(r["enabled"]),
+                    categories=tuple(cats or ()),
+                    updated_at=_parse_iso(r["updated_at"]),
+                )
+            )
+        return tuple(results)
+
+    async def upsert_agent_sharing_config(
+        self,
+        org_id: str,
+        agent_id: str,
+        *,
+        enabled: bool,
+        categories: Sequence[str],
+    ) -> AgentSharingConfigData:
+        """Insert or update the sharing config for a (org, agent) pair.
+
+        Mirrors ``PostgresStore.upsert_agent_sharing_config``: uses
+        ``INSERT … ON CONFLICT (org_id, agent_id) DO UPDATE``.
+        """
+        cats_json = json.dumps(list(categories))
+        now_iso = datetime.now(timezone.utc).isoformat()
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO agent_sharing_config
+                    (id, org_id, agent_id, enabled, categories, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (org_id, agent_id) DO UPDATE SET
+                    enabled = excluded.enabled,
+                    categories = excluded.categories,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(ULID()),
+                    org_id,
+                    agent_id,
+                    1 if enabled else 0,
+                    cats_json,
+                    now_iso,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT agent_id, enabled, categories, updated_at "
+                "FROM agent_sharing_config WHERE org_id = ? AND agent_id = ?",
+                (org_id, agent_id),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("upsert_agent_sharing_config: row vanished after upsert")
+        cats_raw = row["categories"]
+        if isinstance(cats_raw, str):
+            cats = json.loads(cats_raw) if cats_raw else []
+        elif cats_raw is None:
+            cats = []
+        else:
+            cats = cats_raw
+        return AgentSharingConfigData(
+            agent_id=row["agent_id"],
+            enabled=bool(row["enabled"]),
+            categories=tuple(cats or ()),
+            updated_at=_parse_iso(row["updated_at"]),
+        )
+
+    async def list_deny_rules(self, org_id: str) -> Sequence[DenyListRuleData]:
+        """List deny-list rules for an org, ordered by created_at.
+
+        Mirrors ``PostgresStore.list_deny_rules``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT id, pattern, is_regex, reason, created_at "
+                "FROM deny_list_rules "
+                "WHERE org_id = ? "
+                "ORDER BY created_at",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(
+            DenyListRuleData(
+                id=r["id"],
+                pattern=r["pattern"],
+                is_regex=bool(r["is_regex"]),
+                reason=r["reason"],
+                created_at=_parse_iso(r["created_at"]),
+            )
+            for r in rows
+        )
+
+    async def create_deny_rule(self, rule: NewDenyListRule) -> DenyListRuleData:
+        """Insert a new deny-list rule; returns the stored row.
+
+        Mirrors ``PostgresStore.create_deny_rule``.
+        """
+        rule_id = str(ULID())
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO deny_list_rules (id, org_id, pattern, is_regex, reason)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    rule_id,
+                    rule.org_id,
+                    rule.pattern,
+                    1 if rule.is_regex else 0,
+                    rule.reason,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                "SELECT id, pattern, is_regex, reason, created_at "
+                "FROM deny_list_rules WHERE id = ?",
+                (rule_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("create_deny_rule: row vanished after insert")
+        return DenyListRuleData(
+            id=row["id"],
+            pattern=row["pattern"],
+            is_regex=bool(row["is_regex"]),
+            reason=row["reason"],
+            created_at=_parse_iso(row["created_at"]),
+        )
+
+    async def delete_deny_rule(self, rule_id: str, org_id: str) -> bool:
+        """Delete a deny-list rule scoped to (id, org_id); True if a row was removed.
+
+        Mirrors ``PostgresStore.delete_deny_rule``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM deny_list_rules WHERE id = ? AND org_id = ?",
+                (rule_id, org_id),
+            )
+            deleted = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return bool(deleted)
+
+    async def list_audit_events(
+        self,
+        org_id: str,
+        *,
+        event_type: Optional[str] = None,
+        from_date: Optional[datetime] = None,
+        to_date: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> Sequence[AuditEventData]:
+        """List sharing audit events for an org with optional filters; newest first.
+
+        Mirrors ``PostgresStore.list_audit_events``: filters by org_id
+        always; optionally by event_type / created_at range.
+
+        ``from_date`` / ``to_date`` are normalized to ISO-8601 TEXT so
+        comparison against the SQLite ``created_at`` TEXT column works
+        lexicographically (same ordering as native datetime comparison).
+        """
+        where = ["org_id = ?"]
+        params: list[Any] = [org_id]
+        if event_type is not None:
+            where.append("event_type = ?")
+            params.append(event_type)
+        if from_date is not None:
+            fd = from_date if from_date.tzinfo else from_date.replace(tzinfo=timezone.utc)
+            where.append("created_at >= ?")
+            params.append(fd.isoformat())
+        if to_date is not None:
+            td = to_date if to_date.tzinfo else to_date.replace(tzinfo=timezone.utc)
+            where.append("created_at <= ?")
+            params.append(td.isoformat())
+        params.append(limit)
+        sql = (
+            "SELECT id, event_type, lesson_id, query_text, initiated_by, created_at "
+            "FROM sharing_audit "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC LIMIT ?"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return tuple(
+            AuditEventData(
+                id=r["id"],
+                event_type=r["event_type"],
+                lesson_id=r["lesson_id"],
+                query_text=r["query_text"],
+                initiated_by=r["initiated_by"],
+                created_at=_parse_iso(r["created_at"]),
+            )
+            for r in rows
+        )
+
+    async def record_audit_event(self, event: NewAuditEvent) -> None:
+        """Persist a sharing audit event row.
+
+        Mirrors ``PostgresStore.record_audit_event``.
+        """
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO sharing_audit
+                    (id, org_id, event_type, lesson_id, query_text, initiated_by)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(ULID()),
+                    event.org_id,
+                    event.event_type,
+                    event.lesson_id,
+                    event.query_text,
+                    event.initiated_by,
+                ),
+            )
+            await conn.commit()
+
+    async def get_sharing_stats(self, org_id: str) -> SharingStatsData:
+        """Compute aggregate sharing stats: lessons count, last shared, audit summary.
+
+        Mirrors ``PostgresStore.get_sharing_stats``: 3 sub-queries inside
+        a single ``_acquire()``. Operates on the ``memories`` base table
+        (post-migration 009 ``lessons`` is a view; aggregations remain
+        correct on the base table).
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) AS c FROM memories WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                count_row = await cur.fetchone()
+            async with conn.execute(
+                "SELECT MAX(created_at) AS last FROM memories WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                last_row = await cur.fetchone()
+            async with conn.execute(
+                "SELECT event_type, COUNT(*) AS cnt FROM sharing_audit "
+                "WHERE org_id = ? GROUP BY event_type",
+                (org_id,),
+            ) as cur:
+                summary_rows = await cur.fetchall()
+        summary = {r["event_type"]: int(r["cnt"]) for r in summary_rows}
+        return SharingStatsData(
+            count_shared=int(count_row["c"]) if count_row else 0,
+            last_shared=_parse_iso(last_row["last"]) if last_row else None,
+            audit_summary=summary,
+        )
+
+    async def purge_sharing(self, org_id: str) -> int:
+        """Purge all sharing-related rows for an org in a single tx.
+
+        Mirrors ``PostgresStore.purge_sharing``: counts memories first,
+        then deletes from memories / sharing_audit / deny_list_rules /
+        agent_sharing_config / sharing_config — all inside a single
+        ``transaction()``. Returns the pre-delete memories count.
+
+        Vec0 invariant: deletes ``memory_vectors`` rows for the to-be-
+        deleted memories before the ``DELETE FROM memories``, keeping
+        the memories ⇆ memory_vectors pair invariant intact (Phase 3B).
+        """
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT COUNT(*) AS c FROM memories WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
+                count_row = await cur.fetchone()
+            deleted_lessons = int(count_row["c"]) if count_row else 0
+            await tx.execute(
+                "DELETE FROM memory_vectors WHERE memory_rowid IN ("
+                "SELECT rowid FROM memories WHERE org_id = ?)",
+                (org_id,),
+            )
+            await tx.execute("DELETE FROM memories WHERE org_id = ?", (org_id,))
+            await tx.execute("DELETE FROM sharing_audit WHERE org_id = ?", (org_id,))
+            await tx.execute("DELETE FROM deny_list_rules WHERE org_id = ?", (org_id,))
+            await tx.execute("DELETE FROM agent_sharing_config WHERE org_id = ?", (org_id,))
+            await tx.execute("DELETE FROM sharing_config WHERE org_id = ?", (org_id,))
+        return deleted_lessons
+
+    async def rate_lesson(
+        self,
+        lesson_id: str,
+        org_id: str,
+        delta: int,
+        initiated_by: str,
+    ) -> Optional[int]:
+        """Atomically adjust a lesson's reputation_score and write a 'rate' audit event.
+
+        Returns the new reputation_score, or None if the lesson does not exist.
+
+        Mirrors ``PostgresStore.rate_lesson``: targets ``memories``
+        directly (post-migration 009 ``lessons`` is a view) within a
+        single ``transaction()``. SQLite doesn't support
+        ``UPDATE … RETURNING``; we probe-then-update-then-select inside
+        the same transaction so the audit event only fires when the
+        lesson exists.
+        """
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT 1 FROM memories WHERE id = ? AND org_id = ?",
+                (lesson_id, org_id),
+            ) as cur:
+                exists = await cur.fetchone()
+            if exists is None:
+                return None
+            await tx.execute(
+                "UPDATE memories "
+                "SET reputation_score = reputation_score + ?, "
+                "    updated_at = datetime('now') "
+                "WHERE id = ? AND org_id = ?",
+                (delta, lesson_id, org_id),
+            )
+            async with tx.execute(
+                "SELECT reputation_score FROM memories WHERE id = ? AND org_id = ?",
+                (lesson_id, org_id),
+            ) as cur:
+                score_row = await cur.fetchone()
+            new_score = int(score_row["reputation_score"]) if score_row else None
+            await tx.execute(
+                """
+                INSERT INTO sharing_audit
+                    (id, org_id, event_type, lesson_id, initiated_by)
+                VALUES (?, ?, 'rate', ?, ?)
+                """,
+                (str(ULID()), org_id, lesson_id, initiated_by),
+            )
+        return new_score
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -2963,22 +4061,9 @@ _STUBBED_METHODS: Sequence[str] = (
     # RecommendationOps — implemented in Phase 3G.
     # ConversationOps — implemented in Phase 3G.
     # AuditOps — implemented in Phase 3G.
-    # RetentionOps
-    "list_retention_policies", "get_retention_policy",
-    "create_retention_policy", "update_retention_policy",
-    "delete_retention_policy", "get_latest_snapshot_for_policy",
-    "count_snapshots_for_policy", "record_drill_result",
-    "list_drill_results_for_policy", "get_latest_drill_result",
-    # SloOps
-    "list_slo_definitions", "get_slo_definition",
-    "create_slo_definition", "update_slo_definition",
-    "delete_slo_definition", "list_slo_alerts", "record_slo_alert",
-    # SharingOps
-    "get_or_init_sharing_config", "update_sharing_config",
-    "list_agent_sharing_configs", "upsert_agent_sharing_config",
-    "list_deny_rules", "create_deny_rule", "delete_deny_rule",
-    "list_audit_events", "record_audit_event", "get_sharing_stats",
-    "purge_sharing", "rate_lesson",
+    # RetentionOps — implemented in Phase 3H.
+    # SloOps — implemented in Phase 3H.
+    # SharingOps — implemented in Phase 3H.
 )
 
 for _name in _STUBBED_METHODS:
