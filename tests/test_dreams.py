@@ -25,6 +25,13 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
+# CLI tests open SqliteStore; skip when [solo] not installed (CI's python
+# job runs without it). Only the contract tests run on Postgres.
+pytest.importorskip("aiosqlite")
+pytest.importorskip("sqlite_vec")
+
 from lore.cli.commands import dream as dream_cli
 from lore.setup import LORE_DREAM_TRIGGER_HOOK_SCRIPT
 
