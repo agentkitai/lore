@@ -86,6 +86,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The CI guard `scripts/check_routes_no_sql.py` now covers `src/lore/server/auth.py` (22 files total). **Every component in the request-handling path is SQL-free**; SQL lives exclusively in Store implementations.
 - 5 new contract tests in `tests/persistence/test_contract_keys.py` covering `lookup_api_key_by_hash` (round-trip, missing, role passthrough) and `touch_api_key_last_used` (sets timestamp, no-op on missing id).
 - Existing `tests/server/test_auth.py`, `test_retrieve.py`, `test_rbac.py`, `test_jwt_auth.py`, `test_keys.py`, and `tests/integration/test_remote.py` updated to mock `lore.server.auth.get_store` instead of `get_pool`.
+- **Phase 3A: SqliteStore foundation.** New `src/lore/persistence/sqlite.py` wires the second backend skeleton — opens an aiosqlite connection with WAL pragmas (`journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`, `foreign_keys=ON`), loads the `sqlite-vec` extension, and applies the new `migrations_sqlite/` schema tree. All Store-protocol methods raise `NotImplementedError` until subsequent Phase 3 sub-phases (3B vector layer, 3C–3F per-slice impls, 3G bootstrap + typed-exception parity).
+- `make_store()` now dispatches `sqlite://` URLs to `SqliteStore.open()`. A `[solo]` `pyproject.toml` extra installs `aiosqlite>=0.19` + `sqlite-vec>=0.1.0`.
+- New `migrations_sqlite/` tree (17 files mirroring `migrations/`) translates the Postgres schema for SQLite: `JSONB→TEXT`, `TIMESTAMPTZ→TEXT (ISO-8601)`, `vector(384)` columns dropped (vec0 virtual table comes in Phase 3B), HNSW indexes dropped, `DO $$` blocks → straight DDL, `gen_random_uuid()` defaults dropped (caller-side ULIDs), `now()` → `datetime('now')`. Migration 009: lessons→memories rename preserved; the backward-compat `lessons` view is read-only (SQLite views can't have RULEs).
+- New CI guard `scripts/check_migrations_parity.py` rejects PRs that add a Postgres migration without a matching SQLite sibling. The CI workflow (`.github/workflows/ci.yml`) now invokes both this and the routes-no-SQL guard explicitly.
+- New smoke tests at `tests/persistence/test_sqlite_smoke.py` (8 tests covering open/idempotency/factory dispatch/stub method behavior/path resolution).
 
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 

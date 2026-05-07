@@ -15,7 +15,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, AsyncIterator, Optional, Sequence
+from typing import Any, Optional, Sequence
 from urllib.parse import urlparse
 
 from lore.persistence.exceptions import (

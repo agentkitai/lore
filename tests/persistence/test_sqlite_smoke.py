@@ -8,7 +8,6 @@ schema once and is idempotent.
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import pytest
