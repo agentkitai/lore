@@ -205,14 +205,22 @@ _SQLITE_METRIC_SQL: dict[str, str] = {
 }
 
 
-# Default migrations directory (sibling of migrations/), resolved at runtime
-# via lore.persistence.sqlite._migrations_dir() so tests can override it.
-_DEFAULT_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "migrations_sqlite"
+# Default migrations directory. Two layouts are supported so the same code
+# path works in editable/dev installs AND in regular pip/pipx installs:
+#   Editable: <repo-root>/migrations_sqlite/
+#   Installed: <site-packages>/lore/migrations_sqlite/  (shipped via
+#              tool.hatch.build.targets.wheel.force-include in pyproject.toml)
+_PACKAGED_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "migrations_sqlite"
+_DEV_MIGRATIONS_DIR = Path(__file__).resolve().parent.parent.parent.parent / "migrations_sqlite"
 
 
 def _migrations_dir() -> Path:
     override = os.environ.get("LORE_MIGRATIONS_SQLITE_DIR")
-    return Path(override) if override else _DEFAULT_MIGRATIONS_DIR
+    if override:
+        return Path(override)
+    if _PACKAGED_MIGRATIONS_DIR.exists():
+        return _PACKAGED_MIGRATIONS_DIR
+    return _DEV_MIGRATIONS_DIR
 
 
 def _resolve_db_path(database_url: str) -> str:

@@ -86,6 +86,16 @@ Changelog = "https://github.com/amitpaz1/lore/blob/main/CHANGELOG.md"
 [tool.hatch.build.targets.wheel]
 packages = ["src/lore"]
 
+# Ship the migration trees inside the wheel so SqliteStore + asyncpg
+# init_pool can find them after a regular pip/pipx install. Both trees
+# land at lore/migrations_pg/ and lore/migrations_sqlite/ next to the
+# package. The runtime lookup in src/lore/persistence/sqlite.py and
+# src/lore/server/db.py prefers these package-relative paths and falls
+# back to the project-root paths for editable/dev installs.
+[tool.hatch.build.targets.wheel.force-include]
+"migrations" = "lore/migrations_pg"
+"migrations_sqlite" = "lore/migrations_sqlite"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [

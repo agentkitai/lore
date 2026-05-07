@@ -56,9 +56,19 @@ async def run_migrations(pool: "asyncpg.Pool", migrations_dir: str = "migrations
     """
     migrations_path = Path(migrations_dir)
     if not migrations_path.exists():
-        # Try relative to the project root
-        project_root = Path(__file__).parent.parent.parent.parent
-        migrations_path = project_root / migrations_dir
+        # Try the packaged path first (regular pip/pipx install: the wheel
+        # ships migrations under <site-packages>/lore/migrations_pg/).
+        package_root = Path(__file__).resolve().parent.parent  # lore/
+        if migrations_dir == "migrations":
+            packaged = package_root / "migrations_pg"
+        else:
+            packaged = package_root / migrations_dir
+        if packaged.exists():
+            migrations_path = packaged
+        else:
+            # Editable/dev install: project root next to src/.
+            project_root = Path(__file__).parent.parent.parent.parent
+            migrations_path = project_root / migrations_dir
     if not migrations_path.exists():
         logger.warning("Migrations directory not found: %s", migrations_dir)
         return
