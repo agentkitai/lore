@@ -28,6 +28,10 @@ jobs:
           fi
       - name: Lint
         run: ruff check src/ tests/
+      - name: Routes-no-SQL guard
+        run: python scripts/check_routes_no_sql.py
+      - name: Migrations parity guard
+        run: python scripts/check_migrations_parity.py
       - name: Test
         run: pytest --ignore=tests/server/
 

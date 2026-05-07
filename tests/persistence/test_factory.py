@@ -38,7 +38,14 @@ async def test_unknown_scheme_raises_config_error():
 
 
 @pytest.mark.asyncio
-async def test_sqlite_scheme_raises_until_phase_3():
-    with pytest.raises(ConfigError) as ei:
-        await make_store("sqlite:///./test.db")
-    assert "Phase 3" in str(ei.value) or "not yet" in str(ei.value).lower()
+async def test_sqlite_scheme_returns_sqlite_store(tmp_path):
+    """Phase 3A: sqlite:// URLs return a real SqliteStore."""
+    pytest.importorskip("aiosqlite")
+    pytest.importorskip("sqlite_vec")
+    from lore.persistence.sqlite import SqliteStore
+
+    store = await make_store(f"sqlite:///{tmp_path / 'factory.db'}")
+    try:
+        assert isinstance(store, SqliteStore)
+    finally:
+        await store.close()
