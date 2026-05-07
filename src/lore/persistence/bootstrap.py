@@ -10,7 +10,8 @@ Phase 3J of the SQLite solo-mode design (decisions 1-2 in the spec). When
 
 Idempotent: subsequent opens see a populated ``api_keys`` table and skip
 bootstrap. In-memory DBs (``sqlite:///:memory:``) skip bootstrap entirely
-because they're test-only.
+by default because they're test-only — pass ``force_for_memory=True`` to
+override (Phase 4A: AsyncLore needs the org row even for ``:memory:``).
 
 Spec: docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md
 """
@@ -22,7 +23,7 @@ import logging
 import os
 import secrets
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 from lore.persistence.types import NewApiKey
 
@@ -39,6 +40,11 @@ SOLO_WORKSPACE_NAME = "Solo"
 
 DEFAULT_KEY_PATH = Path("~/.lore/key.txt")
 
+# Sentinel: ``key_path`` is a 3-state knob — ``_DEFAULT`` (write to
+# ``~/.lore/key.txt``), an explicit ``Path`` (write there), or ``None``
+# (skip writing the key file entirely; used by ``:memory:`` runs).
+_DEFAULT = object()
+
 
 def _generate_raw_key() -> str:
     """Mint a fresh ``lore_sk_<hex>`` API key.
@@ -52,25 +58,38 @@ def _generate_raw_key() -> str:
 async def bootstrap_solo_if_empty(
     store: "SqliteStore",
     *,
-    key_path: Optional[Path] = None,
+    key_path: Union[Path, None, object] = _DEFAULT,
+    force_for_memory: bool = False,
 ) -> Optional[str]:
     """Seed the solo org + first API key when the DB is empty.
 
     Returns the raw API key string when a bootstrap was performed, ``None``
-    otherwise (idempotent). The key is also written to ``key_path`` (default
-    ``~/.lore/key.txt``) with mode ``0600``.
+    otherwise (idempotent). When ``key_path`` is a ``Path`` (default:
+    ``~/.lore/key.txt``) the raw key is also written there with mode
+    ``0600``. Passing ``key_path=None`` skips writing the key file entirely
+    (useful for ``:memory:`` test runs that should leave no on-disk
+    artifacts).
 
     Args:
         store: An opened ``SqliteStore`` whose schema migrations have already
             been applied.
-        key_path: Where to write the raw key. Defaults to ``~/.lore/key.txt``.
-            Pass an explicit path in tests; ``None`` triggers the default.
+        key_path: Where to write the raw key.
+
+            * Omitted / sentinel → ``~/.lore/key.txt`` (the historical default).
+            * Explicit ``Path`` → write there with mode ``0600``.
+            * ``None`` → do not write the key to disk at all; only the
+              hash is persisted in the DB.
+        force_for_memory: When ``True``, run bootstrap even for in-memory
+            DBs (``store._db_path == ":memory:"``). Defaults to ``False`` so
+            test fixtures that share the historical "skip :memory:" contract
+            stay green; set this from the embedded API path
+            (``AsyncLore``) where the org row is required.
 
     Skip conditions:
-        * The DB is in-memory (``store._db_path == ":memory:"``).
+        * The DB is in-memory **and** ``force_for_memory`` is ``False``.
         * ``count_active_root_keys('solo') > 0`` already.
     """
-    if getattr(store, "_db_path", None) == ":memory:":
+    if getattr(store, "_db_path", None) == ":memory:" and not force_for_memory:
         logger.debug("bootstrap_solo_if_empty: skipping in-memory DB")
         return None
 
@@ -125,7 +144,18 @@ async def bootstrap_solo_if_empty(
         )
     )
 
-    target = (key_path if key_path is not None else DEFAULT_KEY_PATH).expanduser()
+    # Resolve the key-write destination. ``None`` means "do not persist"
+    # (in-memory test runs). The sentinel falls back to the default path.
+    if key_path is None:
+        logger.info(
+            "bootstrap_solo_if_empty: created solo org + root API key (key file skipped)"
+        )
+        return raw_key
+
+    target_path: Path = (
+        DEFAULT_KEY_PATH if key_path is _DEFAULT else key_path  # type: ignore[assignment]
+    )
+    target = target_path.expanduser()
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(raw_key + "\n")
     try:
