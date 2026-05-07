@@ -22,6 +22,28 @@ class NewMemory:
 
 
 @dataclass(frozen=True, slots=True)
+class NewObservation:
+    """Phase 6B observation tier — structured raw observation.
+
+    Observations are the bulk-write side of the memory tier: cheap,
+    high-volume captures emitted by the Phase 6A auto-capture subagent.
+    They share the ``memories`` table with polished memories but carry
+    a ``{title, facts, narrative}`` block in ``meta`` and a dedicated
+    ``type='observation'`` discriminator.
+    """
+
+    org_id: str
+    title: str
+    facts: Sequence[str]
+    narrative: str
+    tags: Sequence[str] = ()
+    project: Optional[str] = None
+    source: Optional[str] = None  # e.g. "claude-code-capture"
+    captured_by: str = "auto"     # "auto" | "manual"
+    session_id: Optional[str] = None
+
+
+@dataclass(frozen=True, slots=True)
 class StoredMemory:
     id: str
     org_id: str
