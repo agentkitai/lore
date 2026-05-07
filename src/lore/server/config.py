@@ -6,6 +6,26 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+# Default solo-mode database URL — when neither ``LORE_DATABASE_URL`` nor
+# the legacy ``DATABASE_URL`` is set, fall back to a SQLite file under
+# ``~/.lore``. Mirrors decision #6 in the SQLite solo-mode design.
+_DEFAULT_SOLO_DATABASE_URL = "sqlite:///~/.lore/lore.db"
+
+
+def _resolve_default_database_url() -> str:
+    """Pick a database URL with the precedence ``LORE_DATABASE_URL`` >
+    ``DATABASE_URL`` > solo-mode default.
+
+    The double-env precedence preserves Postgres deployments that already
+    set ``DATABASE_URL`` while letting the solo-mode binary read the
+    namespaced ``LORE_DATABASE_URL`` first.
+    """
+    return (
+        os.environ.get("LORE_DATABASE_URL")
+        or os.environ.get("DATABASE_URL")
+        or _DEFAULT_SOLO_DATABASE_URL
+    )
+
 
 @dataclass
 class Settings:
@@ -51,7 +71,7 @@ class Settings:
         apply_secrets_to_env()
 
         return cls(
-            database_url=os.environ.get("DATABASE_URL", ""),
+            database_url=_resolve_default_database_url(),
             redis_url=os.environ.get("REDIS_URL", ""),
             rate_limit_backend=os.environ.get("RATE_LIMIT_BACKEND", "memory"),
             host=os.environ.get("HOST", "0.0.0.0"),
