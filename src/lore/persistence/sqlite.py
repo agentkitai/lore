@@ -28,6 +28,7 @@ from ulid import ULID
 from lore.persistence.exceptions import (
     BackendUnavailableError,
     ConfigError,
+    IntegrityError,
     StoreError,
     StoreNotFoundError,
 )
@@ -37,12 +38,14 @@ from lore.persistence.types import (
     MemoryFilter,
     MemoryPatch,
     NewMemory,
+    NewProfile,
     NewRetrievalEvent,
     RecallParams,
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
     StoredMemory,
+    StoredProfile,
     TimeseriesPoint,
     TopQueryRow,
 )
@@ -232,6 +235,40 @@ def _row_to_memory(row) -> StoredMemory:
         importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=_parse_iso(row["last_accessed_at"]),
+    )
+
+
+def _row_to_profile(row) -> StoredProfile:
+    """Translate a SQLite ``retrieval_profiles`` row to ``StoredProfile``.
+
+    Mirrors ``lore.persistence.postgres._row_to_profile`` but parses the
+    JSON-encoded ``tier_filters`` TEXT column and the INTEGER 0/1 booleans.
+    """
+    tier_raw = row["tier_filters"]
+    if isinstance(tier_raw, str):
+        decoded = json.loads(tier_raw)
+        tf: Optional[tuple] = tuple(decoded) if decoded is not None else None
+    elif tier_raw is None:
+        tf = None
+    else:
+        tf = tuple(tier_raw)
+    return StoredProfile(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        semantic_weight=float(row["semantic_weight"]),
+        graph_weight=float(row["graph_weight"]),
+        recency_bias=float(row["recency_bias"]),
+        tier_filters=tf,
+        min_score=float(row["min_score"]),
+        max_results=int(row["max_results"]),
+        is_preset=bool(row["is_preset"]),
+        k=row["k"],
+        threshold=float(row["threshold"]) if row["threshold"] is not None else None,
+        rerank=bool(row["rerank"]) if row["rerank"] is not None else False,
+        include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
     )
 
 
@@ -1724,6 +1761,130 @@ class SqliteStore:
             for r in rows
         )
 
+    # ── PolicyOps (Phase 3F) ──────────────────────────────────────────
+
+    _PROFILE_COLS = (
+        "id, org_id, name, "
+        "semantic_weight, graph_weight, recency_bias, "
+        "tier_filters, min_score, max_results, is_preset, "
+        "k, threshold, rerank, include_graph, "
+        "created_at, updated_at"
+    )
+
+    async def get_profile(self, profile_id: str) -> Optional[StoredProfile]:
+        """Return a profile by id, or None.
+
+        Mirrors ``PostgresStore.get_profile``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._PROFILE_COLS} FROM retrieval_profiles WHERE id = ?",
+                (profile_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_profile(row) if row else None
+
+    async def get_profile_by_name(
+        self, org_id: str, name: str
+    ) -> Optional[StoredProfile]:
+        """Return the profile matching (org_id, name), or None.
+
+        Mirrors ``PostgresStore.get_profile_by_name``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._PROFILE_COLS} FROM retrieval_profiles "
+                "WHERE name = ? AND org_id = ?",
+                (name, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_profile(row) if row else None
+
+    async def list_profiles(self, org_id: str) -> Sequence[StoredProfile]:
+        """List org-owned + global profiles, ordered by name.
+
+        Mirrors ``PostgresStore.list_profiles`` — matches rows where
+        ``org_id = ? OR org_id = '__global__'``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._PROFILE_COLS} FROM retrieval_profiles "
+                "WHERE org_id = ? OR org_id = '__global__' "
+                "ORDER BY name",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_profile(r) for r in rows)
+
+    async def create_profile(self, profile: NewProfile) -> StoredProfile:
+        """Insert a new profile; raises IntegrityError on (org_id, name) collision.
+
+        Mirrors ``PostgresStore.create_profile``: generates a ``prof_<ULID>``
+        id and returns the freshly inserted row as ``StoredProfile``.
+        """
+        profile_id = f"prof_{ULID()}"
+        tier_filters_json = (
+            json.dumps(list(profile.tier_filters))
+            if profile.tier_filters is not None
+            else None
+        )
+        async with self._acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO retrieval_profiles
+                        (id, org_id, name,
+                         semantic_weight, graph_weight, recency_bias,
+                         tier_filters, min_score, max_results, is_preset,
+                         k, threshold, rerank, include_graph)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        profile_id,
+                        profile.org_id,
+                        profile.name,
+                        profile.semantic_weight,
+                        profile.graph_weight,
+                        profile.recency_bias,
+                        tier_filters_json,
+                        profile.min_score,
+                        profile.max_results,
+                        1 if profile.is_preset else 0,
+                        profile.k,
+                        profile.threshold,
+                        1 if profile.rerank else 0,
+                        1 if profile.include_graph else 0,
+                    ),
+                )
+                await conn.commit()
+            except aiosqlite.IntegrityError as e:
+                raise IntegrityError(
+                    f"Profile name {profile.name!r} already exists for org_id={profile.org_id!r}"
+                ) from e
+            async with conn.execute(
+                f"SELECT {self._PROFILE_COLS} FROM retrieval_profiles WHERE id = ?",
+                (profile_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("create_profile: row vanished after insert")
+        return _row_to_profile(row)
+
+    async def delete_profile(self, profile_id: str, org_id: str) -> bool:
+        """Delete a profile scoped to (id, org_id); returns True if removed.
+
+        Mirrors ``PostgresStore.delete_profile``.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM retrieval_profiles WHERE id = ? AND org_id = ?",
+                (profile_id, org_id),
+            )
+            count = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return count > 0
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -1775,9 +1936,10 @@ _STUBBED_METHODS: Sequence[str] = (
     "save_rejected_pattern", "query_relationships",
     "get_graph_stats", "get_timeline_buckets", "get_memories_by_entities",
     "search_memories_text",
-    # PolicyOps
-    "get_profile", "get_profile_by_name", "list_profiles", "create_profile",
-    "update_profile", "delete_profile", "resolve_profile_for_key",
+    # PolicyOps — Phase 3F implemented get/list/create/delete + by_name;
+    # update_profile + resolve_profile_for_key remain pending for the
+    # next 3F sub-commit.
+    "update_profile", "resolve_profile_for_key",
     # WorkspaceOps
     "get_workspace", "list_workspaces", "create_workspace",
     "update_workspace", "archive_workspace",

@@ -12,6 +12,7 @@ import pytest
 
 from lore.persistence import IntegrityError, NewProfile, Store, StoredProfile
 from lore.persistence.types import ProfilePatch
+from tests.persistence.conftest import _is_sqlite
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -34,39 +35,77 @@ async def _insert_profile(
     include_graph: bool = True,
 ) -> str:
     """Insert a retrieval_profile row via raw SQL and return its id."""
+    import json as _json
+
     profile_id = f"prof_{uuid.uuid4().hex[:16]}"
     conn = store._conn
-    await conn.execute(
-        """
-        INSERT INTO retrieval_profiles (
-            id, org_id, name,
-            semantic_weight, graph_weight, recency_bias,
-            tier_filters, min_score, max_results, is_preset,
-            k, threshold, rerank, include_graph,
-            created_at, updated_at
-        ) VALUES (
-            $1, $2, $3,
-            $4, $5, $6,
-            $7, $8, $9, $10,
-            $11, $12, $13, $14,
-            NOW(), NOW()
+    if _is_sqlite(store):
+        await conn.execute(
+            """
+            INSERT INTO retrieval_profiles (
+                id, org_id, name,
+                semantic_weight, graph_weight, recency_bias,
+                tier_filters, min_score, max_results, is_preset,
+                k, threshold, rerank, include_graph,
+                created_at, updated_at
+            ) VALUES (
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?, ?,
+                datetime('now'), datetime('now')
+            )
+            """,
+            (
+                profile_id,
+                org_id,
+                name,
+                semantic_weight,
+                graph_weight,
+                recency_bias,
+                _json.dumps(list(tier_filters)) if tier_filters is not None else None,
+                min_score,
+                max_results,
+                1 if is_preset else 0,
+                k,
+                threshold,
+                1 if rerank else 0,
+                1 if include_graph else 0,
+            ),
         )
-        """,
-        profile_id,
-        org_id,
-        name,
-        semantic_weight,
-        graph_weight,
-        recency_bias,
-        list(tier_filters) if tier_filters is not None else None,
-        min_score,
-        max_results,
-        is_preset,
-        k,
-        threshold,
-        rerank,
-        include_graph,
-    )
+        await conn.commit()
+    else:
+        await conn.execute(
+            """
+            INSERT INTO retrieval_profiles (
+                id, org_id, name,
+                semantic_weight, graph_weight, recency_bias,
+                tier_filters, min_score, max_results, is_preset,
+                k, threshold, rerank, include_graph,
+                created_at, updated_at
+            ) VALUES (
+                $1, $2, $3,
+                $4, $5, $6,
+                $7, $8, $9, $10,
+                $11, $12, $13, $14,
+                NOW(), NOW()
+            )
+            """,
+            profile_id,
+            org_id,
+            name,
+            semantic_weight,
+            graph_weight,
+            recency_bias,
+            list(tier_filters) if tier_filters is not None else None,
+            min_score,
+            max_results,
+            is_preset,
+            k,
+            threshold,
+            rerank,
+            include_graph,
+        )
     return profile_id
 
 
