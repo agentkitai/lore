@@ -720,6 +720,114 @@ class SqliteStore:
             await cursor.close()
         return int(deleted) if deleted is not None else 0
 
+    async def bump_access_counts(
+        self,
+        org_id: str,
+        memory_ids: Sequence[str],
+    ) -> None:
+        """Atomically bump access_count + last_accessed_at + importance_score.
+
+        Mirrors ``PostgresStore.bump_access_counts``: increments
+        ``access_count``, sets ``last_accessed_at = now()``, and recomputes
+        ``importance_score`` from confidence, vote delta, and the (slightly
+        damped) log of the new access count.
+
+        Translation notes:
+        * PG ``GREATEST(0.1, x)`` → SQLite ``MAX(0.1, x)``.
+        * SQLite has ``ln`` since 3.35; the formula matches PG verbatim.
+        * Cross-org isolation is preserved by the WHERE clause.
+        """
+        if not memory_ids:
+            return
+        placeholders = ",".join(["?"] * len(memory_ids))
+        sql = (
+            "UPDATE memories SET "
+            "access_count = COALESCE(access_count, 0) + 1, "
+            "last_accessed_at = datetime('now'), "
+            "importance_score = COALESCE(confidence, 1.0) "
+            " * MAX(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1) "
+            " * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1) "
+            f"WHERE id IN ({placeholders}) AND org_id = ?"
+        )
+        params: list[Any] = list(memory_ids)
+        params.append(org_id)
+        async with self._acquire() as conn:
+            await conn.execute(sql, tuple(params))
+            await conn.commit()
+
+    async def enrich_memory_meta(
+        self,
+        memory_id: str,
+        enrichment_data: "Mapping[str, Any]",
+    ) -> None:
+        """Set ``meta.enrichment = enrichment_data``.
+
+        PG: ``jsonb_set(COALESCE(meta, '{}'), '{enrichment}', $2)`` — sets
+        the ``enrichment`` key to the supplied JSON value, replacing any
+        prior value at that key. SQLite: ``json_set(meta, '$.enrichment', json(?))``
+        has the same effect (sets a single key in a flat dict).
+
+        Note (PG vs SQLite parity): PG's ``jsonb_set`` writes the full
+        passed value at the path; SQLite's ``json_set`` likewise writes
+        the value at the single path key. Behavior is identical for the
+        single ``$.enrichment`` write the service layer performs. We do
+        NOT use ``json_patch`` here — that does an RFC 7396 merge which
+        differs from PG's ``jsonb_set`` semantics for nested maps.
+        """
+        sql = (
+            "UPDATE memories SET "
+            "meta = json_set(COALESCE(meta, '{}'), '$.enrichment', json(?)), "
+            "updated_at = datetime('now') "
+            "WHERE id = ?"
+        )
+        async with self._acquire() as conn:
+            await conn.execute(
+                sql,
+                (json.dumps(dict(enrichment_data)), memory_id),
+            )
+            await conn.commit()
+
+    async def vote_memory(
+        self,
+        org_id: str,
+        memory_id: str,
+        *,
+        direction: str,
+    ) -> "StoredMemory":
+        """Increment ``upvotes`` or ``downvotes``; mirrors PG signature.
+
+        ``direction`` is ``'up'`` or ``'down'``; anything else raises
+        ``ValueError`` (matches PG's ``ValueError``). Raises
+        ``StoreNotFoundError`` if the memory doesn't exist.
+        """
+        if direction == "up":
+            column = "upvotes"
+        elif direction == "down":
+            column = "downvotes"
+        else:
+            raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
+        sql = (
+            f"UPDATE memories SET {column} = COALESCE({column}, 0) + 1, "
+            "updated_at = datetime('now') "
+            "WHERE id = ? AND org_id = ?"
+        )
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql, (memory_id, org_id))
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if updated == 0:
+                raise StoreNotFoundError("memories", memory_id)
+            async with conn.execute(
+                f"SELECT {self._MEMORY_COLS} FROM memories "
+                "WHERE id = ? AND org_id = ?",
+                (memory_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreNotFoundError("memories", memory_id)
+        return _row_to_memory(row)
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
