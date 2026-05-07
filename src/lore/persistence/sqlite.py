@@ -40,6 +40,7 @@ from lore.persistence.types import (
     NewMemory,
     NewProfile,
     NewRetrievalEvent,
+    NewWorkspace,
     ProfilePatch,
     RecallParams,
     RetrievalAnalyticsResult,
@@ -47,8 +48,10 @@ from lore.persistence.types import (
     ScoredMemory,
     StoredMemory,
     StoredProfile,
+    StoredWorkspace,
     TimeseriesPoint,
     TopQueryRow,
+    WorkspacePatch,
 )
 
 # Embedding dimension is fixed at 384 across the codebase
@@ -236,6 +239,24 @@ def _row_to_memory(row) -> StoredMemory:
         importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=_parse_iso(row["last_accessed_at"]),
+    )
+
+
+def _row_to_workspace(row) -> StoredWorkspace:
+    """Translate a SQLite ``workspaces`` row to ``StoredWorkspace``."""
+    settings_raw = row["settings"]
+    if isinstance(settings_raw, str):
+        settings = json.loads(settings_raw) if settings_raw else {}
+    else:
+        settings = settings_raw or {}
+    return StoredWorkspace(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        slug=row["slug"],
+        settings=dict(settings or {}),
+        created_at=_parse_iso(row["created_at"]),
+        archived_at=_parse_iso(row["archived_at"]),
     )
 
 
@@ -1983,6 +2004,148 @@ class SqliteStore:
                 row = await cur.fetchone()
         return _row_to_profile(row) if row else None
 
+    # ── WorkspaceOps (Phase 3F) ───────────────────────────────────────
+
+    _WORKSPACE_COLS = (
+        "id, org_id, name, slug, settings, created_at, archived_at"
+    )
+
+    async def get_workspace(
+        self, workspace_id: str, org_id: str
+    ) -> Optional[StoredWorkspace]:
+        """Return a workspace by (id, org_id), or None.
+
+        Mirrors ``PostgresStore.get_workspace``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._WORKSPACE_COLS} FROM workspaces "
+                "WHERE id = ? AND org_id = ?",
+                (workspace_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_workspace(row) if row else None
+
+    async def list_workspaces(
+        self, org_id: str, *, include_archived: bool = False
+    ) -> Sequence[StoredWorkspace]:
+        """List workspaces for an org; archived excluded by default.
+
+        Mirrors ``PostgresStore.list_workspaces``.
+        """
+        if include_archived:
+            sql = (
+                f"SELECT {self._WORKSPACE_COLS} FROM workspaces "
+                "WHERE org_id = ? ORDER BY name"
+            )
+            params: tuple = (org_id,)
+        else:
+            sql = (
+                f"SELECT {self._WORKSPACE_COLS} FROM workspaces "
+                "WHERE org_id = ? AND archived_at IS NULL ORDER BY name"
+            )
+            params = (org_id,)
+        async with self._acquire() as conn:
+            async with conn.execute(sql, params) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_workspace(r) for r in rows)
+
+    async def create_workspace(self, ws: NewWorkspace) -> StoredWorkspace:
+        """Insert a new workspace; raises IntegrityError on (org_id, slug) collision.
+
+        Mirrors ``PostgresStore.create_workspace``.
+        """
+        workspace_id = f"ws_{ULID()}"
+        async with self._acquire() as conn:
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO workspaces (id, org_id, name, slug, settings)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        workspace_id,
+                        ws.org_id,
+                        ws.name,
+                        ws.slug,
+                        json.dumps(dict(ws.settings)),
+                    ),
+                )
+                await conn.commit()
+            except aiosqlite.IntegrityError as e:
+                raise IntegrityError(
+                    f"Workspace slug {ws.slug!r} already exists for org_id={ws.org_id!r}"
+                ) from e
+            async with conn.execute(
+                f"SELECT {self._WORKSPACE_COLS} FROM workspaces WHERE id = ?",
+                (workspace_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError("create_workspace: row vanished after insert")
+        return _row_to_workspace(row)
+
+    async def update_workspace(
+        self, workspace_id: str, org_id: str, patch: WorkspacePatch
+    ) -> Optional[StoredWorkspace]:
+        """Apply a patch and return the updated row, or None if absent.
+
+        Mirrors ``PostgresStore.update_workspace``: builds a dynamic SET
+        clause from non-None patch fields. Empty patches raise ``ValueError``.
+        """
+        sets: list[str] = []
+        params: list = []
+
+        if patch.name is not None:
+            params.append(patch.name)
+            sets.append("name = ?")
+        if patch.settings is not None:
+            params.append(json.dumps(dict(patch.settings)))
+            sets.append("settings = ?")
+
+        if not sets:
+            raise ValueError(
+                "update_workspace called with empty patch — caller must ensure at least one field is set"
+            )
+
+        params.extend([workspace_id, org_id])
+        sql = (
+            "UPDATE workspaces "
+            f"SET {', '.join(sets)} "
+            "WHERE id = ? AND org_id = ?"
+        )
+        async with self._acquire() as conn:
+            cursor = await conn.execute(sql, params)
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._WORKSPACE_COLS} FROM workspaces "
+                "WHERE id = ? AND org_id = ?",
+                (workspace_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_workspace(row) if row else None
+
+    async def archive_workspace(self, workspace_id: str, org_id: str) -> bool:
+        """Mark a workspace archived; returns True if a row transitioned.
+
+        Mirrors ``PostgresStore.archive_workspace`` — the ``archived_at IS NULL``
+        guard makes a no-op on already-archived workspaces and returns False.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "UPDATE workspaces SET archived_at = datetime('now') "
+                "WHERE id = ? AND org_id = ? AND archived_at IS NULL",
+                (workspace_id, org_id),
+            )
+            count = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+        return count > 0
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -2035,9 +2198,8 @@ _STUBBED_METHODS: Sequence[str] = (
     "get_graph_stats", "get_timeline_buckets", "get_memories_by_entities",
     "search_memories_text",
     # PolicyOps — implemented in Phase 3F.
-    # WorkspaceOps
-    "get_workspace", "list_workspaces", "create_workspace",
-    "update_workspace", "archive_workspace",
+    # WorkspaceOps — Phase 3F implemented workspace CRUD; member ops
+    # (add/list/update_role/remove) follow in the next 3F sub-commit.
     "add_workspace_member", "list_workspace_members",
     "update_workspace_member_role", "remove_workspace_member",
     # AuthOps

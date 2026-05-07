@@ -12,6 +12,7 @@ import pytest
 from lore.persistence import Store
 from lore.persistence.exceptions import IntegrityError
 from lore.persistence.types import NewMember, NewWorkspace, StoredMember, StoredWorkspace, WorkspacePatch
+from tests.persistence.conftest import _is_sqlite
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -30,21 +31,36 @@ async def _insert_workspace(
 
     ws_id = workspace_id or f"ws_{ULID()}"
     conn = store._conn
-    await conn.execute(
-        """
-        INSERT INTO workspaces (id, org_id, name, slug, settings)
-        VALUES ($1, $2, $3, $4, '{}'::jsonb)
-        """,
-        ws_id,
-        org_id,
-        name,
-        slug,
-    )
-    if archived:
+    if _is_sqlite(store):
         await conn.execute(
-            "UPDATE workspaces SET archived_at = now() WHERE id = $1",
-            ws_id,
+            """
+            INSERT INTO workspaces (id, org_id, name, slug, settings)
+            VALUES (?, ?, ?, ?, '{}')
+            """,
+            (ws_id, org_id, name, slug),
         )
+        if archived:
+            await conn.execute(
+                "UPDATE workspaces SET archived_at = datetime('now') WHERE id = ?",
+                (ws_id,),
+            )
+        await conn.commit()
+    else:
+        await conn.execute(
+            """
+            INSERT INTO workspaces (id, org_id, name, slug, settings)
+            VALUES ($1, $2, $3, $4, '{}'::jsonb)
+            """,
+            ws_id,
+            org_id,
+            name,
+            slug,
+        )
+        if archived:
+            await conn.execute(
+                "UPDATE workspaces SET archived_at = now() WHERE id = $1",
+                ws_id,
+            )
     return ws_id
 
 
