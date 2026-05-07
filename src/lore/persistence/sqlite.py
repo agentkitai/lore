@@ -37,19 +37,27 @@ from lore.persistence.types import (
     ExportedMemory,
     MemoryFilter,
     MemoryPatch,
+    NewApiKey,
+    NewConversationJob,
     NewMember,
     NewMemory,
     NewProfile,
+    NewRecommendationFeedback,
     NewRetrievalEvent,
     NewWorkspace,
     ProfilePatch,
     RecallParams,
+    RecommendationCandidate,
     RetrievalAnalyticsResult,
     ScoreDistributionBucket,
     ScoredMemory,
+    StoredApiKey,
+    StoredAuditEntry,
+    StoredConversationJob,
     StoredMember,
     StoredMemory,
     StoredProfile,
+    StoredRecommendationConfig,
     StoredWorkspace,
     TimeseriesPoint,
     TopQueryRow,
@@ -305,6 +313,128 @@ def _row_to_profile(row) -> StoredProfile:
         include_graph=bool(row["include_graph"]) if row["include_graph"] is not None else True,
         created_at=_parse_iso(row["created_at"]),
         updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_api_key(row) -> StoredApiKey:
+    """Translate a SQLite ``api_keys`` row to ``StoredApiKey``.
+
+    Mirrors ``lore.persistence.postgres._row_to_api_key`` but parses ISO-8601
+    TEXT timestamps and INTEGER 0/1 booleans.
+    """
+    return StoredApiKey(
+        id=row["id"],
+        org_id=row["org_id"],
+        name=row["name"],
+        key_hash=row["key_hash"],
+        key_prefix=row["key_prefix"],
+        project=row["project"],
+        is_root=bool(row["is_root"]),
+        workspace_id=row["workspace_id"],
+        revoked_at=_parse_iso(row["revoked_at"]),
+        created_at=_parse_iso(row["created_at"]),
+        last_used_at=_parse_iso(row["last_used_at"]),
+        role=row["role"],
+    )
+
+
+def _row_to_recommendation_config(row) -> StoredRecommendationConfig:
+    """Translate a SQLite ``recommendation_config`` row to ``StoredRecommendationConfig``."""
+    return StoredRecommendationConfig(
+        id=row["id"],
+        workspace_id=row["workspace_id"],
+        agent_id=row["agent_id"],
+        aggressiveness=float(row["aggressiveness"]),
+        enabled=bool(row["enabled"]),
+        max_suggestions=int(row["max_suggestions"]),
+        cooldown_minutes=int(row["cooldown_minutes"]),
+        updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_recommendation_candidate(row) -> RecommendationCandidate:
+    """Translate a SQLite ``memories`` ⨯ ``memory_vectors`` row to a
+    ``RecommendationCandidate``.
+
+    The embedding is the ``vec_to_json(v.embedding)`` output (a JSON-array
+    string like ``"[0.1,0.2,...]"``) decoded via ``_decode_vec_to_json``;
+    meta is JSON-decoded from TEXT.
+    """
+    meta_raw = row["meta"]
+    if isinstance(meta_raw, str):
+        meta = json.loads(meta_raw) if meta_raw else {}
+    elif meta_raw is None:
+        meta = {}
+    else:
+        meta = meta_raw
+    embedding = _decode_vec_to_json(row["embedding_json"])
+    return RecommendationCandidate(
+        id=row["id"],
+        content=row["content"] or "",
+        embedding=embedding if embedding is not None else [],
+        metadata=dict(meta or {}),
+        created_at=_parse_iso(row["created_at"]),
+        access_count=row["access_count"] or 0,
+        last_accessed_at=_parse_iso(row["last_accessed_at"]),
+    )
+
+
+def _row_to_conversation_job(row) -> StoredConversationJob:
+    """Translate a SQLite ``conversation_jobs`` row to ``StoredConversationJob``.
+
+    ``memory_ids`` is JSON TEXT (default '[]') and decoded into a tuple.
+    """
+    memory_ids_raw = row["memory_ids"]
+    if isinstance(memory_ids_raw, str):
+        memory_ids = tuple(json.loads(memory_ids_raw or "[]"))
+    elif memory_ids_raw is None:
+        memory_ids = ()
+    else:
+        memory_ids = tuple(memory_ids_raw)
+    return StoredConversationJob(
+        id=row["id"],
+        org_id=row["org_id"],
+        status=row["status"],
+        message_count=row["message_count"] or 0,
+        messages_json=row["messages_json"] or "[]",
+        user_id=row["user_id"],
+        session_id=row["session_id"],
+        project=row["project"],
+        memory_ids=memory_ids,
+        memories_extracted=row["memories_extracted"] or 0,
+        duplicates_skipped=row["duplicates_skipped"] or 0,
+        error=row["error"],
+        processing_time_ms=row["processing_time_ms"] or 0,
+        created_at=_parse_iso(row["created_at"]),
+        completed_at=_parse_iso(row["completed_at"]),
+    )
+
+
+def _row_to_audit_entry(row) -> StoredAuditEntry:
+    """Translate a SQLite ``audit_log`` row to ``StoredAuditEntry``.
+
+    ``metadata`` is JSON-decoded from TEXT; SQLite stores ``ip_address``
+    as a plain string (no INET equivalent), so it's surfaced unchanged.
+    """
+    metadata_raw = row["metadata"]
+    if isinstance(metadata_raw, str):
+        metadata = json.loads(metadata_raw) if metadata_raw else {}
+    elif metadata_raw is None:
+        metadata = {}
+    else:
+        metadata = metadata_raw
+    return StoredAuditEntry(
+        id=row["id"],
+        org_id=row["org_id"],
+        workspace_id=row["workspace_id"],
+        actor_id=row["actor_id"],
+        actor_type=row["actor_type"],
+        action=row["action"],
+        resource_type=row["resource_type"],
+        resource_id=row["resource_id"],
+        metadata=dict(metadata or {}),
+        ip_address=row["ip_address"] if row["ip_address"] else None,
+        created_at=_parse_iso(row["created_at"]),
     )
 
 
@@ -2257,6 +2387,524 @@ class SqliteStore:
             await conn.commit()
         return count > 0
 
+    # ── AuthOps (Phase 3G) ────────────────────────────────────────────
+
+    _API_KEY_COLS = (
+        "id, org_id, name, key_hash, key_prefix, project, is_root, "
+        "workspace_id, revoked_at, created_at, last_used_at, role"
+    )
+
+    async def get_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        """Return an API key by id, or None if absent.
+
+        Mirrors ``PostgresStore.get_api_key``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys WHERE id = ?",
+                (key_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_api_key(row) if row else None
+
+    async def list_api_keys(self, org_id: str) -> Sequence[StoredApiKey]:
+        """List all API keys for an org, ordered by created_at ASC.
+
+        Mirrors ``PostgresStore.list_api_keys``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys "
+                "WHERE org_id = ? ORDER BY created_at",
+                (org_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_api_key(r) for r in rows)
+
+    async def create_api_key(self, key: NewApiKey) -> StoredApiKey:
+        """Insert a new API key; returns the stored row.
+
+        Mirrors ``PostgresStore.create_api_key``: caller-side ULID with a
+        ``key_`` prefix, and SQLite's column DEFAULT supplies ``created_at``.
+        """
+        key_id = f"key_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO api_keys
+                    (id, org_id, name, key_hash, key_prefix, project, is_root, workspace_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    key_id,
+                    key.org_id,
+                    key.name,
+                    key.key_hash,
+                    key.key_prefix,
+                    key.project,
+                    1 if key.is_root else 0,
+                    key.workspace_id,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys WHERE id = ?",
+                (key_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover - defensive
+            raise StoreError("create_api_key: row vanished after insert")
+        return _row_to_api_key(row)
+
+    async def revoke_api_key(self, key_id: str) -> Optional[StoredApiKey]:
+        """Revoke an API key; returns the updated row, or None if absent / already revoked.
+
+        SQLite has no ``UPDATE … RETURNING`` we rely on, so we issue an
+        UPDATE and a follow-up SELECT inside the same connection — same
+        single-writer guarantee as elsewhere in this module.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "UPDATE api_keys SET revoked_at = datetime('now') "
+                "WHERE id = ? AND revoked_at IS NULL",
+                (key_id,),
+            )
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys WHERE id = ?",
+                (key_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_api_key(row) if row else None
+
+    async def count_active_root_keys(self, org_id: str) -> int:
+        """Count active (non-revoked) root-level API keys for an org.
+
+        Mirrors ``PostgresStore.count_active_root_keys`` — ``is_root`` is
+        stored as INTEGER 1/0 in SQLite so the predicate uses ``= 1``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(*) AS cnt FROM api_keys "
+                "WHERE org_id = ? AND is_root = 1 AND revoked_at IS NULL",
+                (org_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return int(row["cnt"]) if row else 0
+
+    async def lookup_api_key_by_hash(self, key_hash: str) -> Optional[StoredApiKey]:
+        """Return the API key matching a sha256 ``key_hash``, or None.
+
+        Hot path: every authenticated request lands here on cache miss.
+        Mirrors ``PostgresStore.lookup_api_key_by_hash``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._API_KEY_COLS} FROM api_keys WHERE key_hash = ?",
+                (key_hash,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_api_key(row) if row else None
+
+    async def touch_api_key_last_used(self, key_id: str) -> None:
+        """Bump ``last_used_at`` to now for an API key.
+
+        Fire-and-forget: missing ids do not raise. Mirrors
+        ``PostgresStore.touch_api_key_last_used``.
+        """
+        async with self._acquire() as conn:
+            await conn.execute(
+                "UPDATE api_keys SET last_used_at = datetime('now') WHERE id = ?",
+                (key_id,),
+            )
+            await conn.commit()
+
+    # ── RecommendationOps (Phase 3G) ──────────────────────────────────
+
+    _RECOMMENDATION_CONFIG_COLS = (
+        "id, workspace_id, agent_id, aggressiveness, enabled, "
+        "max_suggestions, cooldown_minutes, updated_at"
+    )
+
+    async def get_recommendation_config(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+    ) -> Optional[StoredRecommendationConfig]:
+        """Return the recommendation config matching (workspace_id, agent_id).
+
+        SQLite's ``IS`` operator is NULL-safe (mirrors PG's ``IS NOT
+        DISTINCT FROM``), so the same predicate works for both
+        ``workspace_id IS NULL`` and ``workspace_id = 'ws_x'`` cases.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._RECOMMENDATION_CONFIG_COLS} "
+                "FROM recommendation_config "
+                "WHERE workspace_id IS ? AND agent_id IS ? "
+                "LIMIT 1",
+                (workspace_id, agent_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_recommendation_config(row) if row else None
+
+    async def upsert_recommendation_config(
+        self,
+        *,
+        workspace_id: Optional[str] = None,
+        agent_id: Optional[str] = None,
+        aggressiveness: Optional[float] = None,
+        enabled: Optional[bool] = None,
+        max_suggestions: Optional[int] = None,
+        cooldown_minutes: Optional[int] = None,
+    ) -> StoredRecommendationConfig:
+        """Insert-or-update the recommendation config for a (workspace, agent) scope.
+
+        Mirrors ``PostgresStore.upsert_recommendation_config``: caller-side
+        ULID with a ``reccfg_`` prefix; ON CONFLICT preserves None-valued
+        patch fields.
+
+        SQLite's NULL-UNIQUE quirk is bridged by the migration-019
+        expression UNIQUE index ``recommendation_config_scope_uq`` over
+        ``COALESCE(workspace_id, '__null__'), COALESCE(agent_id,
+        '__null__')`` — the conflict target below matches that index
+        expression exactly.
+
+        The ``enabled`` patch is converted to INTEGER 0/1 because SQLite
+        stores BOOLEAN as INTEGER.
+        """
+        config_id = f"reccfg_{ULID()}"
+        enabled_int = None if enabled is None else (1 if enabled else 0)
+        async with self._acquire() as conn:
+            # The four patch parameters appear twice each: once on the
+            # INSERT side (COALESCE(?, default)) and once on the UPDATE
+            # side (COALESCE(?, recommendation_config.col)). This mirrors
+            # PG's reuse of ``$N`` placeholders — using
+            # ``excluded.<col>`` instead would pull in the COALESCE-filled
+            # default and clobber the existing row's value when the patch
+            # is None.
+            await conn.execute(
+                """
+                INSERT INTO recommendation_config
+                    (id, workspace_id, agent_id, aggressiveness, enabled,
+                     max_suggestions, cooldown_minutes, updated_at)
+                VALUES (?, ?, ?,
+                        COALESCE(?, 0.5),
+                        COALESCE(?, 1),
+                        COALESCE(?, 3),
+                        COALESCE(?, 15),
+                        datetime('now'))
+                ON CONFLICT (COALESCE(workspace_id, '__null__'),
+                             COALESCE(agent_id, '__null__')) DO UPDATE
+                SET aggressiveness   = COALESCE(?, recommendation_config.aggressiveness),
+                    enabled          = COALESCE(?, recommendation_config.enabled),
+                    max_suggestions  = COALESCE(?, recommendation_config.max_suggestions),
+                    cooldown_minutes = COALESCE(?, recommendation_config.cooldown_minutes),
+                    updated_at       = datetime('now')
+                """,
+                (
+                    config_id,
+                    workspace_id,
+                    agent_id,
+                    aggressiveness,
+                    enabled_int,
+                    max_suggestions,
+                    cooldown_minutes,
+                    aggressiveness,
+                    enabled_int,
+                    max_suggestions,
+                    cooldown_minutes,
+                ),
+            )
+            await conn.commit()
+            # Re-read by scope (NULL-safe match) to get the canonical row.
+            async with conn.execute(
+                f"SELECT {self._RECOMMENDATION_CONFIG_COLS} "
+                "FROM recommendation_config "
+                "WHERE workspace_id IS ? AND agent_id IS ? "
+                "LIMIT 1",
+                (workspace_id, agent_id),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover - defensive
+            raise StoreError("upsert_recommendation_config: row vanished after upsert")
+        return _row_to_recommendation_config(row)
+
+    async def record_recommendation_feedback(
+        self, feedback: NewRecommendationFeedback,
+    ) -> None:
+        """Persist a recommendation feedback row.
+
+        Mirrors ``PostgresStore.record_recommendation_feedback``: caller-side
+        ULID with ``recfb_`` prefix; ``created_at`` defaults via column.
+        """
+        feedback_id = f"recfb_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO recommendation_feedback
+                    (id, org_id, workspace_id, memory_id, actor_id, signal,
+                     feedback, context_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    feedback.org_id,
+                    feedback.workspace_id,
+                    feedback.memory_id,
+                    feedback.actor_id,
+                    feedback.signal,
+                    feedback.feedback,
+                    feedback.context_hash,
+                ),
+            )
+            await conn.commit()
+
+    async def list_candidate_memories_for_recommendation(
+        self, org_id: str, *, limit: int = 500,
+    ) -> Sequence[RecommendationCandidate]:
+        """List candidate memories (memories with embeddings) for the
+        recommendation engine, ordered by ``importance_score`` DESC NULLS LAST.
+
+        Translation: PG selects ``embedding`` directly from ``memories``;
+        SQLite stores embeddings in the ``memory_vectors`` vec0 virtual
+        table joined by ``memory_rowid``. Memories without a vec0 row are
+        excluded (mirrors PG's ``embedding IS NOT NULL`` filter).
+
+        ``ORDER BY importance_score DESC NULLS LAST``: SQLite's NULL
+        ordering is opposite to PG's (NULLs sort first by default with
+        ``DESC``), so we use ``CASE WHEN ... IS NULL THEN 1 ELSE 0 END``
+        as a primary sort key to match PG's ``NULLS LAST`` semantics.
+        """
+        sql = (
+            "SELECT m.id, m.content, m.meta, m.created_at, "
+            "m.access_count, m.last_accessed_at, "
+            "vec_to_json(v.embedding) AS embedding_json "
+            "FROM memories m "
+            "INNER JOIN memory_vectors v ON v.memory_rowid = m.rowid "
+            "WHERE m.org_id = ? "
+            "ORDER BY CASE WHEN m.importance_score IS NULL THEN 1 ELSE 0 END, "
+            "         m.importance_score DESC "
+            "LIMIT ?"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(sql, (org_id, limit)) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_recommendation_candidate(r) for r in rows)
+
+    # ── ConversationOps (Phase 3G) ────────────────────────────────────
+
+    _CONVERSATION_JOB_COLS = (
+        "id, org_id, status, message_count, messages_json, "
+        "user_id, session_id, project, memory_ids, "
+        "memories_extracted, duplicates_skipped, error, "
+        "processing_time_ms, created_at, completed_at"
+    )
+
+    async def create_conversation_job(self, job: NewConversationJob) -> StoredConversationJob:
+        """Insert a new conversation job; returns the stored row.
+
+        Mirrors ``PostgresStore.create_conversation_job``: caller-side ULID
+        (no ``cjob_`` prefix — PG uses a bare ULID, so do we), initial
+        status ``'accepted'``, ``created_at`` from the column DEFAULT.
+        """
+        job_id = str(ULID())
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO conversation_jobs
+                    (id, org_id, status, message_count, messages_json,
+                     user_id, session_id, project)
+                VALUES (?, ?, 'accepted', ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    job.org_id,
+                    job.message_count,
+                    job.messages_json,
+                    job.user_id,
+                    job.session_id,
+                    job.project,
+                ),
+            )
+            await conn.commit()
+            async with conn.execute(
+                f"SELECT {self._CONVERSATION_JOB_COLS} FROM conversation_jobs WHERE id = ?",
+                (job_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover - defensive
+            raise StoreError("create_conversation_job: row vanished after insert")
+        return _row_to_conversation_job(row)
+
+    async def get_conversation_job(
+        self, job_id: str, org_id: str,
+    ) -> Optional[StoredConversationJob]:
+        """Return a conversation job by (id, org_id), or None if absent.
+
+        Mirrors ``PostgresStore.get_conversation_job``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._CONVERSATION_JOB_COLS} FROM conversation_jobs "
+                "WHERE id = ? AND org_id = ?",
+                (job_id, org_id),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_conversation_job(row) if row else None
+
+    async def mark_conversation_job_processing(
+        self, job_id: str,
+    ) -> Optional[StoredConversationJob]:
+        """Transition a job to ``'processing'`` status; returns the updated row.
+
+        Mirrors ``PostgresStore.mark_conversation_job_processing``: the
+        UPDATE is unconditional on prior status; missing ids return None.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "UPDATE conversation_jobs SET status = 'processing' WHERE id = ?",
+                (job_id,),
+            )
+            updated = cursor.rowcount
+            await cursor.close()
+            await conn.commit()
+            if not updated:
+                return None
+            async with conn.execute(
+                f"SELECT {self._CONVERSATION_JOB_COLS} FROM conversation_jobs WHERE id = ?",
+                (job_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_conversation_job(row) if row else None
+
+    async def complete_conversation_job(
+        self,
+        job_id: str,
+        *,
+        memory_ids: Sequence[str],
+        memories_extracted: int,
+        duplicates_skipped: int,
+        processing_time_ms: int,
+    ) -> None:
+        """Mark a job completed and record extraction results.
+
+        Silent on missing ids (no row updated → no error). Mirrors
+        ``PostgresStore.complete_conversation_job``: ``memory_ids`` is
+        stored as JSON TEXT.
+        """
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE conversation_jobs SET
+                    status = 'completed',
+                    memory_ids = ?,
+                    memories_extracted = ?,
+                    duplicates_skipped = ?,
+                    processing_time_ms = ?,
+                    completed_at = datetime('now')
+                WHERE id = ?
+                """,
+                (
+                    json.dumps(list(memory_ids)),
+                    memories_extracted,
+                    duplicates_skipped,
+                    processing_time_ms,
+                    job_id,
+                ),
+            )
+            await conn.commit()
+
+    async def fail_conversation_job(
+        self,
+        job_id: str,
+        *,
+        error: str,
+        processing_time_ms: int,
+    ) -> None:
+        """Mark a job failed and record the error message.
+
+        Silent on missing ids. Mirrors ``PostgresStore.fail_conversation_job``.
+        """
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE conversation_jobs SET
+                    status = 'failed',
+                    error = ?,
+                    processing_time_ms = ?,
+                    completed_at = datetime('now')
+                WHERE id = ?
+                """,
+                (error, processing_time_ms, job_id),
+            )
+            await conn.commit()
+
+    # ── AuditOps (Phase 3G) ──────────────────────────────────────────
+
+    async def query_audit_log(
+        self,
+        *,
+        org_id: str,
+        workspace_id: Optional[str] = None,
+        action: Optional[str] = None,
+        actor_id: Optional[str] = None,
+        since: Optional[str] = None,
+        limit: int = 50,
+    ) -> Sequence[StoredAuditEntry]:
+        """Query the audit log with optional filters; newest-first.
+
+        Mirrors ``PostgresStore.query_audit_log``: filters by org_id and
+        any of (workspace_id, action, actor_id, since); returns up to
+        ``limit`` rows ordered by ``created_at DESC``.
+
+        ``since`` is normalized to an ISO-8601 TEXT string so comparison
+        against the SQLite ``created_at`` column (also ISO TEXT) works
+        lexicographically — same ordering as native datetime comparison.
+        """
+        where: list[str] = ["org_id = ?"]
+        params: list[Any] = [org_id]
+
+        if workspace_id is not None:
+            where.append("workspace_id = ?")
+            params.append(workspace_id)
+        if action is not None:
+            where.append("action = ?")
+            params.append(action)
+        if actor_id is not None:
+            where.append("actor_id = ?")
+            params.append(actor_id)
+        if since is not None:
+            # Normalize to ISO-8601 TEXT for lexicographic comparison.
+            if isinstance(since, str):
+                since_iso = since
+            else:
+                since_dt = since
+                if since_dt.tzinfo is None:
+                    since_dt = since_dt.replace(tzinfo=timezone.utc)
+                since_iso = since_dt.isoformat()
+            where.append("created_at >= ?")
+            params.append(since_iso)
+
+        params.append(limit)
+        sql = (
+            "SELECT id, org_id, workspace_id, actor_id, actor_type, action, "
+            "resource_type, resource_id, metadata, ip_address, created_at "
+            "FROM audit_log "
+            f"WHERE {' AND '.join(where)} "
+            "ORDER BY created_at DESC "
+            "LIMIT ?"
+        )
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return tuple(_row_to_audit_entry(r) for r in rows)
+
 
 class _SqliteConnCtx:
     """Trivial async context manager around an aiosqlite connection.
@@ -2310,21 +2958,11 @@ _STUBBED_METHODS: Sequence[str] = (
     "search_memories_text",
     # PolicyOps — implemented in Phase 3F.
     # WorkspaceOps — implemented in Phase 3F.
-    # AuthOps
-    "get_api_key", "list_api_keys", "create_api_key", "revoke_api_key",
-    "count_active_root_keys", "lookup_api_key_by_hash",
-    "touch_api_key_last_used",
+    # AuthOps — implemented in Phase 3G.
     # AnalyticsOps — implemented in Phase 3E.
-    # RecommendationOps
-    "get_recommendation_config", "upsert_recommendation_config",
-    "record_recommendation_feedback",
-    "list_candidate_memories_for_recommendation",
-    # ConversationOps
-    "create_conversation_job", "get_conversation_job",
-    "mark_conversation_job_processing", "complete_conversation_job",
-    "fail_conversation_job",
-    # AuditOps
-    "query_audit_log",
+    # RecommendationOps — implemented in Phase 3G.
+    # ConversationOps — implemented in Phase 3G.
+    # AuditOps — implemented in Phase 3G.
     # RetentionOps
     "list_retention_policies", "get_retention_policy",
     "create_retention_policy", "update_retention_policy",
