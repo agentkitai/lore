@@ -18,7 +18,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import urlparse
@@ -38,6 +38,7 @@ from lore.persistence.types import (
     DailyStatRow,
     DenyListRuleData,
     ExportedMemory,
+    GraphStats,
     MemoryFilter,
     MemoryPatch,
     NewApiKey,
@@ -45,15 +46,19 @@ from lore.persistence.types import (
     NewConversationJob,
     NewDenyListRule,
     NewDrillResult,
+    NewEntity,
     NewMember,
     NewMemory,
+    NewMention,
     NewProfile,
     NewRecommendationFeedback,
+    NewRelationship,
     NewRetentionPolicy,
     NewRetrievalEvent,
     NewSloAlert,
     NewSloDefinition,
     NewWorkspace,
+    PendingRelationshipRow,
     ProfilePatch,
     RecallParams,
     RecommendationCandidate,
@@ -69,15 +74,19 @@ from lore.persistence.types import (
     StoredAuditEntry,
     StoredConversationJob,
     StoredDrillResult,
+    StoredEntity,
     StoredMember,
     StoredMemory,
+    StoredMention,
     StoredProfile,
     StoredRecommendationConfig,
+    StoredRelationship,
     StoredRetentionPolicy,
     StoredSloAlert,
     StoredSloDefinition,
     StoredSnapshotMetadata,
     StoredWorkspace,
+    TimelineBucketRow,
     TimeseriesPoint,
     TopQueryRow,
     WorkspacePatch,
@@ -567,6 +576,110 @@ def _row_to_audit_entry(row) -> StoredAuditEntry:
         ip_address=row["ip_address"] if row["ip_address"] else None,
         created_at=_parse_iso(row["created_at"]),
     )
+
+
+def _row_to_entity(row) -> StoredEntity:
+    """Translate a SQLite ``entities`` row to ``StoredEntity``.
+
+    Mirrors ``lore.persistence.postgres._row_to_entity`` but parses the
+    JSON-encoded ``aliases`` and ``metadata`` TEXT columns and the
+    ISO-8601 TEXT timestamps.
+    """
+    aliases_raw = row["aliases"]
+    if isinstance(aliases_raw, str):
+        aliases = json.loads(aliases_raw) if aliases_raw else []
+    elif aliases_raw is None:
+        aliases = []
+    else:
+        aliases = list(aliases_raw)
+    metadata_raw = row["metadata"]
+    if isinstance(metadata_raw, str):
+        metadata = json.loads(metadata_raw) if metadata_raw else {}
+    elif metadata_raw is None:
+        metadata = {}
+    else:
+        metadata = metadata_raw
+    return StoredEntity(
+        id=row["id"],
+        name=row["name"],
+        entity_type=row["entity_type"],
+        aliases=tuple(aliases or ()),
+        description=row["description"],
+        metadata=dict(metadata or {}),
+        mention_count=row["mention_count"] or 0,
+        first_seen_at=_parse_iso(row["first_seen_at"]),
+        last_seen_at=_parse_iso(row["last_seen_at"]),
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+def _row_to_mention(row) -> StoredMention:
+    """Translate a SQLite ``entity_mentions`` row to ``StoredMention``."""
+    return StoredMention(
+        id=row["id"],
+        entity_id=row["entity_id"],
+        memory_id=row["memory_id"],
+        mention_type=row["mention_type"] or "explicit",
+        confidence=float(row["confidence"]) if row["confidence"] is not None else 1.0,
+        created_at=_parse_iso(row["created_at"]),
+    )
+
+
+def _row_to_relationship(row) -> StoredRelationship:
+    """Translate a SQLite ``relationships`` row to ``StoredRelationship``.
+
+    Mirrors ``lore.persistence.postgres._row_to_relationship`` but parses
+    the JSON-encoded ``properties`` TEXT column and ISO-8601 TEXT
+    timestamps.
+    """
+    properties_raw = row["properties"]
+    if isinstance(properties_raw, str):
+        properties = json.loads(properties_raw) if properties_raw else {}
+    elif properties_raw is None:
+        properties = {}
+    else:
+        properties = properties_raw
+    return StoredRelationship(
+        id=row["id"],
+        source_entity_id=row["source_entity_id"],
+        target_entity_id=row["target_entity_id"],
+        rel_type=row["rel_type"],
+        weight=float(row["weight"]) if row["weight"] is not None else 1.0,
+        properties=dict(properties or {}),
+        source_fact_id=row["source_fact_id"],
+        source_memory_id=row["source_memory_id"],
+        valid_from=_parse_iso(row["valid_from"]),
+        valid_until=_parse_iso(row["valid_until"]),
+        status=row["status"] or "approved",
+        created_at=_parse_iso(row["created_at"]),
+        updated_at=_parse_iso(row["updated_at"]),
+    )
+
+
+# Validate trunc parameter for get_timeline_buckets (mirrors postgres._VALID_TRUNCS).
+_VALID_TRUNCS = frozenset({"hour", "day", "week", "month"})
+
+
+# Map a trunc keyword to a SQLite SQL expression that truncates ``created_at``
+# (a TEXT ISO-8601 timestamp) to the start of the bucket and yields a
+# ``YYYY-MM-DD HH:MM:SS`` TEXT value comparable to PG's ``date_trunc``.
+def _trunc_expr(trunc: str, column: str) -> str:
+    if trunc == "hour":
+        return f"strftime('%Y-%m-%d %H:00:00', {column})"
+    if trunc == "day":
+        return f"strftime('%Y-%m-%d 00:00:00', {column})"
+    if trunc == "month":
+        return f"strftime('%Y-%m-01 00:00:00', {column})"
+    if trunc == "week":
+        # ISO week: Monday-based. strftime('%w') returns 0=Sun..6=Sat.
+        # Offset to Monday: (weekday + 6) % 7 days back.
+        return (
+            f"strftime('%Y-%m-%d 00:00:00', "
+            f"date({column}, '-' || "
+            f"((CAST(strftime('%w', {column}) AS INTEGER) + 6) % 7) || ' days'))"
+        )
+    raise ValueError(f"unsupported trunc: {trunc!r}")
 
 
 class SqliteStore:
@@ -3954,6 +4067,976 @@ class SqliteStore:
             await tx.execute("DELETE FROM sharing_config WHERE org_id = ?", (org_id,))
         return deleted_lessons
 
+    # ── GraphOps: entities (Phase 3I) ─────────────────────────────────
+
+    async def get_entity(self, entity_id: str) -> Optional[StoredEntity]:
+        """Fetch an entity by id; returns None when missing.
+
+        Mirrors ``PostgresStore.get_entity``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE id = ?
+                """,
+                (entity_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_entity(row) if row else None
+
+    async def get_entity_by_name(self, name: str) -> Optional[StoredEntity]:
+        """Fetch an entity by exact name; case-sensitive (services normalize).
+
+        Mirrors ``PostgresStore.get_entity_by_name``.
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE name = ?
+                """,
+                (name,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_entity(row) if row else None
+
+    async def list_entities(
+        self,
+        *,
+        entity_type: Optional[str] = None,
+        min_mentions: int = 0,
+        limit: int = 100,
+    ) -> Sequence[StoredEntity]:
+        """List entities ordered by mention_count DESC.
+
+        Mirrors ``PostgresStore.list_entities``.
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if entity_type is not None:
+            where.append("entity_type = ?")
+            params.append(entity_type)
+        if min_mentions > 0:
+            where.append("mention_count >= ?")
+            params.append(min_mentions)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        params.append(limit)
+        sql = f"""
+            SELECT id, name, entity_type, aliases, description, metadata,
+                   mention_count, first_seen_at, last_seen_at,
+                   created_at, updated_at
+            FROM entities
+            {where_sql}
+            ORDER BY mention_count DESC
+            LIMIT ?
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_entity(r) for r in rows]
+
+    async def upsert_entity(self, entity: NewEntity) -> StoredEntity:
+        """Insert a new entity or merge into an existing one keyed by name.
+
+        Mirrors ``PostgresStore.upsert_entity``. SQLite lacks JSONB merge,
+        so the merge happens in Python: SELECT existing → compute merged
+        aliases (set-union) and metadata (dict-update) → UPDATE → SELECT
+        back. Wrapped in ``transaction()`` so the read/write pair is
+        atomic against concurrent upserts of the same name.
+        """
+        new_id = f"ent_{ULID()}"
+        now = datetime.now(timezone.utc)
+        first_seen = entity.first_seen_at or now
+        last_seen = entity.last_seen_at or now
+
+        async with self.transaction() as tx:
+            async with tx.execute(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE name = ?
+                """,
+                (entity.name,),
+            ) as cur:
+                existing = await cur.fetchone()
+
+            if existing is None:
+                await tx.execute(
+                    """
+                    INSERT INTO entities
+                        (id, name, entity_type, aliases, description, metadata,
+                         mention_count, first_seen_at, last_seen_at,
+                         created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            datetime('now'), datetime('now'))
+                    """,
+                    (
+                        new_id,
+                        entity.name,
+                        entity.entity_type,
+                        json.dumps(list(entity.aliases)),
+                        entity.description,
+                        json.dumps(dict(entity.metadata)),
+                        entity.mention_count,
+                        first_seen.isoformat(),
+                        last_seen.isoformat(),
+                    ),
+                )
+                target_id = new_id
+            else:
+                # Merge aliases (set-union, preserving order of existing first).
+                old_aliases_raw = existing["aliases"]
+                if isinstance(old_aliases_raw, str):
+                    old_aliases = json.loads(old_aliases_raw) if old_aliases_raw else []
+                else:
+                    old_aliases = list(old_aliases_raw or [])
+                merged_aliases: list[str] = list(old_aliases)
+                seen = set(merged_aliases)
+                for alias in entity.aliases:
+                    if alias not in seen:
+                        merged_aliases.append(alias)
+                        seen.add(alias)
+
+                # Merge metadata (right-side wins, mirroring PG ``||`` operator).
+                old_meta_raw = existing["metadata"]
+                if isinstance(old_meta_raw, str):
+                    old_meta = json.loads(old_meta_raw) if old_meta_raw else {}
+                else:
+                    old_meta = dict(old_meta_raw or {})
+                merged_meta = {**old_meta, **dict(entity.metadata)}
+
+                # GREATEST(last_seen_at, EXCLUDED.last_seen_at) — compare ISO
+                # strings via parsed datetimes for safety.
+                old_last_seen = _parse_iso(existing["last_seen_at"])
+                new_last_seen = (
+                    last_seen if old_last_seen is None
+                    else max(old_last_seen, last_seen)
+                )
+
+                await tx.execute(
+                    """
+                    UPDATE entities
+                    SET mention_count = mention_count + ?,
+                        last_seen_at = ?,
+                        aliases = ?,
+                        metadata = ?,
+                        updated_at = datetime('now')
+                    WHERE id = ?
+                    """,
+                    (
+                        entity.mention_count,
+                        new_last_seen.isoformat(),
+                        json.dumps(merged_aliases),
+                        json.dumps(merged_meta),
+                        existing["id"],
+                    ),
+                )
+                target_id = existing["id"]
+
+            async with tx.execute(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE id = ?
+                """,
+                (target_id,),
+            ) as cur:
+                row = await cur.fetchone()
+
+        if row is None:  # pragma: no cover - inserted/updated row must exist
+            raise StoreError(f"upsert_entity: row vanished for id={target_id!r}")
+        return _row_to_entity(row)
+
+    async def update_entity_counts(
+        self,
+        entity_id: str,
+        *,
+        mention_delta: int,
+        last_seen_at: datetime,
+    ) -> None:
+        """Atomically bump mention_count by ``mention_delta`` and advance
+        ``last_seen_at`` (never regresses, matching PG's ``GREATEST``).
+
+        Mirrors ``PostgresStore.update_entity_counts``.
+        """
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT last_seen_at FROM entities WHERE id = ?",
+                (entity_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                # Silent no-op (matches PG behavior — UPDATE matches 0 rows).
+                return
+            old_last_seen = _parse_iso(row["last_seen_at"])
+            new_last_seen = (
+                last_seen_at if old_last_seen is None
+                else max(old_last_seen, last_seen_at)
+            )
+            await tx.execute(
+                """
+                UPDATE entities
+                SET mention_count = mention_count + ?,
+                    last_seen_at = ?,
+                    updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (mention_delta, new_last_seen.isoformat(), entity_id),
+            )
+
+    async def delete_entity(self, entity_id: str) -> bool:
+        """Delete an entity; cascades to mentions + relationships via FKs.
+
+        Returns True if a row was removed. Mirrors
+        ``PostgresStore.delete_entity``. The SQLite migration declares
+        ``ON DELETE CASCADE`` on ``entity_mentions.entity_id``,
+        ``relationships.source_entity_id``, and
+        ``relationships.target_entity_id``; the connection pragma
+        ``foreign_keys = ON`` (set in ``_open_connection``) makes those
+        cascades fire.
+        """
+        async with self._acquire() as conn:
+            cursor = await conn.execute(
+                "DELETE FROM entities WHERE id = ?",
+                (entity_id,),
+            )
+            try:
+                deleted = cursor.rowcount or 0
+            finally:
+                await cursor.close()
+            await conn.commit()
+        return deleted > 0
+
+    # ── GraphOps: mentions (Phase 3I) ─────────────────────────────────
+
+    async def get_mentions_for_memory(self, memory_id: str) -> Sequence[StoredMention]:
+        """Mentions linking entities to a given memory, newest first."""
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, entity_id, memory_id, mention_type, confidence, created_at
+                FROM entity_mentions
+                WHERE memory_id = ?
+                ORDER BY created_at DESC
+                """,
+                (memory_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_mention(r) for r in rows]
+
+    async def get_mentions_for_entity(
+        self,
+        entity_id: str,
+        *,
+        limit: int = 100,
+    ) -> Sequence[StoredMention]:
+        """Mentions linking memories to a given entity, newest first."""
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, entity_id, memory_id, mention_type, confidence, created_at
+                FROM entity_mentions
+                WHERE entity_id = ?
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (entity_id, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_mention(r) for r in rows]
+
+    async def save_mention(self, mention: NewMention) -> None:
+        """Idempotent insert keyed by ``(entity_id, memory_id)``.
+
+        Mirrors ``PostgresStore.save_mention``. SQLite ``ON CONFLICT
+        (entity_id, memory_id) DO NOTHING`` requires the unique index from
+        migration 007 (``idx_em_unique``).
+        """
+        mention_id = f"emen_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO entity_mentions
+                    (id, entity_id, memory_id, mention_type, confidence)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (entity_id, memory_id) DO NOTHING
+                """,
+                (
+                    mention_id,
+                    mention.entity_id,
+                    mention.memory_id,
+                    mention.mention_type,
+                    mention.confidence,
+                ),
+            )
+            await conn.commit()
+
+    async def count_memories_for_entity(self, entity_id: str) -> int:
+        """Distinct memory count for an entity."""
+        async with self._acquire() as conn:
+            async with conn.execute(
+                "SELECT COUNT(DISTINCT memory_id) AS n FROM entity_mentions WHERE entity_id = ?",
+                (entity_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return int(row["n"]) if row and row["n"] is not None else 0
+
+    # ── GraphOps: relationships (Phase 3I) ────────────────────────────
+
+    async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
+        """Fetch a relationship by id, or None when missing."""
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                       properties, source_fact_id, source_memory_id,
+                       valid_from, valid_until, status, created_at, updated_at
+                FROM relationships
+                WHERE id = ?
+                """,
+                (rel_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_relationship(row) if row else None
+
+    async def get_active_relationship(
+        self,
+        source_id: str,
+        target_id: str,
+        *,
+        rel_type: str,
+    ) -> Optional[StoredRelationship]:
+        """Active (valid_until IS NULL) edge for the (source, target, type) triple."""
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                       properties, source_fact_id, source_memory_id,
+                       valid_from, valid_until, status, created_at, updated_at
+                FROM relationships
+                WHERE source_entity_id = ?
+                  AND target_entity_id = ?
+                  AND rel_type = ?
+                  AND valid_until IS NULL
+                """,
+                (source_id, target_id, rel_type),
+            ) as cur:
+                row = await cur.fetchone()
+        return _row_to_relationship(row) if row else None
+
+    async def list_relationships_for_entity(
+        self,
+        entity_id: str,
+        *,
+        status: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[StoredRelationship]:
+        """Edges incident to an entity, optionally filtered by status."""
+        where: list[str] = ["(source_entity_id = ? OR target_entity_id = ?)"]
+        params: list[Any] = [entity_id, entity_id]
+        if status is not None:
+            where.append("COALESCE(status, 'approved') = ?")
+            params.append(status)
+        params.append(limit)
+        # SQLite sorts NULLs first by default for DESC; mirror PG's "NULLS LAST"
+        # by sorting on (weight IS NULL, weight DESC).
+        sql = f"""
+            SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                   properties, source_fact_id, source_memory_id,
+                   valid_from, valid_until, status, created_at, updated_at
+            FROM relationships
+            WHERE {' AND '.join(where)}
+            ORDER BY (weight IS NULL), weight DESC, created_at DESC
+            LIMIT ?
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_relationship(r) for r in rows]
+
+    async def save_relationship(self, rel: NewRelationship) -> StoredRelationship:
+        """INSERT a new relationship row; returns the stored row.
+
+        Mirrors ``PostgresStore.save_relationship``. The SQLite migration
+        applies a partial unique index on ``(source, target, rel_type)
+        WHERE valid_until IS NULL`` so duplicate active edges raise
+        IntegrityError; callers (services) check ``get_active_relationship``
+        first.
+        """
+        rel_id = f"rel_{ULID()}"
+        valid_from = rel.valid_from or datetime.now(timezone.utc)
+        async with self.transaction() as tx:
+            await tx.execute(
+                """
+                INSERT INTO relationships
+                    (id, source_entity_id, target_entity_id, rel_type, weight,
+                     properties, source_fact_id, source_memory_id,
+                     valid_from, valid_until, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    rel_id,
+                    rel.source_entity_id,
+                    rel.target_entity_id,
+                    rel.rel_type,
+                    rel.weight,
+                    json.dumps(dict(rel.properties)),
+                    rel.source_fact_id,
+                    rel.source_memory_id,
+                    valid_from.isoformat(),
+                    rel.valid_until.isoformat() if rel.valid_until else None,
+                    rel.status,
+                ),
+            )
+            async with tx.execute(
+                """
+                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                       properties, source_fact_id, source_memory_id,
+                       valid_from, valid_until, status, created_at, updated_at
+                FROM relationships
+                WHERE id = ?
+                """,
+                (rel_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreError(f"save_relationship: inserted row missing id={rel_id!r}")
+        return _row_to_relationship(row)
+
+    async def update_relationship_status(
+        self,
+        rel_id: str,
+        *,
+        status: str,
+    ) -> StoredRelationship:
+        """Set the status column; raises StoreNotFoundError when missing.
+
+        Mirrors ``PostgresStore.update_relationship_status``.
+        SQLite has no UPDATE … RETURNING so we update + select inside a
+        transaction.
+        """
+        async with self.transaction() as tx:
+            async with tx.execute(
+                "SELECT id FROM relationships WHERE id = ?",
+                (rel_id,),
+            ) as cur:
+                exists = await cur.fetchone()
+            if exists is None:
+                raise StoreNotFoundError("relationships", rel_id)
+            await tx.execute(
+                """
+                UPDATE relationships
+                SET status = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (status, rel_id),
+            )
+            async with tx.execute(
+                """
+                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                       properties, source_fact_id, source_memory_id,
+                       valid_from, valid_until, status, created_at, updated_at
+                FROM relationships
+                WHERE id = ?
+                """,
+                (rel_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:  # pragma: no cover
+            raise StoreNotFoundError("relationships", rel_id)
+        return _row_to_relationship(row)
+
+    async def update_relationship_weight(
+        self,
+        rel_id: str,
+        *,
+        weight: float,
+    ) -> None:
+        """Set the weight column; silent no-op when missing."""
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE relationships
+                SET weight = ?, updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (weight, rel_id),
+            )
+            await conn.commit()
+
+    async def expire_relationship(self, rel_id: str) -> None:
+        """Mark a relationship expired by setting ``valid_until = now()``."""
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                UPDATE relationships
+                SET valid_until = datetime('now'),
+                    updated_at = datetime('now')
+                WHERE id = ?
+                """,
+                (rel_id,),
+            )
+            await conn.commit()
+
+    async def list_pending_relationships(
+        self,
+        *,
+        rel_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> Sequence[PendingRelationshipRow]:
+        """Pending relationships joined with source/target entities for review."""
+        where: list[str] = ["r.status = 'pending'"]
+        params: list[Any] = []
+        if rel_type is not None:
+            where.append("r.rel_type = ?")
+            params.append(rel_type)
+        params.append(limit)
+        sql = f"""
+            SELECT r.id AS id,
+                   r.source_entity_id AS source_entity_id,
+                   r.target_entity_id AS target_entity_id,
+                   r.rel_type AS rel_type,
+                   r.weight AS weight,
+                   r.source_memory_id AS source_memory_id,
+                   r.created_at AS created_at,
+                   se.name AS source_name,
+                   se.entity_type AS source_entity_type,
+                   se.mention_count AS source_mentions,
+                   te.name AS target_name,
+                   te.entity_type AS target_entity_type,
+                   te.mention_count AS target_mentions
+            FROM relationships r
+            JOIN entities se ON se.id = r.source_entity_id
+            JOIN entities te ON te.id = r.target_entity_id
+            WHERE {' AND '.join(where)}
+            ORDER BY r.created_at DESC
+            LIMIT ?
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return [
+            PendingRelationshipRow(
+                id=r["id"],
+                source_entity_id=r["source_entity_id"],
+                target_entity_id=r["target_entity_id"],
+                rel_type=r["rel_type"],
+                weight=float(r["weight"]) if r["weight"] is not None else 1.0,
+                source_memory_id=r["source_memory_id"],
+                created_at=_parse_iso(r["created_at"]),
+                source_name=r["source_name"],
+                source_entity_type=r["source_entity_type"],
+                source_mentions=r["source_mentions"] or 0,
+                target_name=r["target_name"],
+                target_entity_type=r["target_entity_type"],
+                target_mentions=r["target_mentions"] or 0,
+            )
+            for r in rows
+        ]
+
+    async def save_rejected_pattern(
+        self,
+        source_name: str,
+        target_name: str,
+        rel_type: str,
+        *,
+        source_memory_id: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> None:
+        """Idempotent UPSERT into rejected_patterns by (source_name, target_name, rel_type).
+
+        Mirrors ``PostgresStore.save_rejected_pattern``.
+        """
+        pattern_id = f"rpat_{ULID()}"
+        async with self._acquire() as conn:
+            await conn.execute(
+                """
+                INSERT INTO rejected_patterns
+                    (id, source_name, target_name, rel_type, source_memory_id, reason)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (source_name, target_name, rel_type) DO NOTHING
+                """,
+                (
+                    pattern_id,
+                    source_name,
+                    target_name,
+                    rel_type,
+                    source_memory_id,
+                    reason,
+                ),
+            )
+            await conn.commit()
+
+    async def query_relationships(
+        self,
+        entity_ids: Sequence[str],
+        *,
+        direction: str = "both",
+        active_only: bool = True,
+        at_time: Optional[datetime] = None,
+        rel_types: Optional[Sequence[str]] = None,
+    ) -> Sequence[StoredRelationship]:
+        """Hop query for graph traversal.
+
+        Mirrors ``PostgresStore.query_relationships``. SQLite lacks the
+        ``= ANY($1)`` array-membership shortcut so we expand the entity
+        list into ``IN (?, ?, ...)`` placeholders.
+        """
+        if direction not in ("inbound", "outbound", "both"):
+            raise ValueError(
+                f"direction must be 'inbound', 'outbound', or 'both'; got {direction!r}"
+            )
+        if not entity_ids:
+            return []
+
+        ent_ids = list(entity_ids)
+        ent_placeholders = ", ".join(["?"] * len(ent_ids))
+
+        where: list[str] = []
+        params: list[Any] = []
+
+        if direction == "inbound":
+            where.append(f"target_entity_id IN ({ent_placeholders})")
+            params.extend(ent_ids)
+        elif direction == "outbound":
+            where.append(f"source_entity_id IN ({ent_placeholders})")
+            params.extend(ent_ids)
+        else:  # both
+            where.append(
+                f"(source_entity_id IN ({ent_placeholders}) "
+                f"OR target_entity_id IN ({ent_placeholders}))"
+            )
+            params.extend(ent_ids)
+            params.extend(ent_ids)
+
+        if active_only and at_time is None:
+            where.append("valid_until IS NULL")
+        if at_time is not None:
+            where.append("valid_from <= ? AND (valid_until IS NULL OR valid_until > ?)")
+            iso = at_time.isoformat()
+            params.append(iso)
+            params.append(iso)
+
+        if rel_types:
+            rt_list = list(rel_types)
+            rt_placeholders = ", ".join(["?"] * len(rt_list))
+            where.append(f"rel_type IN ({rt_placeholders})")
+            params.extend(rt_list)
+
+        sql = f"""
+            SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                   properties, source_fact_id, source_memory_id,
+                   valid_from, valid_until, status, created_at, updated_at
+            FROM relationships
+            WHERE {' AND '.join(where)}
+            ORDER BY (weight IS NULL), weight DESC, created_at DESC
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_relationship(r) for r in rows]
+
+    # ── GraphOps: stats / topics / search (Phase 3I) ──────────────────
+
+    async def get_graph_stats(
+        self,
+        *,
+        project: Optional[str] = None,
+    ) -> GraphStats:
+        """Aggregate graph statistics, optionally scoped by project.
+
+        Mirrors ``PostgresStore.get_graph_stats``. SQLite lacks
+        ``meta->>'type'``; we use ``json_extract(meta, '$.type')``.
+        """
+        proj_clause = "WHERE project = ?" if project else ""
+        proj_args: list[Any] = [project] if project else []
+
+        cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT COUNT(*) AS n FROM memories {proj_clause}",
+                tuple(proj_args),
+            ) as cur:
+                row = await cur.fetchone()
+            total_memories = int(row["n"]) if row and row["n"] is not None else 0
+
+            if project:
+                async with conn.execute(
+                    "SELECT COUNT(*) AS n FROM memories WHERE project = ? AND created_at >= ?",
+                    (project, cutoff_24h),
+                ) as cur:
+                    row = await cur.fetchone()
+                recent_24h = int(row["n"]) if row and row["n"] is not None else 0
+
+                async with conn.execute(
+                    "SELECT COUNT(*) AS n FROM memories WHERE project = ? AND created_at >= ?",
+                    (project, cutoff_7d),
+                ) as cur:
+                    row = await cur.fetchone()
+                recent_7d = int(row["n"]) if row and row["n"] is not None else 0
+
+                async with conn.execute(
+                    "SELECT AVG(COALESCE(importance_score, 1.0)) AS v FROM memories WHERE project = ?",
+                    (project,),
+                ) as cur:
+                    row = await cur.fetchone()
+                avg_imp = row["v"] if row else None
+
+                async with conn.execute(
+                    "SELECT MIN(created_at) AS v FROM memories WHERE project = ?",
+                    (project,),
+                ) as cur:
+                    row = await cur.fetchone()
+                oldest = _parse_iso(row["v"]) if row and row["v"] else None
+
+                async with conn.execute(
+                    "SELECT MAX(created_at) AS v FROM memories WHERE project = ?",
+                    (project,),
+                ) as cur:
+                    row = await cur.fetchone()
+                newest = _parse_iso(row["v"]) if row and row["v"] else None
+
+                async with conn.execute(
+                    """
+                    SELECT COALESCE(json_extract(meta, '$.type'), 'general') AS t,
+                           COUNT(*) AS c
+                    FROM memories WHERE project = ? GROUP BY t
+                    """,
+                    (project,),
+                ) as cur:
+                    type_rows = await cur.fetchall()
+
+                async with conn.execute(
+                    """
+                    SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c
+                    FROM memories WHERE project = ? GROUP BY p
+                    """,
+                    (project,),
+                ) as cur:
+                    proj_rows = await cur.fetchall()
+            else:
+                async with conn.execute(
+                    "SELECT COUNT(*) AS n FROM memories WHERE created_at >= ?",
+                    (cutoff_24h,),
+                ) as cur:
+                    row = await cur.fetchone()
+                recent_24h = int(row["n"]) if row and row["n"] is not None else 0
+
+                async with conn.execute(
+                    "SELECT COUNT(*) AS n FROM memories WHERE created_at >= ?",
+                    (cutoff_7d,),
+                ) as cur:
+                    row = await cur.fetchone()
+                recent_7d = int(row["n"]) if row and row["n"] is not None else 0
+
+                async with conn.execute(
+                    "SELECT AVG(COALESCE(importance_score, 1.0)) AS v FROM memories"
+                ) as cur:
+                    row = await cur.fetchone()
+                avg_imp = row["v"] if row else None
+
+                async with conn.execute(
+                    "SELECT MIN(created_at) AS v FROM memories"
+                ) as cur:
+                    row = await cur.fetchone()
+                oldest = _parse_iso(row["v"]) if row and row["v"] else None
+
+                async with conn.execute(
+                    "SELECT MAX(created_at) AS v FROM memories"
+                ) as cur:
+                    row = await cur.fetchone()
+                newest = _parse_iso(row["v"]) if row and row["v"] else None
+
+                async with conn.execute(
+                    """
+                    SELECT COALESCE(json_extract(meta, '$.type'), 'general') AS t,
+                           COUNT(*) AS c
+                    FROM memories GROUP BY t
+                    """,
+                ) as cur:
+                    type_rows = await cur.fetchall()
+
+                async with conn.execute(
+                    """
+                    SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c
+                    FROM memories GROUP BY p
+                    """,
+                ) as cur:
+                    proj_rows = await cur.fetchall()
+
+            async with conn.execute("SELECT COUNT(*) AS n FROM entities") as cur:
+                row = await cur.fetchone()
+            total_entities = int(row["n"]) if row and row["n"] is not None else 0
+
+            async with conn.execute("SELECT COUNT(*) AS n FROM relationships") as cur:
+                row = await cur.fetchone()
+            total_relationships = int(row["n"]) if row and row["n"] is not None else 0
+
+            async with conn.execute(
+                "SELECT entity_type, COUNT(*) AS c FROM entities GROUP BY entity_type"
+            ) as cur:
+                et_rows = await cur.fetchall()
+
+            async with conn.execute(
+                "SELECT name, entity_type, mention_count FROM entities "
+                "ORDER BY mention_count DESC LIMIT 5"
+            ) as cur:
+                top_rows = await cur.fetchall()
+
+        by_type = {r["t"]: r["c"] for r in type_rows}
+        by_project = {r["p"]: r["c"] for r in proj_rows}
+        by_entity_type = {r["entity_type"]: r["c"] for r in et_rows}
+        top_entities = [
+            {
+                "name": r["name"],
+                "type": r["entity_type"],
+                "mention_count": r["mention_count"],
+            }
+            for r in top_rows
+        ]
+
+        return GraphStats(
+            total_memories=total_memories,
+            total_entities=total_entities,
+            total_relationships=total_relationships,
+            by_type=by_type,
+            by_project=by_project,
+            by_entity_type=by_entity_type,
+            top_entities=top_entities,
+            avg_importance=round(float(avg_imp or 0), 3),
+            recent_24h=recent_24h,
+            recent_7d=recent_7d,
+            oldest_memory=oldest,
+            newest_memory=newest,
+        )
+
+    async def get_timeline_buckets(
+        self,
+        *,
+        trunc: str,
+        project: Optional[str] = None,
+    ) -> Sequence[TimelineBucketRow]:
+        """Memory creation buckets by date_trunc interval.
+
+        Mirrors ``PostgresStore.get_timeline_buckets``. PG's
+        ``date_trunc('hour'|'day'|'week'|'month', created_at)`` is
+        translated to a ``strftime`` expression via ``_trunc_expr``.
+        """
+        if trunc not in _VALID_TRUNCS:
+            raise ValueError(
+                f"trunc must be one of {sorted(_VALID_TRUNCS)}; got {trunc!r}"
+            )
+        bucket_expr = _trunc_expr(trunc, "created_at")
+        proj_clause = "WHERE project = ?" if project else ""
+        proj_args: list[Any] = [project] if project else []
+        sql = f"""
+            SELECT {bucket_expr} AS bucket_date,
+                   COALESCE(json_extract(meta, '$.type'), 'general') AS mem_type,
+                   COUNT(*) AS cnt
+            FROM memories
+            {proj_clause}
+            GROUP BY bucket_date, mem_type
+            ORDER BY bucket_date
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(proj_args)) as cur:
+                rows = await cur.fetchall()
+        return [
+            TimelineBucketRow(
+                bucket_date=_parse_iso(r["bucket_date"]),
+                mem_type=r["mem_type"],
+                count=r["cnt"],
+            )
+            for r in rows
+        ]
+
+    async def get_memories_by_entities(
+        self,
+        entity_ids: Sequence[str],
+        *,
+        exclude_memory_id: Optional[str] = None,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        """Memories that mention any of the given entity ids, newest first.
+
+        Mirrors ``PostgresStore.get_memories_by_entities``. SQLite has no
+        ``= ANY($1)`` so the entity list expands to ``IN (?, ...)``
+        placeholders.
+        """
+        if not entity_ids:
+            return []
+        ent_ids = list(entity_ids)
+        ent_placeholders = ", ".join(["?"] * len(ent_ids))
+
+        where: list[str] = [f"em.entity_id IN ({ent_placeholders})"]
+        params: list[Any] = list(ent_ids)
+        if exclude_memory_id is not None:
+            where.append("m.id != ?")
+            params.append(exclude_memory_id)
+        params.append(limit)
+
+        sql = f"""
+            SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,
+                            m.confidence, m.source, m.project,
+                            m.created_at, m.updated_at, m.expires_at,
+                            m.upvotes, m.downvotes, m.meta,
+                            m.importance_score, m.access_count, m.last_accessed_at
+            FROM entity_mentions em
+            JOIN memories m ON m.id = em.memory_id
+            WHERE {' AND '.join(where)}
+            ORDER BY m.created_at DESC
+            LIMIT ?
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_memory(r) for r in rows]
+
+    async def search_memories_text(
+        self,
+        query: str,
+        *,
+        limit: int = 20,
+    ) -> Sequence[StoredMemory]:
+        """Case-insensitive substring match against ``memories.content``.
+
+        Mirrors ``PostgresStore.search_memories_text`` but uses ``LIKE``
+        with ``LOWER(...)`` instead of ``ILIKE``. Caveat: SQLite's default
+        ``LOWER`` only handles ASCII. Non-ASCII characters in query or
+        content remain case-sensitive — same trade-off as the ``ILIKE→LIKE``
+        translation in 3D's ``list_memories_paginated``.
+        """
+        like_pattern = f"%{query.lower()}%"
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, org_id, content, context, tags, confidence, source,
+                       project, created_at, updated_at, expires_at, upvotes,
+                       downvotes, meta, importance_score, access_count,
+                       last_accessed_at
+                FROM memories
+                WHERE LOWER(content) LIKE ?
+                ORDER BY (importance_score IS NULL), importance_score DESC, created_at DESC
+                LIMIT ?
+                """,
+                (like_pattern, limit),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_memory(r) for r in rows]
+
     async def rate_lesson(
         self,
         lesson_id: str,
@@ -4040,20 +5123,8 @@ def _stub(method_name: str):
 
 
 _STUBBED_METHODS: Sequence[str] = (
-    # MemoryOps — Phase 3C implemented insert/get/delete; Phase 3D fills
-    # in the remaining 11 methods above. No MemoryOps stubs remain.
-    # GraphOps
-    "get_entity", "get_entity_by_name", "list_entities", "upsert_entity",
-    "update_entity_counts", "delete_entity",
-    "get_mentions_for_memory", "get_mentions_for_entity", "save_mention",
-    "count_memories_for_entity",
-    "get_relationship", "get_active_relationship",
-    "list_relationships_for_entity", "save_relationship",
-    "update_relationship_status", "update_relationship_weight",
-    "expire_relationship", "list_pending_relationships",
-    "save_rejected_pattern", "query_relationships",
-    "get_graph_stats", "get_timeline_buckets", "get_memories_by_entities",
-    "search_memories_text",
+    # MemoryOps — implemented in Phase 3C/3D.
+    # GraphOps — implemented in Phase 3I.
     # PolicyOps — implemented in Phase 3F.
     # WorkspaceOps — implemented in Phase 3F.
     # AuthOps — implemented in Phase 3G.
