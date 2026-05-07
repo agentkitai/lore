@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 try:
     from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,7 +18,12 @@ from lore.persistence import StoredMemory
 from lore.server.auth import AuthContext, get_auth_context
 from lore.server.db import get_store
 from lore.services import retrieve as retrieve_service
-from lore.services.retrieve import retrieve as _retrieve_service
+from lore.services.retrieve import (
+    HybridResult,
+)
+from lore.services.retrieve import (
+    hybrid_retrieve as _hybrid_retrieve_service,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +49,9 @@ class RetrieveMemory(BaseModel):
     source: Optional[str] = None
     project: Optional[str] = None
     tags: List[str] = []
+    # Phase 6C: per-signal breakdown so consumers can debug ranking.
+    # Optional / absent for legacy session-context entries that bypass hybrid scoring.
+    signals: Optional[dict] = None
 
 
 class RetrieveResponse(BaseModel):
@@ -157,16 +165,29 @@ async def retrieve(
 
     store = await get_store()
 
-    # Resolve profile if specified — override limit/min_score from profile settings
+    # Resolve profile if specified — override limit/min_score from profile
+    # settings, and pass the resolved profile through to the hybrid path so
+    # its semantic / fts / graph weights drive RRF fusion.
+    resolved_profile = None
     if profile:
         from lore.services import profiles as profiles_service
 
-        resolved = await profiles_service.resolve_profile(store, auth.org_id, profile)
-        if resolved:
+        resolved_profile = await profiles_service.resolve_profile(
+            store, auth.org_id, profile
+        )
+        if resolved_profile:
             # Profile k overrides limit; otherwise use max_results.
-            limit = resolved.k if resolved.k is not None else resolved.max_results
+            limit = (
+                resolved_profile.k
+                if resolved_profile.k is not None
+                else resolved_profile.max_results
+            )
             # Profile threshold overrides min_score; otherwise use min_score.
-            min_score = resolved.threshold if resolved.threshold is not None else resolved.min_score
+            min_score = (
+                resolved_profile.threshold
+                if resolved_profile.threshold is not None
+                else resolved_profile.min_score
+            )
         else:
             raise HTTPException(
                 status_code=404,
@@ -188,31 +209,36 @@ async def retrieve(
     effective_project = project
     if auth.project is not None:
         effective_project = auth.project
-    out = await _retrieve_service(
+
+    # Phase 6C hybrid path. ``hybrid_retrieve`` falls back to a default
+    # profile when ``resolved_profile`` is None and degrades each signal
+    # independently if the migration / extension isn't available.
+    hybrid_results: Sequence[HybridResult] = await _hybrid_retrieve_service(
         store,
         org_id=auth.org_id,
         query_text=query,
         query_vec=query_vec,
         limit=limit,
-        min_score=min_score,
         project=effective_project,
-        format=format,
+        profile=resolved_profile,
+        min_score_override=min_score,
     )
 
-    # Convert ScoredMemory dataclasses to RetrieveMemory pydantic models
+    # Convert HybridResult dataclasses to RetrieveMemory pydantic models.
     memories: List[RetrieveMemory] = [
         RetrieveMemory(
-            id=m.id,
-            content=m.content,
-            type=(m.meta or {}).get("type", "unknown"),
-            tier=(m.meta or {}).get("tier", "long"),
-            score=round(float(m.score), 4),
-            created_at=m.created_at.isoformat() if hasattr(m.created_at, "isoformat") else str(m.created_at),
-            source=m.source,
-            project=m.project,
-            tags=list(m.tags),
+            id=r.memory.id,
+            content=r.memory.content,
+            type=(r.memory.meta or {}).get("type", "unknown"),
+            tier=(r.memory.meta or {}).get("tier", "long"),
+            score=round(float(r.score), 4),
+            created_at=r.memory.created_at.isoformat() if hasattr(r.memory.created_at, "isoformat") else str(r.memory.created_at),
+            source=r.memory.source,
+            project=r.memory.project,
+            tags=list(r.memory.tags),
+            signals={k: round(float(v), 4) for k, v in r.signals.items()},
         )
-        for m in out.memories
+        for r in hybrid_results
     ]
 
     # Auto-inject recent session snapshots (last 24h)
@@ -226,12 +252,10 @@ async def retrieve(
         session_memories = [_stored_to_retrieve_memory(sm) for sm in session_stored]
         memories.extend(session_memories)
 
-    # Re-format if session memories were appended (otherwise out.formatted is fine)
-    if include_session_context and session_memories:
-        formatter = _FORMATTERS[format]
-        formatted = formatter(memories, query)
-    else:
-        formatted = out.formatted
+    # Phase 6C: render formatted output directly from the (possibly augmented)
+    # memory list — the hybrid path no longer returns a pre-formatted blob.
+    formatter = _FORMATTERS[format]
+    formatted = formatter(memories, query)
 
     elapsed_ms = round((time.monotonic() - start) * 1000, 2)
 

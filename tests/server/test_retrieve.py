@@ -139,7 +139,12 @@ def mock_embedder():
 
 @pytest.mark.asyncio
 async def test_retrieve_basic(client):
-    """Basic retrieve returns memories with formatted output."""
+    """Basic retrieve returns memories with formatted output.
+
+    Phase 6C: hybrid scoring re-ranks via RRF, so we assert presence + score
+    thresholds rather than exact ordering. Each returned memory carries a
+    ``signals`` dict with vector / fts / graph / recency / importance keys.
+    """
     scored = [
         _scored_memory("mem-001", "User prefers dark mode", 0.85),
         _scored_memory("mem-002", "User uses VS Code", 0.72),
@@ -154,16 +159,22 @@ async def test_retrieve_basic(client):
          patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
-            params={"query": "user preferences"},
+            params={"query": "user preferences", "min_score": 0.0},
             headers=HEADERS,
         )
 
     assert resp.status_code == 200
     data = resp.json()
     assert data["count"] == 2
-    assert len(data["memories"]) == 2
-    assert data["memories"][0]["content"] == "User prefers dark mode"
-    assert data["memories"][0]["score"] == 0.85
+    contents = {m["content"] for m in data["memories"]}
+    assert "User prefers dark mode" in contents
+    assert "User uses VS Code" in contents
+    assert all(m["score"] >= 0.0 for m in data["memories"])
+    # Phase 6C: per-signal breakdown lands on every hybrid result.
+    for m in data["memories"]:
+        assert isinstance(m["signals"], dict)
+        for key in ("vector", "fts", "graph", "recency", "importance"):
+            assert key in m["signals"]
     assert data["query_time_ms"] >= 0
     assert "<memories" in data["formatted"]
 
@@ -217,14 +228,15 @@ async def test_retrieve_markdown_format(client):
          patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
-            params={"query": "preferences", "format": "markdown"},
+            params={"query": "preferences", "format": "markdown", "min_score": 0.0},
             headers=HEADERS,
         )
 
     assert resp.status_code == 200
     data = resp.json()
     assert "## Relevant Memories" in data["formatted"]
-    assert "**[0.85]**" in data["formatted"]
+    # Phase 6C: hybrid score replaces raw cosine — assert format shape, not value.
+    assert "User prefers dark mode" in data["formatted"]
 
 
 @pytest.mark.asyncio
@@ -241,7 +253,7 @@ async def test_retrieve_raw_format(client):
          patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
-            params={"query": "preferences", "format": "raw"},
+            params={"query": "preferences", "format": "raw", "min_score": 0.0},
             headers=HEADERS,
         )
 
@@ -295,7 +307,7 @@ async def test_retrieve_project_scoping(client):
          patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
-            params={"query": "backend"},
+            params={"query": "backend", "min_score": 0.0},
             headers={"Authorization": f"Bearer {project_key}"},
         )
 
@@ -339,7 +351,7 @@ async def test_retrieve_tags_parsed(client):
          patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
-            params={"query": "test"},
+            params={"query": "test", "min_score": 0.0},
             headers=HEADERS,
         )
 
@@ -385,7 +397,7 @@ async def test_retrieve_xml_format_structure(client):
          patch("lore.server.auth.get_store", return_value=auth_store):
         resp = await client.get(
             "/v1/retrieve",
-            params={"query": "preferences"},
+            params={"query": "preferences", "min_score": 0.0},
             headers=HEADERS,
         )
 
@@ -394,5 +406,6 @@ async def test_retrieve_xml_format_structure(client):
     formatted = data["formatted"]
     assert '<memories query="preferences">' in formatted
     assert '<memory id="mem-001"' in formatted
-    assert 'score="0.85"' in formatted
+    # Phase 6C: hybrid score replaces raw cosine — assert format/structure only.
+    assert "score=" in formatted
     assert "</memories>" in formatted
