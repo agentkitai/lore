@@ -12,16 +12,20 @@ Usage::
         m = await lore.remember("Always retry with backoff")
         hits = await lore.recall("retry policy")
 
-Phase 4A scope: skeleton + lifecycle + a foundational subset of methods
-(remember / recall / get / forget / list_memories). Phase 4B (this commit)
-fills in the remaining ~20 methods that mirror the sync ``Lore`` surface;
-Phase 4C wires in the background workers (SLO, retention, ingest).
+Phase 4A: skeleton + lifecycle + a foundational subset of methods
+(remember / recall / get / forget / list_memories).
+Phase 4B: the remaining ~20 methods that mirror the sync ``Lore`` surface.
+Phase 4C (this commit): background workers (retention, SLO, alerting,
+ingest) start in ``__aenter__`` and stop cooperatively in ``__aexit__``;
+``add_conversation`` enqueues onto the ingest queue. See
+:mod:`lore._workers` for the worker classes.
 
 Spec: docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from collections import Counter
@@ -40,6 +44,12 @@ from typing import (
     Union,
 )
 
+from lore._workers import (
+    AlertingWorker,
+    IngestWorker,
+    RetentionWorker,
+    SloWorker,
+)
 from lore.persistence import (
     ConfigError,
     Store,
@@ -186,7 +196,7 @@ class AsyncLore:
         the ``orgs`` table is used when this is ``None``.
     """
 
-    # Phase 4A surface. Phase 4B will extend this list.
+    # Phase 4C surface includes the worker handles.
     __slots__ = (
         "_database_url",
         "_workspace",
@@ -196,6 +206,13 @@ class AsyncLore:
         "_store",
         "_org_id",
         "_closed",
+        "_auto_workers",
+        "_retention_worker",
+        "_slo_worker",
+        "_ingest_worker",
+        "_alerting_worker",
+        "_ingest_queue",
+        "_worker_tasks",
     )
 
     def __init__(
@@ -206,6 +223,7 @@ class AsyncLore:
         api_key: Optional[str] = None,
         embed: Optional[EmbeddingFn] = None,
         org_id: Optional[str] = None,
+        auto_workers: bool = True,
     ) -> None:
         self._database_url = database_url
         self._workspace = workspace
@@ -215,6 +233,13 @@ class AsyncLore:
         self._store: Optional[Store] = None
         self._org_id: Optional[str] = None
         self._closed = False
+        self._auto_workers = auto_workers
+        self._retention_worker: Optional[RetentionWorker] = None
+        self._slo_worker: Optional[SloWorker] = None
+        self._ingest_worker: Optional[IngestWorker] = None
+        self._alerting_worker: Optional[AlertingWorker] = None
+        self._ingest_queue: Optional[asyncio.Queue[tuple[str, str]]] = None
+        self._worker_tasks: List[asyncio.Task[None]] = []
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -248,11 +273,67 @@ class AsyncLore:
             await self._safe_close_store()
             raise
 
+        if self._auto_workers:
+            self._start_workers()
+
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
+        # Stop the workers first so a pending tick can't fire against a
+        # half-closed Store. Surface uncaught worker exceptions out of
+        # __aexit__ per spec ("embedded mode propagates uncaught worker
+        # exceptions out the __aexit__ boundary").
+        first_worker_exc: Optional[BaseException] = None
+        if self._worker_tasks:
+            for task in self._worker_tasks:
+                task.cancel()
+            results = await asyncio.gather(
+                *self._worker_tasks, return_exceptions=True,
+            )
+            for r in results:
+                if isinstance(r, BaseException) and not isinstance(
+                    r, asyncio.CancelledError,
+                ):
+                    logger.error(
+                        "AsyncLore: worker task raised", exc_info=r,
+                    )
+                    if first_worker_exc is None:
+                        first_worker_exc = r
+            self._worker_tasks = []
+
         await self._safe_close_store()
         self._closed = True
+
+        # Re-raise the first uncaught worker exception (if the user's
+        # block didn't already raise) so shutdown failures are visible.
+        if first_worker_exc is not None and exc is None:
+            raise first_worker_exc
+
+    def _start_workers(self) -> None:
+        """Spawn the four background workers + the ingest queue.
+
+        :class:`AlertingWorker` is event-driven (no tick), so it isn't
+        added to ``_worker_tasks``; it's still wired into :class:`SloWorker`
+        and exposed as :attr:`_alerting_worker` for direct dispatch.
+        """
+        store = self._require_store()
+        self._alerting_worker = AlertingWorker(store)
+        self._ingest_queue = asyncio.Queue()
+        self._retention_worker = RetentionWorker(store)
+        self._slo_worker = SloWorker(store, self._alerting_worker)
+        self._ingest_worker = IngestWorker(store, self._ingest_queue)
+        loop_workers = (
+            self._retention_worker,
+            self._slo_worker,
+            self._ingest_worker,
+        )
+        self._worker_tasks = [
+            asyncio.create_task(w.run_forever(), name=f"lore-{w.name}")
+            for w in loop_workers
+        ]
+        # Stash the task reference on the worker so .stop() Just Works.
+        for w, t in zip(loop_workers, self._worker_tasks):
+            w._task = t
 
     async def _safe_close_store(self) -> None:
         store = self._store
@@ -579,13 +660,15 @@ class AsyncLore:
     ) -> StoredConversationJob:
         """Queue a conversation-extraction job. Returns the queued job row.
 
-        Note: the embedded API doesn't run a worker — the job is created
-        in ``queued`` state. Callers that want to drain it must invoke
-        ``services.conversations.process_job_async`` (or wait for Phase
-        4C, which wires in the background extractor).
+        When ``auto_workers=True`` (default), the freshly-created job id
+        is enqueued onto the :class:`IngestWorker` queue so the embedded
+        background loop will drain it. With ``auto_workers=False`` the
+        job is created in ``queued`` state and the caller is responsible
+        for invoking ``services.conversations.process_job_async`` (or
+        equivalent) to drain it.
         """
         store = self._require_store()
-        return await conversations_create_job(
+        job = await conversations_create_job(
             store,
             org_id=self.org_id,
             messages=[dict(m) for m in messages],
@@ -593,6 +676,9 @@ class AsyncLore:
             session_id=session_id,
             project=project,
         )
+        if self._ingest_queue is not None:
+            await self._ingest_queue.put((job.id, self.org_id))
+        return job
 
     async def conversation_status(self, job_id: str) -> StoredConversationJob:
         """Fetch a queued conversation job by id."""
