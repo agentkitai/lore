@@ -279,6 +279,13 @@ class TestCaptureExtractIntegration:
         assert "--output-format" in flag_args
         assert "stream-json" in flag_args
         assert "--verbose" in flag_args
+        # --permission-mode=bypassPermissions is also required: without it
+        # the subagent's mcp__lore__remember_observation calls hit "you
+        # haven't granted it yet" prompts (the subagent inherits a fresh
+        # permission state, not the parent's allowlist) and the
+        # extraction completes with zero memories saved.
+        assert "--permission-mode" in flag_args
+        assert "bypassPermissions" in flag_args
         # Detached invocation hygiene.
         assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
         assert captured["kwargs"]["start_new_session"] is True

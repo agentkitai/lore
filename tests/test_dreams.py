@@ -233,6 +233,11 @@ class TestCmdDreamForce:
         assert "--output-format" in flag_args
         assert "stream-json" in flag_args
         assert "--verbose" in flag_args
+        # --permission-mode=bypassPermissions is also required: without it
+        # the subagent's mcp__lore__* save calls hit "you haven't granted
+        # it yet" prompts and silently produce zero memories.
+        assert "--permission-mode" in flag_args
+        assert "bypassPermissions" in flag_args
         # Detached invocation hygiene.
         assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
         assert captured["kwargs"]["start_new_session"] is True
