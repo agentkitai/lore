@@ -68,6 +68,48 @@ async def supersession_chain(
     return await store.get_supersession_chain(memory_id)
 
 
+async def supersession_sources(
+    store: Store,
+    memory_id: str,
+) -> Sequence[StoredSupersession]:
+    """Inverse of ``supersession_chain``: events where ``memory_id``
+    appears as ``superseded_by``. Used by the provenance endpoint to
+    answer "what memories did this one consolidate from?".
+    """
+    return await store.list_supersession_sources(memory_id)
+
+
+async def consolidate_memories(
+    store: Store,
+    *,
+    org_id: str,
+    source_ids: Sequence[str],
+    new_memory_id: str,
+    reason: Optional[str] = None,
+    agent: str = "auto",
+) -> int:
+    """Record supersession events for every ``source_ids`` entry pointing
+    at ``new_memory_id``. Returns the count of supersessions recorded.
+
+    Caller must already have inserted the new memory and validated that
+    every source belongs to ``org_id`` — this helper exists only to keep
+    the audit-trail write path in one place so dream / classic-engine /
+    HTTP all funnel through identical semantics.
+    """
+    count = 0
+    for src_id in source_ids:
+        if not src_id:
+            continue
+        await store.record_supersession(
+            src_id,
+            superseded_by=new_memory_id,
+            reason=reason,
+            agent=agent,
+        )
+        count += 1
+    return count
+
+
 async def memories_at_time(
     store: Store,
     org_id: str,

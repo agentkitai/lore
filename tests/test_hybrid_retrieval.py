@@ -245,10 +245,11 @@ async def test_hybrid_recall_combines_signals():
         fts=[(a, 5.0)],
         graph=[(a, 2)],
     )
-    results = await _hybrid_recall(
+    report = await _hybrid_recall(
         store, _profile(min_score=0.0),
         HybridParams(org_id="solo", query_text="alpha", query_vec=_vec(1), limit=5),
     )
+    results = report.results
     assert results
     assert results[0].memory.id == "a"
     sigs = results[0].signals
@@ -257,31 +258,44 @@ async def test_hybrid_recall_combines_signals():
     assert sigs["graph"] == pytest.approx(2.0)
     assert 0.0 < sigs["recency"] <= 1.0
     assert sigs["importance"] == pytest.approx(0.8)
+    # Diagnostic plumbing must reflect that all three branches succeeded.
+    assert report.attempted == {"vector": "ok", "fts": "ok", "graph": "ok"}
+    assert report.best_score >= results[0].score
 
 
 @pytest.mark.asyncio
 async def test_hybrid_recall_fts_failure_degrades_gracefully():
     a = _make_stored("a", "alpha")
     store = _fake_store_with(vec=[(a, 0.9)], fail=("fts",))
-    results = await _hybrid_recall(
+    report = await _hybrid_recall(
         store, _profile(min_score=0.0),
         HybridParams(org_id="solo", query_text="alpha", query_vec=_vec(1), limit=5),
     )
+    results = report.results
     assert any(r.memory.id == "a" for r in results)
     # FTS signal is 0 — the branch was silenced.
     sigs = next(r.signals for r in results if r.memory.id == "a")
     assert sigs["fts"] == 0.0
     assert sigs["vector"] == pytest.approx(0.9)
+    assert report.attempted["fts"] == "error"
+    assert report.attempted["vector"] == "ok"
 
 
 @pytest.mark.asyncio
 async def test_hybrid_recall_all_signals_failing_returns_empty():
     store = _fake_store_with(fail=("vec", "fts", "graph"))
-    results = await _hybrid_recall(
+    report = await _hybrid_recall(
         store, _profile(min_score=0.0),
         HybridParams(org_id="solo", query_text="alpha", query_vec=_vec(1), limit=5),
     )
-    assert list(results) == []
+    assert list(report.results) == []
+    assert report.best_score == 0.0
+    # vec + fts errors propagate to gather; graph branch returns empty because
+    # the fake's get_entity_by_name returns None for every token (no entities
+    # to recall_by_entities — that's a legitimate "empty", not "error").
+    assert report.attempted["vector"] == "error"
+    assert report.attempted["fts"] == "error"
+    assert report.attempted["graph"] == "empty"
 
 
 @pytest.mark.asyncio
@@ -292,16 +306,33 @@ async def test_hybrid_recall_min_score_drops_low_results():
     # Single-signal RRF normalises rank 0 → 1.0, rank 29 → ~0.5; with a
     # 0.7 threshold post-multiplicative-annotation, only the top handful
     # should survive.
-    results = await _hybrid_recall(
+    report = await _hybrid_recall(
         store, _profile(semantic_weight=1.0, fts_weight=0.0, graph_weight=0.0,
                         min_score=0.9),
         HybridParams(org_id="solo", query_text="alpha", query_vec=_vec(1), limit=20),
     )
+    results = report.results
     assert 0 < len(results) < 30
     # Top-ranked stays in
     assert results[0].memory.id == "m0"
     # Tail-ranked dropped
     assert all(r.memory.id != "m29" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_hybrid_recall_best_score_survives_min_score_filter():
+    """When min_score drops every candidate, best_score still reflects the
+    pre-filter top score so the route can suggest 'try lowering min_score'."""
+    a = _make_stored("a", "alpha")
+    store = _fake_store_with(vec=[(a, 0.5)])
+    report = await _hybrid_recall(
+        store,
+        _profile(semantic_weight=1.0, fts_weight=0.0, graph_weight=0.0,
+                 min_score=10.0),  # impossibly high
+        HybridParams(org_id="solo", query_text="alpha", query_vec=_vec(1), limit=5),
+    )
+    assert list(report.results) == []
+    assert report.best_score > 0.0
 
 
 @pytest.mark.asyncio

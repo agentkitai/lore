@@ -227,6 +227,19 @@ class Store(Protocol):
         """Full audit trail for a memory, ordered oldest-first."""
         ...
 
+    async def list_supersession_sources(
+        self,
+        memory_id: str,
+    ) -> Sequence[StoredSupersession]:
+        """Inverse of get_supersession_chain: rows where superseded_by=memory_id.
+
+        Returns each event whose ``superseded_by`` equals ``memory_id`` —
+        i.e. the source memories that this memory consolidates / replaces.
+        Used by the provenance endpoint so a caller can ask "where did
+        this memory come from?" and get a typed answer.
+        """
+        ...
+
     async def list_memories_at_time(
         self,
         org_id: str,

@@ -52,6 +52,24 @@ class HybridResult:
     signals: Mapping[str, float]
 
 
+@dataclass(frozen=True)
+class HybridRetrieveReport:
+    """Diagnostic-rich output of ``_hybrid_recall`` / ``hybrid_retrieve_with_report``.
+
+    ``best_score`` is the maximum annotated score *before* the
+    ``min_score`` filter — so consumers that get an empty ``results``
+    list can still tell "we found something at 0.27 but min_score was
+    0.3" vs "we found nothing at all". ``attempted`` records the
+    per-retriever status (vector / fts / graph → ``"ok"`` /
+    ``"empty"`` / ``"error"``) so silent degradation is visible
+    instead of opaque.
+    """
+
+    results: Sequence[HybridResult]
+    best_score: float
+    attempted: Mapping[str, str]
+
+
 def _format_xml(memories: Sequence[ScoredMemory], query: str) -> str:
     if not memories:
         return ""
@@ -321,16 +339,17 @@ async def _safe_text_recall(
     project: Optional[str],
     scope_mode: str = "default",
 ) -> Sequence[Tuple[StoredMemory, float]]:
-    """Wrap ``store.recall_by_text`` so missing migrations / FTS errors don't kill the call."""
+    """Wrap ``store.recall_by_text`` so a missing migration returns ``[]``
+    (a typed signal that this branch had nothing to contribute) while
+    real exceptions propagate up to ``asyncio.gather(return_exceptions=
+    True)`` so the per-retriever ``attempted`` diagnostic can distinguish
+    "empty" from "error". Graceful degradation is unchanged — the outer
+    ``_normalize`` still maps exceptions to ``[]`` for ranking purposes."""
     if not hasattr(store, "recall_by_text"):
         return []
-    try:
-        return await store.recall_by_text(
-            org_id, query, limit=limit, project=project, scope_mode=scope_mode
-        )
-    except Exception:
-        logger.warning("recall_by_text failed; falling through with no FTS signal", exc_info=True)
-        return []
+    return await store.recall_by_text(
+        org_id, query, limit=limit, project=project, scope_mode=scope_mode
+    )
 
 
 async def _safe_graph_recall(
@@ -351,50 +370,52 @@ async def _safe_graph_recall(
     """
     if not hasattr(store, "recall_by_entities"):
         return []
-    try:
-        # Best-effort entity resolution: split on word boundaries, look up
-        # each token (and bigrams) by name. Cheap, deterministic, and
-        # zero-config; misses everything that wasn't already registered as
-        # an entity, which is fine — the FTS branch covers the long tail.
-        tokens = _TOKEN_RE.findall(query)
-        candidates: list[str] = []
-        seen: set[str] = set()
-        for tok in tokens:
-            for variant in (tok, tok.lower(), tok.title()):
-                if variant in seen:
-                    continue
-                seen.add(variant)
-                candidates.append(variant)
-        # Bigrams (e.g. "New York")
-        for i in range(len(tokens) - 1):
-            bg = f"{tokens[i]} {tokens[i + 1]}"
-            if bg not in seen:
-                seen.add(bg)
-                candidates.append(bg)
-        entity_ids: list[str] = []
-        if hasattr(store, "get_entity_by_name"):
-            for cand in candidates:
-                try:
-                    ent = await store.get_entity_by_name(cand)
-                except Exception:
-                    continue
-                if ent is not None:
-                    entity_ids.append(ent.id)
-        if not entity_ids:
-            return []
-        return await store.recall_by_entities(
-            org_id, entity_ids, limit=limit, project=project, scope_mode=scope_mode
-        )
-    except Exception:
-        logger.warning("recall_by_entities failed; falling through with no graph signal", exc_info=True)
+    # Best-effort entity resolution: split on word boundaries, look up
+    # each token (and bigrams) by name. Cheap, deterministic, and
+    # zero-config; misses everything that wasn't already registered as
+    # an entity, which is fine — the FTS branch covers the long tail.
+    tokens = _TOKEN_RE.findall(query)
+    candidates: list[str] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        for variant in (tok, tok.lower(), tok.title()):
+            if variant in seen:
+                continue
+            seen.add(variant)
+            candidates.append(variant)
+    # Bigrams (e.g. "New York")
+    for i in range(len(tokens) - 1):
+        bg = f"{tokens[i]} {tokens[i + 1]}"
+        if bg not in seen:
+            seen.add(bg)
+            candidates.append(bg)
+    entity_ids: list[str] = []
+    if hasattr(store, "get_entity_by_name"):
+        for cand in candidates:
+            # Per-name lookups can legitimately miss; we don't want one
+            # failing entity-name lookup to mask an underlying
+            # ``recall_by_entities`` failure further down. Continue on
+            # individual misses; let real exceptions on the bulk recall
+            # surface to ``asyncio.gather`` so ``attempted["graph"]``
+            # reads "error" instead of "empty".
+            try:
+                ent = await store.get_entity_by_name(cand)
+            except Exception:
+                continue
+            if ent is not None:
+                entity_ids.append(ent.id)
+    if not entity_ids:
         return []
+    return await store.recall_by_entities(
+        org_id, entity_ids, limit=limit, project=project, scope_mode=scope_mode
+    )
 
 
 async def _hybrid_recall(
     store: Store,
     profile: ResolvedProfile,
     params: HybridParams,
-) -> Sequence[HybridResult]:
+) -> HybridRetrieveReport:
     """Hybrid recall: vector + FTS + graph fused via RRF, then recency × importance.
 
     Each branch is independently optional — an exception in one signal
@@ -441,6 +462,17 @@ async def _hybrid_recall(
             logger.warning("Hybrid recall branch failed: %s", raw)
             return []
         return raw or []
+
+    def _status(raw: Any) -> str:
+        if isinstance(raw, BaseException):
+            return "error"
+        return "ok" if raw else "empty"
+
+    attempted: Dict[str, str] = {
+        "vector": _status(vec_raw),
+        "fts": _status(fts_raw),
+        "graph": _status(graph_raw),
+    }
 
     vec_list = _normalize(vec_raw)
     fts_list = _normalize(fts_raw)
@@ -514,12 +546,19 @@ async def _hybrid_recall(
         }
         annotated.append(HybridResult(memory=memory, score=final, signals=signals))
 
-    annotated = [r for r in annotated if r.score >= profile.min_score]
-    annotated.sort(key=lambda r: r.score, reverse=True)
-    return annotated[: params.limit]
+    # Capture the pre-filter best score so the route can surface
+    # "best match was 0.27 — try lowering min_score" on empty results.
+    best_score = max((r.score for r in annotated), default=0.0)
+    filtered = [r for r in annotated if r.score >= profile.min_score]
+    filtered.sort(key=lambda r: r.score, reverse=True)
+    return HybridRetrieveReport(
+        results=filtered[: params.limit],
+        best_score=best_score,
+        attempted=attempted,
+    )
 
 
-async def hybrid_retrieve(
+async def hybrid_retrieve_with_report(
     store: Store,
     *,
     org_id: str,
@@ -531,21 +570,15 @@ async def hybrid_retrieve(
     half_life_days: int = 30,
     min_score_override: Optional[float] = None,
     scope_mode: str = "default",
-) -> Sequence[HybridResult]:
-    """Public entry point for Phase 6C hybrid recall.
+) -> HybridRetrieveReport:
+    """Hybrid recall returning the full diagnostic report.
 
-    Resolves the profile (falling back to the same defaults today's vector
-    path uses) and dispatches to ``_hybrid_recall``. The route may pass
-    ``min_score_override`` to honor an HTTP-level ``min_score`` query param;
-    when supplied it replaces ``profile.min_score`` so a stricter threshold
-    can be applied without mutating the cached profile.
-
-    Phase 6G: ``scope_mode`` is the project-vs-global predicate switch —
-    ``'default'`` applies the standard scope filter, ``'all'`` skips it.
+    The route uses this so it can surface ``best_score`` and per-retriever
+    ``attempted`` status in the response — letting callers tell "we found
+    something just below threshold" apart from "we found nothing at all".
     """
     effective = profile or _DEFAULT_HYBRID_PROFILE
     if min_score_override is not None:
-        # Build a one-off profile with the overridden threshold; cheap dataclass swap.
         effective = ResolvedProfile(
             name=effective.name,
             source=effective.source,
@@ -574,3 +607,41 @@ async def hybrid_retrieve(
             scope_mode=scope_mode,
         ),
     )
+
+
+async def hybrid_retrieve(
+    store: Store,
+    *,
+    org_id: str,
+    query_text: str,
+    query_vec: Sequence[float],
+    limit: int = 5,
+    project: Optional[str] = None,
+    profile: Optional[ResolvedProfile] = None,
+    half_life_days: int = 30,
+    min_score_override: Optional[float] = None,
+    scope_mode: str = "default",
+) -> Sequence[HybridResult]:
+    """Backward-compatible entry point — returns just the filtered results.
+
+    New callers should prefer ``hybrid_retrieve_with_report`` so they
+    get ``best_score`` and the per-retriever ``attempted`` map for
+    free; this wrapper exists so existing call sites and tests keep
+    their ``Sequence[HybridResult]`` contract.
+
+    Phase 6G: ``scope_mode`` is the project-vs-global predicate switch —
+    ``'default'`` applies the standard scope filter, ``'all'`` skips it.
+    """
+    report = await hybrid_retrieve_with_report(
+        store,
+        org_id=org_id,
+        query_text=query_text,
+        query_vec=query_vec,
+        limit=limit,
+        project=project,
+        profile=profile,
+        half_life_days=half_life_days,
+        min_score_override=min_score_override,
+        scope_mode=scope_mode,
+    )
+    return report.results

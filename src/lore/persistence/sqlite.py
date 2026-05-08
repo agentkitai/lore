@@ -5674,6 +5674,33 @@ class SqliteStore:
             for r in rows
         ]
 
+    async def list_supersession_sources(
+        self,
+        memory_id: str,
+    ) -> Sequence[StoredSupersession]:
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, memory_id, superseded_by, reason, ts, agent
+                FROM memory_supersessions
+                WHERE superseded_by = ?
+                ORDER BY ts ASC, id ASC
+                """,
+                (memory_id,),
+            ) as cur:
+                rows = await cur.fetchall()
+        return [
+            StoredSupersession(
+                id=int(r["id"]),
+                memory_id=r["memory_id"],
+                superseded_by=r["superseded_by"],
+                reason=r["reason"],
+                ts=_parse_iso(r["ts"]),
+                agent=r["agent"],
+            )
+            for r in rows
+        ]
+
     async def list_memories_at_time(
         self,
         org_id: str,

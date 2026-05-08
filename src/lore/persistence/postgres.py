@@ -3790,6 +3790,32 @@ class PostgresStore:
             for r in rows
         ]
 
+    async def list_supersession_sources(
+        self,
+        memory_id: str,
+    ) -> Sequence[StoredSupersession]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, memory_id, superseded_by, reason, ts, agent
+                FROM memory_supersessions
+                WHERE superseded_by = $1
+                ORDER BY ts ASC, id ASC
+                """,
+                memory_id,
+            )
+        return [
+            StoredSupersession(
+                id=int(r["id"]),
+                memory_id=r["memory_id"],
+                superseded_by=r["superseded_by"],
+                reason=r["reason"],
+                ts=r["ts"],
+                agent=r["agent"],
+            )
+            for r in rows
+        ]
+
     async def list_memories_at_time(
         self,
         org_id: str,
