@@ -1,29 +1,37 @@
 """Temporal endpoints — Phase 6F memory supersession + at-time queries.
 
-Three routes, all under ``/v1/memories``:
+Routes mounted under ``/v1/memories``:
 
   * ``POST /v1/memories/{id}/supersede`` — record a supersession event.
   * ``GET  /v1/memories/at_time``       — list memories valid at a point in time.
   * ``GET  /v1/memories/{id}/supersession-chain`` — full audit trail.
+  * ``GET  /v1/memories/{id}/provenance`` — full lineage (sources + chain).
+  * ``POST /v1/memories/consolidate``     — atomic merge: create a new
+    memory and supersede each source so provenance is preserved by
+    construction rather than by the caller remembering two separate
+    write paths.
 
-Routes call into ``services/temporal.py``; no raw SQL lives here.
+Routes call into ``services/temporal.py`` and ``services/memories.py``;
+no raw SQL lives here.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
 try:
     from fastapi import APIRouter, Depends, HTTPException, Query
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
 from lore.server.auth import AuthContext, get_auth_context, require_role
 from lore.server.db import get_store
 from lore.server.models import MemoryResponse
+from lore.services import memories as memories_svc
 from lore.services import temporal as temporal_svc
 
 logger = logging.getLogger(__name__)
@@ -66,6 +74,34 @@ class AtTimeResponse(BaseModel):
     at: datetime
     memories: List[MemoryResponse]
     total: int
+
+
+class ConsolidateRequest(BaseModel):
+    source_ids: List[str] = Field(..., min_length=1)
+    content: str = Field(..., min_length=1)
+    type: str = "lesson"
+    context: Optional[str] = None
+    tags: List[str] = []
+    reason: Optional[str] = None
+    project: Optional[str] = None
+    scope: Optional[str] = None
+
+
+class ConsolidateResponse(BaseModel):
+    id: str
+    superseded_count: int
+
+
+class ProvenanceResponse(BaseModel):
+    memory_id: str
+    sources: List[SupersessionEvent]
+    chain: List[SupersessionEvent]
+    # Pre-Phase-6F consolidations stored their parent IDs in meta.consolidated_from
+    # rather than as supersession rows. Surfacing both means a caller asking
+    # "where did this come from?" gets a complete answer regardless of whether
+    # the merge happened via the dream subagent (typed) or the classic engine
+    # (untyped JSON).
+    metadata_sources: List[str] = []
 
 
 # ── Routes ─────────────────────────────────────────────────────────
@@ -169,3 +205,109 @@ async def get_supersession_chain(
             for e in events
         ],
     )
+
+
+def _to_supersession_event(e) -> SupersessionEvent:
+    return SupersessionEvent(
+        id=e.id,
+        memory_id=e.memory_id,
+        superseded_by=e.superseded_by,
+        reason=e.reason,
+        ts=e.ts,
+        agent=e.agent,
+    )
+
+
+@router.get("/{memory_id}/provenance", response_model=ProvenanceResponse)
+async def get_provenance(
+    memory_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+    store=Depends(get_store),
+) -> ProvenanceResponse:
+    """Full lineage for a memory: sources superseded by it + its own chain.
+
+    ``sources`` answers "where did this memory come from?" — every event
+    where this id appears as ``superseded_by``. ``chain`` answers "what
+    happened to this memory?" — its own ``memory_supersessions`` rows.
+    """
+    target = await store.get_memory(auth.org_id, memory_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    sources = await temporal_svc.supersession_sources(store, memory_id)
+    chain = await temporal_svc.supersession_chain(store, memory_id)
+    # Fallback for pre-Phase-6F consolidations.
+    raw_meta_sources = (target.meta or {}).get("consolidated_from") or []
+    meta_sources = [str(x) for x in raw_meta_sources if x]
+    return ProvenanceResponse(
+        memory_id=memory_id,
+        sources=[_to_supersession_event(e) for e in sources],
+        chain=[_to_supersession_event(e) for e in chain],
+        metadata_sources=meta_sources,
+    )
+
+
+@router.post("/consolidate", response_model=ConsolidateResponse, status_code=201)
+async def consolidate(
+    body: ConsolidateRequest,
+    auth: AuthContext = Depends(require_role("writer", "admin")),
+    store=Depends(get_store),
+) -> ConsolidateResponse:
+    """Create a new memory from N sources and supersede each source atomically.
+
+    Provenance guarantee: every ``source_ids`` entry has a row in
+    ``memory_supersessions`` pointing at the new memory before this
+    endpoint returns. Callers (dream subagent, classic engine, manual
+    promotion) get the same audit trail without remembering to issue a
+    second supersede call.
+    """
+    # Validate every source belongs to the caller's org. We refuse the
+    # whole operation rather than silently skipping unknown ids — half-
+    # consolidating is worse than failing loudly.
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for sid in body.source_ids:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        deduped.append(sid)
+    for sid in deduped:
+        if await store.get_memory(auth.org_id, sid) is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Source memory not found: {sid}",
+            )
+
+    # Embed the new memory's content. Lazy-import the embedder so test
+    # environments without ONNX can monkeypatch the route to skip it.
+    from lore.server.routes.retrieve import _get_embedder
+
+    embedder = _get_embedder()
+    embedding = await asyncio.to_thread(embedder.embed, body.content)
+
+    meta = {"type": body.type, "consolidated_from": list(deduped)}
+    if body.reason:
+        meta["consolidation_reason"] = body.reason
+
+    stored = await memories_svc.create_memory(
+        store,
+        org_id=auth.org_id,
+        content=body.content,
+        embedding=embedding,
+        context=body.context,
+        tags=body.tags or [],
+        source="consolidation",
+        project=auth.project or body.project,
+        meta=meta,
+        scope=body.scope,
+    )
+
+    superseded_count = await temporal_svc.consolidate_memories(
+        store,
+        org_id=auth.org_id,
+        source_ids=deduped,
+        new_memory_id=stored.id,
+        reason=body.reason or "consolidated",
+        agent="api",
+    )
+
+    return ConsolidateResponse(id=stored.id, superseded_count=superseded_count)

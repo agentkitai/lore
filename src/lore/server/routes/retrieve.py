@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import List, Optional, Sequence
+from typing import List, Optional
 
 try:
     from fastapi import APIRouter, Depends, HTTPException, Query
@@ -19,10 +19,13 @@ from lore.server.auth import AuthContext, get_auth_context
 from lore.server.db import get_store
 from lore.services import retrieve as retrieve_service
 from lore.services.retrieve import (
-    HybridResult,
+    HybridResult,  # noqa: F401  (re-exported for tests / external consumers)
 )
 from lore.services.retrieve import (
-    hybrid_retrieve as _hybrid_retrieve_service,
+    hybrid_retrieve as _hybrid_retrieve_service,  # noqa: F401  (kept as named export)
+)
+from lore.services.retrieve import (
+    hybrid_retrieve_with_report as _hybrid_retrieve_with_report,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,6 +62,14 @@ class RetrieveResponse(BaseModel):
     formatted: str
     count: int
     query_time_ms: float
+    # Diagnostic fields so a caller getting an empty ``memories`` list can
+    # tell "best match was 0.27 (just below threshold)" from "nothing
+    # matched at all", and which retrievers actually contributed.
+    # ``best_score`` is the pre-min_score top score across vector / fts /
+    # graph candidates. ``attempted`` is keyed by retriever name with
+    # values "ok" | "empty" | "error".
+    best_score: float = 0.0
+    attempted: dict = {}
 
 
 # ── Embedder singleton ─────────────────────────────────────────────
@@ -225,10 +236,12 @@ async def retrieve(
     if auth.project is not None:
         effective_project = auth.project
 
-    # Phase 6C hybrid path. ``hybrid_retrieve`` falls back to a default
-    # profile when ``resolved_profile`` is None and degrades each signal
-    # independently if the migration / extension isn't available.
-    hybrid_results: Sequence[HybridResult] = await _hybrid_retrieve_service(
+    # Phase 6C hybrid path. ``hybrid_retrieve_with_report`` falls back to
+    # a default profile when ``resolved_profile`` is None and degrades
+    # each signal independently if the migration / extension isn't
+    # available — and surfaces ``best_score`` + per-retriever ``attempted``
+    # status so the caller can disambiguate "near miss" from "empty index".
+    report = await _hybrid_retrieve_with_report(
         store,
         org_id=auth.org_id,
         query_text=query,
@@ -239,6 +252,7 @@ async def retrieve(
         min_score_override=min_score,
         scope_mode=scope,
     )
+    hybrid_results = report.results
 
     # Convert HybridResult dataclasses to RetrieveMemory pydantic models.
     memories: List[RetrieveMemory] = [
@@ -299,4 +313,6 @@ async def retrieve(
         formatted=formatted,
         count=len(memories),
         query_time_ms=elapsed_ms,
+        best_score=round(float(report.best_score), 4),
+        attempted=dict(report.attempted),
     )

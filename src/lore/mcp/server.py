@@ -418,7 +418,34 @@ def recall(
             session_context_lines = _get_session_context(lore, results)
 
         if not results and not session_context_lines:
-            return "No relevant memories found. Try a different query or broader terms."
+            # Audit gap (May 2026): the previous flat string left consumers
+            # unable to tell "nothing exists" from "indexed but below the
+            # min_score threshold". Surface concrete fallback options so
+            # the agent has a documented path forward instead of silence.
+            filter_hints: List[str] = []
+            if type:
+                filter_hints.append(f"type={type!r}")
+            if tags:
+                filter_hints.append(f"tags={list(tags)}")
+            if tier:
+                filter_hints.append(f"tier={tier!r}")
+            applied = (
+                f" (filters applied: {', '.join(filter_hints)})"
+                if filter_hints
+                else ""
+            )
+            return (
+                f"No relevant memories returned for query={query!r}{applied}.\n"
+                "Other retrieval surfaces to try before giving up:\n"
+                "  - search(query=..., min_score=0.1) — same query, lower threshold.\n"
+                "  - list_memories(type='lesson') — browse what's stored.\n"
+                "  - recent_activity(hours=72) — recent context regardless of relevance.\n"
+                "  - topics() then topic_detail(topic) — explore by theme.\n"
+                "  - graph_query / entity_map — entity-graph traversal.\n"
+                "Silence here means the hybrid pipeline (vector + fts + graph) "
+                "ran and produced no candidates above min_score; one of the "
+                "above tools may surface what you're looking for."
+            )
 
         if verbatim:
             lines: List[str] = [f"Found {len(results)} verbatim memory(ies):\n"]
@@ -1855,6 +1882,104 @@ def list_at_time(
         return "\n".join(lines)
     except Exception as e:
         return f"Failed to list memories at time: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Atomic consolidation: create a new memory from N source memories "
+        "and supersede every source in one operation. "
+        "USE THIS WHEN: merging near-duplicates or promoting an "
+        "observation cluster to a lesson. "
+        "Provenance guarantee: every source_ids entry has its "
+        "supersession_chain pointing at the returned id before this "
+        "tool returns — even if the dream subagent crashes mid-loop. "
+        "PREFER THIS over remember(...) + forget(...) for any merge / "
+        "promotion path; forget destroys the audit trail."
+    ),
+)
+def consolidate_memories(
+    source_ids: List[str],
+    content: str,
+    type: str = "lesson",
+    context: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    reason: Optional[str] = None,
+    project: Optional[str] = None,
+    scope: Optional[str] = None,
+) -> str:
+    """Create a new memory + supersede sources atomically. Returns JSON."""
+    try:
+        body: Dict[str, Any] = {
+            "source_ids": list(source_ids),
+            "content": content,
+            "type": type,
+        }
+        if context is not None:
+            body["context"] = context
+        if tags:
+            body["tags"] = list(tags)
+        if reason is not None:
+            body["reason"] = reason
+        if project is not None:
+            body["project"] = project
+        if scope is not None:
+            body["scope"] = scope
+        data = _temporal_request("POST", "/v1/memories/consolidate", json=body)
+        return json.dumps(
+            {
+                "status": "ok",
+                "id": data.get("id"),
+                "superseded_count": data.get("superseded_count"),
+            }
+        )
+    except Exception as e:
+        return f"Failed to consolidate memories: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Show the full lineage for a memory: which source memories were "
+        "consolidated into it, plus its own supersession chain. "
+        "USE THIS WHEN: a recall result looks suspicious and you want "
+        "to drill back to the unconsolidated source claims, or when "
+        "auditing how a lesson was synthesized. "
+        "Returns sources (events where memory_id appears as "
+        "superseded_by) and chain (events for memory_id itself)."
+    ),
+)
+def provenance(memory_id: str) -> str:
+    """Full provenance for a memory."""
+    try:
+        data = _temporal_request("GET", f"/v1/memories/{memory_id}/provenance")
+        sources = data.get("sources", [])
+        chain = data.get("chain", [])
+        meta_sources = data.get("metadata_sources", [])
+        if not sources and not chain and not meta_sources:
+            return f"Memory {memory_id} has no provenance history."
+        lines = [f"Provenance for {memory_id}:"]
+        if sources:
+            lines.append(f"  Consolidated from {len(sources)} source(s):")
+            for e in sources:
+                ts = e.get("ts") or "?"
+                src = e.get("memory_id") or "?"
+                reason = e.get("reason") or ""
+                lines.append(f"    [{ts}] {src} reason={reason}")
+        if meta_sources:
+            lines.append(
+                f"  Legacy meta.consolidated_from ({len(meta_sources)} id(s)):"
+            )
+            for src in meta_sources:
+                lines.append(f"    {src}")
+        if chain:
+            lines.append(f"  Own supersession chain ({len(chain)} event(s)):")
+            for e in chain:
+                ts = e.get("ts") or "?"
+                sb = e.get("superseded_by") or "(un-superseded)"
+                reason = e.get("reason") or ""
+                lines.append(f"    [{ts}] by={sb} reason={reason}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to fetch provenance: {e}"
 
 
 @mcp.tool(
