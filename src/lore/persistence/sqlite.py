@@ -4299,6 +4299,66 @@ class SqliteStore:
                 row = await cur.fetchone()
         return _row_to_entity(row) if row else None
 
+    async def find_entity_by_name_or_alias(
+        self, name: str,
+    ) -> Optional[StoredEntity]:
+        """Case-insensitive name + alias lookup.
+
+        Two-pass to keep the SQL portable:
+
+          1. ``LOWER(name) = LOWER(?)`` — covers casing variants of the
+             canonical name.
+          2. Python-side scan for alias match across the small subset
+             that already shares the same lowercase prefix-or-equal.
+
+        Aliases are stored as JSON text, and SQLite's ``json_each``
+        would let us push the alias predicate into SQL — but the JSON1
+        extension isn't guaranteed on every aiosqlite build. Falling
+        back to a Python scan keeps the contract test green on the
+        smallest-feature deployment without any runtime cost worth
+        worrying about (entities table is small + indexed).
+        """
+        # Pass 1: exact name (case-insensitive).
+        lname = name.lower()
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE LOWER(name) = ?
+                LIMIT 1
+                """,
+                (lname,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is not None:
+            return _row_to_entity(row)
+
+        # Pass 2: scan aliases. Bounded by the entities table size,
+        # which stays small in practice (a few hundred entries even
+        # for very active sessions).
+        async with self._acquire() as conn:
+            async with conn.execute(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE aliases IS NOT NULL AND aliases != '[]'
+                """
+            ) as cur:
+                rows = await cur.fetchall()
+        for r in rows:
+            try:
+                aliases = json.loads(r["aliases"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if any(isinstance(a, str) and a.lower() == lname for a in aliases):
+                return _row_to_entity(r)
+        return None
+
     async def list_entities(
         self,
         *,
@@ -4584,6 +4644,76 @@ class SqliteStore:
                 row = await cur.fetchone()
         return int(row["n"]) if row and row["n"] is not None else 0
 
+    async def replace_memory_mentions(
+        self,
+        memory_id: str,
+        mentions: Sequence[NewMention],
+    ) -> int:
+        """Atomically replace this memory's mention rows.
+
+        Used by the graph-extraction service so re-extraction rewrites
+        the memory's edges without leaving stale rows. Wrapped in a
+        transaction so a failure halfway through doesn't leave the
+        memory with a partial mention set.
+        """
+        inserted = 0
+        async with self.transaction() as tx:
+            await tx.execute(
+                "DELETE FROM entity_mentions WHERE memory_id = ?",
+                (memory_id,),
+            )
+            for m in mentions:
+                mention_id = f"emen_{ULID()}"
+                await tx.execute(
+                    """
+                    INSERT INTO entity_mentions
+                        (id, entity_id, memory_id, mention_type, confidence)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (entity_id, memory_id) DO NOTHING
+                    """,
+                    (mention_id, m.entity_id, m.memory_id,
+                     m.mention_type, m.confidence),
+                )
+                inserted += 1
+        return inserted
+
+    async def list_memories_without_mentions(
+        self,
+        org_id: str,
+        *,
+        project: Optional[str] = None,
+        limit: int = 1000,
+    ) -> Sequence[StoredMemory]:
+        """Memories with zero rows in entity_mentions, newest first.
+
+        Drives the graph-extraction backfill endpoint. The LEFT JOIN
+        is faster than a NOT EXISTS subquery on SQLite for the small
+        index we have (``idx_em_memory``).
+        """
+        params: list[Any] = [org_id]
+        where = ["m.org_id = ?", "em.id IS NULL"]
+        if project is not None:
+            params.append(project)
+            where.append("m.project = ?")
+        params.append(limit)
+        sql = f"""
+            SELECT m.id, m.org_id, m.content, m.context, m.tags,
+                   m.confidence, m.source, m.project,
+                   m.created_at, m.updated_at, m.expires_at,
+                   m.upvotes, m.downvotes, m.meta,
+                   m.importance_score, m.access_count, m.last_accessed_at
+            FROM memories m
+            LEFT JOIN entity_mentions em ON em.memory_id = m.id
+            WHERE {' AND '.join(where)}
+            GROUP BY m.id
+            ORDER BY m.created_at DESC
+            LIMIT ?
+        """
+        async with self._acquire() as conn:
+            async with conn.execute(sql, tuple(params)) as cur:
+                rows = await cur.fetchall()
+        return [_row_to_memory(r) for r in rows]
+
     # ── GraphOps: relationships (Phase 3I) ────────────────────────────
 
     async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
@@ -4705,6 +4835,60 @@ class SqliteStore:
         if row is None:  # pragma: no cover
             raise StoreError(f"save_relationship: inserted row missing id={rel_id!r}")
         return _row_to_relationship(row)
+
+    async def replace_memory_relationships(
+        self,
+        memory_id: str,
+        relationships: Sequence[NewRelationship],
+    ) -> int:
+        """Replace this memory's outgoing relationships atomically.
+
+        DELETE WHERE source_memory_id = ? then INSERT each supplied
+        relationship. Active-edge UNIQUE conflicts (the partial index
+        ``idx_rel_unique_edge`` from migration 007) are silently
+        skipped — those edges already exist from another memory and
+        we don't want to error or double-count. Returns the count of
+        inserted rows.
+        """
+        inserted = 0
+        async with self.transaction() as tx:
+            await tx.execute(
+                "DELETE FROM relationships WHERE source_memory_id = ?",
+                (memory_id,),
+            )
+            for r in relationships:
+                rel_id = f"rel_{ULID()}"
+                valid_from = r.valid_from or datetime.now(timezone.utc)
+                try:
+                    await tx.execute(
+                        """
+                        INSERT INTO relationships
+                            (id, source_entity_id, target_entity_id, rel_type, weight,
+                             properties, source_fact_id, source_memory_id,
+                             valid_from, valid_until, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rel_id,
+                            r.source_entity_id,
+                            r.target_entity_id,
+                            r.rel_type,
+                            r.weight,
+                            json.dumps(dict(r.properties)),
+                            r.source_fact_id,
+                            r.source_memory_id or memory_id,
+                            valid_from.isoformat(),
+                            r.valid_until.isoformat() if r.valid_until else None,
+                            r.status,
+                        ),
+                    )
+                    inserted += 1
+                except aiosqlite.IntegrityError:
+                    # Active-edge already exists from another memory; the
+                    # graph already has this fact. Skip silently rather
+                    # than fail the whole replace.
+                    continue
+        return inserted
 
     async def update_relationship_status(
         self,
