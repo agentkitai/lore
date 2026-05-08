@@ -108,12 +108,67 @@ def cmd_relationships(args: argparse.Namespace) -> None:
 
 
 def cmd_graph_backfill(args: argparse.Namespace) -> None:
+    """Run extraction on memories that don't yet have entity_mentions.
+
+    Calls the server-side ``POST /v1/graph/backfill`` endpoint added in
+    PR B. The pre-PR-B SDK-side path silently returned 0 in HTTP-store
+    mode because ``Lore._knowledge_graph_enabled`` is only set up for
+    local-Sqlite SDK construction; the new endpoint uses the same
+    extraction service the create-time hook does, so this command now
+    actually populates the graph.
+    """
     from lore import Lore
 
-    lore = Lore(knowledge_graph=True)
-    count = lore.graph_backfill(project=args.project, limit=args.limit)
+    lore = Lore()
+    store = getattr(lore, "_store", None)
+    request_fn = getattr(store, "_request", None)
+    if request_fn is None:
+        lore.close()
+        print(
+            "graph-backfill requires the HTTP backend. Set LORE_API_URL "
+            "and LORE_API_KEY (or run `lore setup`).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    body: dict = {"limit": min(args.limit, 100)}
+    if getattr(args, "project", None):
+        body["project"] = args.project
+
+    total_processed = 0
+    total_failed = 0
+    pages = 0
+    while True:
+        resp = request_fn("POST", "/v1/graph/backfill", json=body)
+        data = resp.json() if resp.content else {}
+        if resp.status_code != 200:
+            lore.close()
+            msg = data.get("message") or data.get("detail") or data.get("error") or "?"
+            print(f"backfill failed: {resp.status_code}: {msg}", file=sys.stderr)
+            sys.exit(1)
+        if not data.get("enabled", True):
+            lore.close()
+            print(
+                "graph extraction is disabled "
+                "(set LORE_GRAPH_EXTRACTION_ENABLED=true or install `claude`).",
+                file=sys.stderr,
+            )
+            return
+        page_processed = int(data.get("processed", 0))
+        page_failed = int(data.get("failed", 0))
+        total_processed += page_processed
+        total_failed += page_failed
+        pages += 1
+        # Drain until the server reports nothing more to do, but cap
+        # pages so a runaway loop is contained.
+        if page_processed + page_failed == 0 or pages >= 50:
+            break
+
     lore.close()
-    print(f"Processed {count} memory(ies) into the knowledge graph.")
+    print(
+        f"Backfill complete: processed={total_processed} "
+        f"failed={total_failed} pages={pages}."
+    )
 
 
 def cmd_topics(args) -> None:
