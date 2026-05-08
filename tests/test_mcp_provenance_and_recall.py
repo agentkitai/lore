@@ -114,6 +114,79 @@ class TestConsolidateMemoriesTool:
         assert "boom" in out
 
 
+# ── _temporal_request error-status handling ─────────────────────────
+
+
+class TestTemporalRequestErrorPropagation:
+    """Pre-existing bug: HttpStore._request returns the response on 404
+    instead of raising, so the MCP wrapper used to format a 404 body as
+    ``{"status": "ok", "id": null, ...}``. The fix raises ``RuntimeError``
+    on any non-2xx so the tool-level ``except Exception`` clause turns it
+    into a clear ``"Failed to ..."`` message."""
+
+    def _fake_lore_with_response(self, *, status_code: int, body: dict):
+        from types import SimpleNamespace
+
+        class _Resp:
+            def __init__(self):
+                self.status_code = status_code
+                self.content = b"not-empty" if body else b""
+
+            def json(self):
+                return body
+
+        def _request(method, path, **kwargs):
+            return _Resp()
+
+        store = SimpleNamespace(_request=_request)
+        return SimpleNamespace(_store=store)
+
+    def test_2xx_returns_body(self):
+        from lore.mcp.server import _temporal_request
+
+        fake = self._fake_lore_with_response(
+            status_code=200, body={"id": "m1"},
+        )
+        with patch("lore.mcp.server._get_lore", return_value=fake):
+            assert _temporal_request("GET", "/x") == {"id": "m1"}
+
+    def test_404_raises_with_message(self):
+        from lore.mcp.server import _temporal_request
+
+        fake = self._fake_lore_with_response(
+            status_code=404,
+            body={"error": "not_found", "message": "Source memory not found: nope"},
+        )
+        with patch("lore.mcp.server._get_lore", return_value=fake):
+            with pytest.raises(RuntimeError, match="404.*Source memory not found: nope"):
+                _temporal_request("POST", "/v1/memories/consolidate", json={})
+
+    def test_404_falls_back_to_detail_or_error_field(self):
+        from lore.mcp.server import _temporal_request
+
+        # FastAPI default error body uses "detail" (not "message").
+        fake = self._fake_lore_with_response(
+            status_code=422, body={"detail": "validation failed"},
+        )
+        with patch("lore.mcp.server._get_lore", return_value=fake):
+            with pytest.raises(RuntimeError, match="422.*validation failed"):
+                _temporal_request("POST", "/x", json={})
+
+    def test_consolidate_memories_surfaces_404_message(self):
+        """End-to-end: a 404 from the route surfaces as a Failed-to message
+        instead of bogus ``{"status": "ok", "id": null}``."""
+        from lore.mcp.server import consolidate_memories
+
+        fake = self._fake_lore_with_response(
+            status_code=404,
+            body={"error": "not_found", "message": "Source memory not found: nope"},
+        )
+        with patch("lore.mcp.server._get_lore", return_value=fake):
+            out = consolidate_memories(source_ids=["nope"], content="x")
+        assert out.startswith("Failed to consolidate memories:")
+        assert "Source memory not found: nope" in out
+
+
 # ── provenance ──────────────────────────────────────────────────────
 
 
