@@ -1797,7 +1797,11 @@ def _temporal_request(method: str, path: str, **kwargs):
 
     Phase 6F temporal endpoints don't have SDK helpers yet — the MCP
     tools call them directly. Returns the parsed JSON body or raises
-    ``RuntimeError`` if the SDK is on a non-HTTP backend.
+    ``RuntimeError`` if the SDK is on a non-HTTP backend or the server
+    responded with a non-2xx status. ``HttpStore._request`` returns the
+    raw response on 4xx/404 without raising, so we have to inspect
+    ``status_code`` here — otherwise downstream tools format an error
+    body as ``{"status": "ok", ...}``.
     """
     lore = _get_lore()
     store = getattr(lore, "_store", None)
@@ -1808,7 +1812,17 @@ def _temporal_request(method: str, path: str, **kwargs):
             "LORE_STORE=remote and LORE_API_URL."
         )
     resp = request_fn(method, path, **kwargs)
-    return resp.json() if resp.content else {}
+    body = resp.json() if resp.content else {}
+    status = getattr(resp, "status_code", 200)
+    if not (200 <= status < 300):
+        msg = (
+            body.get("message")
+            or body.get("detail")
+            or body.get("error")
+            or f"HTTP {status}"
+        )
+        raise RuntimeError(f"{status}: {msg}")
+    return body
 
 
 @mcp.tool(
