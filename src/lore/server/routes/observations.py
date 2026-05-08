@@ -92,6 +92,19 @@ async def create_observation(
         scope=body.scope,
     )
     stored = await _create_observation(store, obs, _embed)
+
+    # Fire-and-forget graph extraction. Observations are the bulk-write
+    # tier the dream/capture subagents save through; without this the
+    # graph stays empty even when `claude` is installed (PR B / spec
+    # 2026-05-08-lore-graph-population-design.md).
+    from lore.services import graph_extraction as graph_svc
+
+    if graph_svc.is_enabled():
+        asyncio.create_task(graph_svc.extract_and_persist(
+            store, org_id=auth.org_id, memory_id=stored.id,
+            content=stored.content, context=stored.context,
+        ))
+
     return ObservationCreateResponse(id=stored.id)
 
 

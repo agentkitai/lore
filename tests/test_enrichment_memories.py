@@ -94,7 +94,13 @@ def client(fake_store, mock_auth):
     with patch("lore.server.routes.memories.get_store", fake_get_store):
         with patch("lore.server.routes.memories.require_role", return_value=lambda: mock_auth):
             with patch("lore.server.routes.retrieve._get_embedder", return_value=mock_embedder):
-                yield TestClient(app)
+                # PR B (graph-extraction wiring) adds a second
+                # asyncio.create_task in the create handler. Force it
+                # off here so the existing ``assert_called_once`` checks
+                # in this file stay deterministic regardless of whether
+                # ``claude`` is on PATH in the test environment.
+                with patch.dict("os.environ", {"LORE_GRAPH_EXTRACTION_ENABLED": "false"}):
+                    yield TestClient(app)
 
 
 class TestEnrichmentTrigger:

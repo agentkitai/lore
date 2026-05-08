@@ -124,6 +124,18 @@ async def create_memory(
             store, memory_id=stored.id, content=stored.content, context=stored.context,
         ))
 
+    # Fire-and-forget graph extraction. Auto-on iff `claude` is on PATH;
+    # explicit override via LORE_GRAPH_EXTRACTION_ENABLED. The semaphore
+    # inside the service caps concurrency so a burst of creates doesn't
+    # spawn unbounded subprocesses.
+    from lore.services import graph_extraction as graph_svc
+
+    if graph_svc.is_enabled():
+        asyncio.create_task(graph_svc.extract_and_persist(
+            store, org_id=auth.org_id, memory_id=stored.id,
+            content=stored.content, context=stored.context,
+        ))
+
     return MemoryCreateResponse(id=stored.id)
 
 
