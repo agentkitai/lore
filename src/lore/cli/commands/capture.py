@@ -587,8 +587,23 @@ def _spawn_subagent(
             # without `--verbose`. Without it the subagent exits immediately
             # ("When using --print, --output-format=stream-json requires
             # --verbose") and the session buffer keeps growing without ever
-            # being extracted into memories — silent capture-pipeline death.
-            ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"],
+            # being extracted into memories.
+            #
+            # `--permission-mode bypassPermissions` is also required:
+            # without it the subagent inherits a fresh permission state
+            # where mcp__lore__remember_observation isn't pre-approved, so
+            # every save call returns "Claude requested permissions … but
+            # you haven't granted it yet" and the subagent finishes
+            # PROCESSED_THROUGH_SEQ=N without persisting any memories.
+            # The capture prompt is internally generated and only invokes
+            # mcp__lore__* tools (read + write own memory store), so
+            # bypassing permission prompts is the correct trust posture.
+            [
+                "claude", "-p", prompt,
+                "--output-format", "stream-json",
+                "--verbose",
+                "--permission-mode", "bypassPermissions",
+            ],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,

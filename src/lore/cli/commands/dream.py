@@ -415,11 +415,19 @@ def _spawn_subagent(
     log_fh = extract_log.open("a", encoding="utf-8")
     try:
         return subprocess.Popen(  # noqa: S603 — internal prompt
-            # Claude Code 2.1.x rejects `--print --output-format stream-json`
-            # without `--verbose`. Without it the subagent exits immediately
-            # with "When using --print, --output-format=stream-json requires
-            # --verbose" and the buffer never gets extracted into memories.
-            ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"],
+            # See cli/commands/capture.py for why both flags are required:
+            # --verbose unblocks stream-json on Claude Code 2.1.x, and
+            # --permission-mode=bypassPermissions stops every
+            # mcp__lore__remember/supersede/consolidate_memories/forget
+            # call from being denied with "you haven't granted it yet".
+            # Dream is a trusted internal subagent; bypassing prompts is
+            # the correct trust posture.
+            [
+                "claude", "-p", prompt,
+                "--output-format", "stream-json",
+                "--verbose",
+                "--permission-mode", "bypassPermissions",
+            ],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
