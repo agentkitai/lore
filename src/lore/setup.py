@@ -764,6 +764,218 @@ fi
 exit 0
 """
 
+LORE_CAPTURE_PROMPT_HOOK_SCRIPT = r"""#!/usr/bin/env bash
+# Lore UserPromptSubmit hook for Claude Code (Phase 6G).
+# Installed by: lore setup claude-code
+# Event: UserPromptSubmit
+#
+# Strips ``<private>...</private>`` blocks (fail-closed: an unbalanced
+# opening tag strips to end-of-prompt) and appends a single
+# ``{seq, ts, kind:"prompt", text}`` line to the per-session
+# ``buffer.jsonl`` so the auto-capture subagent has user-intent signal
+# alongside the existing tool-I/O events.
+#
+# No batching: prompts are infrequent compared to tool calls; the
+# next PostToolUse / Stop / SessionEnd flush picks them up.
+#
+# All errors are absorbed: this hook always exits 0 so Claude Code is
+# never disrupted by capture failures.
+#
+# Tunables:
+#   LORE_AUTO_SAVE         master kill switch  (default: true)
+#   LORE_PROMPT_MAX_BYTES  truncation cap      (default: 8192)
+
+set +e
+
+if [ "${LORE_AUTO_SAVE:-true}" = "false" ]; then
+    exit 0
+fi
+
+LORE_HOME="${LORE_HOME:-$HOME/.lore}"
+MAX="${LORE_PROMPT_MAX_BYTES:-8192}"
+
+EVENT="$(cat)"
+if [ -z "$EVENT" ]; then
+    exit 0
+fi
+
+# All the parsing + <private> stripping + JSONL emission lives in
+# Python; bash regex escaping for nested tags is more error-prone than
+# it's worth, and we already need Python on PATH for the rest of the
+# capture pipeline.
+LORE_CAPTURE_EVENT="$EVENT" \
+LORE_CAPTURE_HOME="$LORE_HOME" \
+LORE_CAPTURE_MAX="$MAX" \
+python3 -c '
+import json, os, re, sys, time
+
+event_raw = os.environ.get("LORE_CAPTURE_EVENT", "")
+lore_home = os.environ.get("LORE_CAPTURE_HOME", os.path.expanduser("~/.lore"))
+try:
+    max_bytes = int(os.environ.get("LORE_CAPTURE_MAX", "8192"))
+except ValueError:
+    max_bytes = 8192
+
+try:
+    event = json.loads(event_raw or "{}")
+except Exception:
+    sys.exit(0)
+
+sid = event.get("session_id") or ""
+if not sid:
+    sys.exit(0)
+
+text = event.get("prompt") or ""
+
+# Strip <private>...</private> (non-greedy, DOTALL, case-insensitive),
+# then fail-closed by stripping any unbalanced opening tag to EOS.
+text = re.sub(r"<private>.*?</private>", "", text, flags=re.S | re.I)
+text = re.sub(r"<private>.*$",            "", text, flags=re.S | re.I)
+
+# Cap by byte budget; decode-with-ignore handles a multi-byte rune
+# straddling the boundary cleanly.
+text_bytes = text.encode("utf-8")[:max_bytes]
+text = text_bytes.decode("utf-8", errors="ignore").strip()
+if not text:
+    sys.exit(0)
+
+# Sanitize the session id the same way capture.py does, so the path
+# matches where the rest of the pipeline reads/writes.
+safe_sid = re.sub(r"[^A-Za-z0-9_.\-]", "_", sid)[:64] or "unknown"
+session_dir = os.path.join(lore_home, "sessions", safe_sid)
+try:
+    os.makedirs(session_dir, exist_ok=True)
+except OSError:
+    sys.exit(0)
+
+buffer_path = os.path.join(session_dir, "buffer.jsonl")
+
+seq = 1
+if os.path.exists(buffer_path):
+    try:
+        with open(buffer_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                cur = obj.get("seq") if isinstance(obj, dict) else None
+                if isinstance(cur, int) and cur >= seq:
+                    seq = cur + 1
+    except OSError:
+        pass
+
+entry = {
+    "seq": seq,
+    "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "kind": "prompt",
+    "text": text,
+}
+
+try:
+    with open(buffer_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+except OSError:
+    sys.exit(0)
+'
+
+exit 0
+"""
+
+
+LORE_CAPTURE_END_HOOK_SCRIPT = r"""#!/usr/bin/env bash
+# Lore SessionEnd hook for Claude Code (Phase 6G).
+# Installed by: lore setup claude-code
+# Event: SessionEnd
+#
+# Pipeline:
+#   1. Foreground ``lore capture-extract --foreground`` -- flushes any
+#      remaining buffer entries through the extraction subagent
+#      synchronously so step 2 sees the per-batch observations the
+#      flush just wrote. (This is the one place the otherwise
+#      detached extract path is intentionally inverted.)
+#   2. ``lore session-finalize --session-id <sid>`` -- spawns one
+#      small subagent to emit a single ``meta.kind="summary"``
+#      observation reading only the per-batch observations, then
+#      writes ``~/.lore/sessions/<sid>/sealed``.
+#
+# All errors are absorbed: this hook always exits 0 so Claude Code
+# is never blocked by capture failures.
+
+set +e
+
+if [ "${LORE_AUTO_SAVE:-true}" = "false" ]; then
+    exit 0
+fi
+
+LORE_HOME="${LORE_HOME:-$HOME/.lore}"
+EVENT="$(cat)"
+if [ -z "$EVENT" ]; then
+    exit 0
+fi
+
+SID="$(LORE_CAPTURE_INPUT="$EVENT" python3 -c '
+import json, os, sys
+try:
+    print((json.loads(os.environ.get("LORE_CAPTURE_INPUT") or "{}") or {}).get("session_id",""))
+except Exception:
+    pass
+' 2>/dev/null)"
+
+if [ -z "$SID" ]; then
+    exit 0
+fi
+
+TRANSCRIPT="$(LORE_CAPTURE_INPUT="$EVENT" python3 -c '
+import json, os, sys
+try:
+    print((json.loads(os.environ.get("LORE_CAPTURE_INPUT") or "{}") or {}).get("transcript_path",""))
+except Exception:
+    pass
+' 2>/dev/null)"
+
+# Sanitize the session id the same way capture.py does so the path
+# matches where the rest of the pipeline reads/writes.
+SAFE_SID="$(printf '%s' "$SID" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-64)"
+[ -z "$SAFE_SID" ] && SAFE_SID="unknown"
+
+ERRORS_LOG="$LORE_HOME/sessions/$SAFE_SID/errors.log"
+mkdir -p "$LORE_HOME/sessions/$SAFE_SID" 2>/dev/null || true
+
+if ! command -v lore >/dev/null 2>&1; then
+    {
+        printf '%s\tlore binary not found on PATH; SessionEnd hook no-op\n' \
+            "$(date -u +%FT%TZ)"
+    } >>"$ERRORS_LOG" 2>/dev/null || true
+    exit 0
+fi
+
+# Step 1: foreground flush. We want session-finalize to see the
+# observations the subagent just wrote, so this MUST be synchronous --
+# unlike the Stop hook which detaches.
+if [ -n "$TRANSCRIPT" ]; then
+    lore capture-extract \
+        --session-id "$SID" \
+        --transcript-path "$TRANSCRIPT" \
+        --foreground \
+        2>>"$ERRORS_LOG" || true
+else
+    lore capture-extract \
+        --session-id "$SID" \
+        --foreground \
+        2>>"$ERRORS_LOG" || true
+fi
+
+# Step 2: emit the session summary observation and write the sealed marker.
+lore session-finalize --session-id "$SID" 2>>"$ERRORS_LOG" || true
+
+exit 0
+"""
+
+
 LORE_DREAM_TRIGGER_HOOK_SCRIPT = """\
 #!/usr/bin/env bash
 # Lore dream trigger hook for Claude Code (Phase 6E).
@@ -936,6 +1148,16 @@ def _claude_capture_stop_hook_path() -> Path:
 def _claude_dream_trigger_hook_path() -> Path:
     """Phase 6E — Stop dream trigger hook (~/.claude/hooks/lore-dream-trigger.sh)."""
     return _claude_hooks_dir() / "lore-dream-trigger.sh"
+
+
+def _claude_capture_prompt_hook_path() -> Path:
+    """Phase 6G — UserPromptSubmit auto-capture hook (~/.claude/hooks/lore-capture-prompt.sh)."""
+    return _claude_hooks_dir() / "lore-capture-prompt.sh"
+
+
+def _claude_capture_end_hook_path() -> Path:
+    """Phase 6G — SessionEnd auto-capture flush + finalize hook (~/.claude/hooks/lore-capture-end.sh)."""
+    return _claude_hooks_dir() / "lore-capture-end.sh"
 
 
 def _openclaw_hooks_dir() -> Path:
@@ -1169,10 +1391,13 @@ def _render_ensure_server_bash() -> str:
 def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | None = None) -> None:
     """Install Lore hooks for Claude Code.
 
-    As of Phase 6E this installs four hooks under ``~/.claude/hooks/``:
+    As of Phase 6G this installs six hooks under ``~/.claude/hooks/``:
 
       * ``lore-retrieve.sh``        — UserPromptSubmit auto-retrieval
         (existing behavior).
+      * ``lore-capture-prompt.sh``  — UserPromptSubmit buffer-append
+        for verbatim user prompts so the extraction subagent has
+        intent signal (Phase 6G).
       * ``lore-capture-tool.sh``    — PostToolUse buffer-append +
         N-batched ``lore capture-extract`` spawn (Phase 6A).
       * ``lore-capture-stop.sh``    — Stop hook that flushes the
@@ -1180,6 +1405,10 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
       * ``lore-dream-trigger.sh``   — Stop hook that fires
         ``lore dream`` when the 24h+5-sessions condition is met
         (Phase 6E). Coexists with the capture-stop hook on Stop.
+      * ``lore-capture-end.sh``     — SessionEnd hook that runs a
+        foreground capture-extract flush, then ``lore session-finalize``
+        to emit one ``meta.kind="summary"`` observation and write the
+        sealed marker (Phase 6G).
 
     All are registered in ``~/.claude/settings.json`` under the
     appropriate Claude Code event names. The capture/dream hooks fail
@@ -1235,6 +1464,16 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
     _write_executable(dream_trigger_hook, dream_trigger_script)
     print(f"  Dream hook    (Stop):              {dream_trigger_hook}")
 
+    # ── 5. UserPromptSubmit auto-capture hook (Phase 6G) ──────────────
+    capture_prompt_hook = _claude_capture_prompt_hook_path()
+    _write_executable(capture_prompt_hook, LORE_CAPTURE_PROMPT_HOOK_SCRIPT)
+    print(f"  Capture hook  (UserPromptSubmit):  {capture_prompt_hook}")
+
+    # ── 6. SessionEnd auto-capture flush + finalize hook (Phase 6G) ───
+    capture_end_hook = _claude_capture_end_hook_path()
+    _write_executable(capture_end_hook, LORE_CAPTURE_END_HOOK_SCRIPT)
+    print(f"  Capture hook  (SessionEnd):        {capture_end_hook}")
+
     # ── settings.json registration ────────────────────────────────────
     settings_path = _claude_settings_path()
     settings: dict = {}
@@ -1256,6 +1495,12 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
     added_dream = _register_claude_hook(
         settings, "Stop", str(dream_trigger_hook),
     )
+    added_prompt = _register_claude_hook(
+        settings, "UserPromptSubmit", str(capture_prompt_hook),
+    )
+    added_end = _register_claude_hook(
+        settings, "SessionEnd", str(capture_end_hook),
+    )
 
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2) + "\n")
@@ -1270,9 +1515,16 @@ def setup_claude_code(server_url: str = "http://localhost:8765", api_key: str | 
         flags.append("Stop registered")
     if added_dream:
         flags.append("Stop dream trigger registered")
+    if added_prompt:
+        flags.append("UserPromptSubmit capture registered")
+    if added_end:
+        flags.append("SessionEnd registered")
     if flags:
         print("  " + "; ".join(flags))
-    print("Claude Code hooks installed successfully (4 hooks: UserPromptSubmit, PostToolUse, Stop x2).")
+    print(
+        "Claude Code hooks installed successfully "
+        "(6 hooks: UserPromptSubmit x2, PostToolUse, Stop x2, SessionEnd)."
+    )
 
 
 def setup_openclaw(server_url: str = "http://localhost:8765", api_key: str | None = None) -> None:
@@ -1393,25 +1645,33 @@ def show_status() -> None:
     retrieve_hook = _claude_hook_path()
     capture_tool_hook = _claude_capture_tool_hook_path()
     capture_stop_hook = _claude_capture_stop_hook_path()
+    capture_prompt_hook = _claude_capture_prompt_hook_path()
+    capture_end_hook = _claude_capture_end_hook_path()
     settings = _claude_settings_path()
     print("\nClaude Code:")
     print(f"  Retrieval hook (UserPromptSubmit): {retrieve_hook} "
           f"{'[installed]' if retrieve_hook.exists() else '[not installed]'}")
+    print(f"  Capture hook   (UserPromptSubmit): {capture_prompt_hook} "
+          f"{'[installed]' if capture_prompt_hook.exists() else '[not installed]'}")
     print(f"  Capture hook   (PostToolUse):      {capture_tool_hook} "
           f"{'[installed]' if capture_tool_hook.exists() else '[not installed]'}")
     print(f"  Capture hook   (Stop):             {capture_stop_hook} "
           f"{'[installed]' if capture_stop_hook.exists() else '[not installed]'}")
+    print(f"  Capture hook   (SessionEnd):       {capture_end_hook} "
+          f"{'[installed]' if capture_end_hook.exists() else '[not installed]'}")
     if settings.exists():
         try:
             s = json.loads(settings.read_text())
             for event, hook in (
                 ("UserPromptSubmit", retrieve_hook),
+                ("UserPromptSubmit", capture_prompt_hook),
                 ("PostToolUse", capture_tool_hook),
                 ("Stop", capture_stop_hook),
+                ("SessionEnd", capture_end_hook),
             ):
                 hooks = s.get("hooks", {}).get(event, []) or []
                 registered = _claude_hook_already_registered(hooks, str(hook))
-                print(f"  Settings ({event}): "
+                print(f"  Settings ({event} -> {hook.name}): "
                       f"{'[registered]' if registered else '[not registered]'}")
         except (json.JSONDecodeError, OSError):
             print(f"  Settings: {settings} [error reading]")
@@ -1459,11 +1719,14 @@ def show_status() -> None:
 def remove_runtime(runtime: str) -> None:
     """Remove Lore hooks for a runtime."""
     if runtime == "claude-code":
-        # Remove all three Claude Code hook scripts (Phase 6A added two more).
+        # Remove all Claude Code hook scripts (Phase 6A added two more,
+        # Phase 6G added two more on top of those).
         hooks_to_remove = [
             ("UserPromptSubmit", _claude_hook_path()),
+            ("UserPromptSubmit", _claude_capture_prompt_hook_path()),
             ("PostToolUse", _claude_capture_tool_hook_path()),
             ("Stop", _claude_capture_stop_hook_path()),
+            ("SessionEnd", _claude_capture_end_hook_path()),
         ]
         for _, hook in hooks_to_remove:
             if hook.exists():

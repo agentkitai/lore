@@ -240,6 +240,11 @@ mcp = FastMCP(
         "Optionally set tier: 'working' (auto-expires in 1h, for scratch context), "
         "'short' (auto-expires in 7d, for session learnings), "
         "or 'long' (default, no expiry, for lasting knowledge). "
+        "Optionally set scope='global' to make this memory visible across "
+        "every project (use for universal lessons, language gotchas, "
+        "framework patterns, tool quirks); leave unset to default by type "
+        "(lesson/preference/pattern/convention default to 'global', "
+        "everything else stays scoped to the current project). "
         "When enrichment is enabled, automatically extracts topics, entities, sentiment, "
         "classifies intent/domain/emotion, and extracts structured facts."
     ),
@@ -254,6 +259,7 @@ def remember(
     project: Optional[str] = None,
     ttl: Optional[int] = None,
     session_id: Optional[str] = None,
+    scope: Optional[str] = None,
 ) -> str:
     """Store a memory in Lore."""
     try:
@@ -267,6 +273,7 @@ def remember(
             source=source,
             project=project,
             ttl=ttl,
+            scope=scope,
         )
         _maybe_auto_snapshot(lore, content, session_id=session_id)
         return f"Memory saved (ID: {memory_id}, tier: {tier})"
@@ -284,7 +291,9 @@ def remember(
         "transcripts. Use the simpler remember(content, type=...) only for "
         "polished single-fact memories you're confident about. "
         "Stored with type='observation' so future retrieval can score "
-        "polished memories higher than raw observations."
+        "polished memories higher than raw observations. "
+        "Pass scope='global' for universal lessons; default 'project' keeps "
+        "the observation visible only inside its repo."
     ),
 )
 def remember_observation(
@@ -293,11 +302,12 @@ def remember_observation(
     narrative: str,
     tags: Optional[List[str]] = None,
     project: Optional[str] = None,
+    scope: Optional[str] = None,
 ) -> str:
     """Save a structured observation. Returns a confirmation with the memory ID."""
     try:
         lore = _get_lore()
-        body = {
+        body: Dict[str, Any] = {
             "title": title,
             "facts": list(facts) if facts else [],
             "narrative": narrative,
@@ -308,6 +318,10 @@ def remember_observation(
         # Drop None project so the server applies its default project resolution.
         if body["project"] is None:
             body.pop("project")
+        # Only include scope when caller specified one — None lets the server
+        # apply its default ('project').
+        if scope is not None:
+            body["scope"] = scope
 
         store = getattr(lore, "_store", None)
         request_fn = getattr(store, "_request", None)
@@ -340,7 +354,9 @@ def remember_observation(
         "window (today/last_hour/last_day/last_week/last_month/last_year), "
         "before, after, date_from, date_to (ISO 8601). "
         "When knowledge graph is enabled, set graph_depth (e.g. via LORE_GRAPH_DEPTH) "
-        "to surface memories connected via entity relationships."
+        "to surface memories connected via entity relationships. "
+        "Pass scope='all' to also include memories from other projects "
+        "(rare; default scopes to current project + global pool)."
     ),
 )
 def recall(
@@ -372,6 +388,7 @@ def recall(
     date_to: Optional[str] = None,
     session_id: Optional[str] = None,
     include_session_context: bool = True,
+    scope: str = "default",
 ) -> str:
     """Search Lore memory for relevant memories. Set verbatim=true for raw original content."""
     try:
@@ -385,6 +402,7 @@ def recall(
             intent=intent, domain=domain, emotion=emotion,
             topic=topic, sentiment=sentiment, entity=entity, category=category,
             verbatim=verbatim,
+            scope_mode=scope,
             year=year, month=month, day=day,
             days_ago=days_ago, hours_ago=hours_ago, window=window,
             before=before, after=after,
@@ -520,13 +538,16 @@ def _get_session_context(
         "~300). Pair with get_memories(ids=[...]) to fetch full content "
         "for the rows worth reading. "
         "GOOD queries: 'CORS errors with FastAPI', 'Docker build fails on M1'. "
-        "Avoid 'help', 'error', 'fix this'."
+        "Avoid 'help', 'error', 'fix this'. "
+        "Pass scope='all' to also include memories from other projects "
+        "(rare; default scopes to current project + global pool)."
     ),
 )
 def search(
     query: str,
     limit: int = 20,
     min_score: float = 0.3,
+    scope: str = "default",
 ) -> str:
     """Return a compact JSON index of relevant memories."""
     try:
@@ -542,6 +563,7 @@ def search(
             "query": query,
             "limit": max(1, min(int(limit), 50)),
             "min_score": float(min_score),
+            "scope": scope,
         }
         resp = request_fn("GET", "/v1/search", params=params)
         if resp.status_code != 200:
@@ -599,6 +621,55 @@ def get_memories(ids: List[str]) -> str:
         return json.dumps(data, ensure_ascii=False, indent=2, default=str)
     except Exception as e:
         return f"Failed to fetch memories: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Phase 6G middle drill-down: return chronologically adjacent events "
+        "(±limit entries, hard cap ±max_hours) around an anchor memory ID, "
+        "scoped to the same project. Each entry: id, created_at, type, "
+        "title, narrative_1l, same_session. "
+        "USE THIS AFTER search() identifies a promising hit, BEFORE "
+        "get_memories(), to establish causality without paying for full "
+        "content. ~60 tokens/entry. "
+        "PARAMS: anchor_id (required); limit (1-50, default 10); "
+        "direction ('before'|'after'|'both', default 'both'); "
+        "max_hours (>0, ≤72, default 2.0)."
+    ),
+)
+def timeline(
+    anchor_id: str,
+    limit: int = 10,
+    direction: str = "both",
+    max_hours: float = 2.0,
+) -> str:
+    """Fetch chronologically adjacent events around an anchor."""
+    try:
+        lore = _get_lore()
+        store = getattr(lore, "_store", None)
+        request_fn = getattr(store, "_request", None)
+        if request_fn is None:
+            return (
+                "Failed to fetch timeline: Lore is not configured with an "
+                "HTTP backend. Set LORE_STORE=remote and LORE_API_URL."
+            )
+        params = {
+            "anchor_id": anchor_id,
+            "limit": max(1, min(int(limit), 50)),
+            "direction": direction,
+            "max_hours": float(max_hours),
+        }
+        resp = request_fn("GET", "/v1/timeline", params=params)
+        if resp.status_code == 404:
+            return f"Anchor {anchor_id} not found."
+        if resp.status_code == 403:
+            return "Anchor is in a different project than your API key allows."
+        if resp.status_code != 200:
+            return f"Timeline failed: HTTP {resp.status_code}"
+        data = resp.json() if resp.content else {}
+        return json.dumps(data, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return f"Failed to fetch timeline: {e}"
 
 
 @mcp.tool(

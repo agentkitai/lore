@@ -121,6 +121,10 @@ class Memory:
     last_accessed_at: Optional[str] = None
     archived: bool = False
     consolidated_into: Optional[str] = None
+    # Phase 6G: project-vs-global discriminator. 'project' (default) means the
+    # memory is only visible inside its repo; 'global' means it surfaces in
+    # every project (universal lessons, language gotchas, framework patterns).
+    scope: Optional[str] = None
 
 
 @dataclass

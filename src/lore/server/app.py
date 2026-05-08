@@ -57,6 +57,7 @@ from lore.server.routes.sharing import router as sharing_router
 from lore.server.routes.slo import router as slo_router
 from lore.server.routes.snapshots import router as snapshots_router
 from lore.server.routes.temporal import router as temporal_router
+from lore.server.routes.timeline import router as timeline_router
 from lore.server.routes.topics import router as topics_router
 from lore.server.routes.workspaces import router as workspaces_router
 
@@ -187,6 +188,7 @@ app.include_router(workspaces_router)
 app.include_router(audit_router)
 app.include_router(plugins_router)
 app.include_router(recommendations_router)
+app.include_router(timeline_router)
 
 # ── UI static files ────────────────────────────────────────────────
 import importlib.resources as _pkg_resources  # noqa: E402

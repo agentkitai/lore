@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 try:
     from pydantic import BaseModel, Field, field_validator
@@ -27,6 +27,9 @@ class LessonCreateRequest(BaseModel):
     embedding: Optional[List[float]] = Field(default=None)
     expires_at: Optional[datetime] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
+    # Phase 6G: project-vs-global discriminator. ``None`` (default) means
+    # "default by meta.type at the service layer".
+    scope: Optional[Literal["project", "global"]] = None
 
     @field_validator("embedding")
     @classmethod
@@ -171,6 +174,10 @@ class LessonSearchRequest(BaseModel):
     project: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=50)
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Phase 6G: scope predicate selector. 'default' applies the standard
+    # ``(scope='global') OR (scope='project' AND project=:current)``
+    # predicate; 'all' skips it entirely.
+    scope: Literal["default", "all"] = "default"
 
     @field_validator("embedding")
     @classmethod
@@ -208,6 +215,10 @@ class MemoryCreateRequest(BaseModel):
     expires_at: Optional[datetime] = None
     meta: Dict[str, Any] = Field(default_factory=dict)
     enrich: Optional[bool] = None
+    # Phase 6G: project-vs-global discriminator. ``None`` means "default by
+    # type at the service layer" — universal types (lesson/preference/
+    # pattern/convention) become 'global', everything else stays 'project'.
+    scope: Optional[Literal["project", "global"]] = None
 
     @field_validator("embedding")
     @classmethod
@@ -239,6 +250,8 @@ class MemoryResponse(BaseModel):
     upvotes: int = 0
     downvotes: int = 0
     meta: Dict[str, Any] = Field(default_factory=dict)
+    # Phase 6G: project-vs-global discriminator. Always present.
+    scope: str = "project"
 
 
 class MemoryUpdateRequest(BaseModel):
@@ -277,6 +290,10 @@ class MemorySearchRequest(BaseModel):
     project: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=50)
     min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Phase 6G: scope predicate selector. 'default' applies the standard
+    # ``(scope='global') OR (scope='project' AND project=:current)``
+    # predicate; 'all' skips it entirely.
+    scope: Literal["default", "all"] = "default"
 
     @field_validator("embedding")
     @classmethod
@@ -312,6 +329,10 @@ class ObservationCreateRequest(BaseModel):
     source: Optional[str] = None
     captured_by: str = Field(default="auto")
     session_id: Optional[str] = None
+    # Phase 6G: project-vs-global discriminator. Default 'project' keeps the
+    # observation visible only inside its repo; pass 'global' for universal
+    # lessons that should surface in any project.
+    scope: Literal["project", "global"] = "project"
 
     @field_validator("captured_by")
     @classmethod
@@ -342,6 +363,8 @@ class ObservationResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     meta: Dict[str, Any] = Field(default_factory=dict)
+    # Phase 6G: project-vs-global discriminator. Always present.
+    scope: str = "project"
 
 
 class ObservationListResponse(BaseModel):
@@ -351,3 +374,24 @@ class ObservationListResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+# ── Timeline (Phase 6G) ────────────────────────────────────────────
+
+
+class TimelineEntry(BaseModel):
+    """One adjacent event around a timeline anchor."""
+
+    id: str
+    created_at: str
+    type: str
+    title: str
+    narrative_1l: str
+    same_session: bool
+
+
+class TimelineResponse(BaseModel):
+    """Response for GET /v1/timeline — chronologically-ordered adjacent events."""
+
+    entries: List[TimelineEntry]
+    count: int

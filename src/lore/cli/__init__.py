@@ -686,6 +686,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--transcript-path", default=None, dest="transcript_path",
         help="Path to the Claude Code JSONL transcript for this session",
     )
+    # Phase 6G — pass the cwd at hook-fire time so resolve_project() picks
+    # the right git context (matters in monorepos and worktrees). Defaults
+    # to the cwd of the invoking process if omitted, which is the safe
+    # behavior on direct CLI invocations.
+    p_cap.add_argument(
+        "--cwd", default=None, dest="cwd",
+        help="Working directory for git project resolution "
+             "(defaults to current process cwd)",
+    )
+    # Phase 6G — used by the SessionEnd hook to flush synchronously so
+    # the subsequent ``lore session-finalize`` step can read the
+    # observations the flush just wrote.
+    p_cap.add_argument(
+        "--foreground", action="store_true", default=False, dest="foreground",
+        help="Wait for the subagent to exit before returning "
+             "(default: detached, fire-and-forget)",
+    )
+
+    # session-finalize (Phase 6G) — SessionEnd handler. Emits one
+    # ``meta.kind="summary"`` observation summarizing the session, then
+    # writes a ``sealed`` marker so subsequent calls no-op. Invoked by
+    # ``hooks/lore-capture-end.sh`` after a foreground capture-extract
+    # flush.
+    p_sf = sub.add_parser(
+        "session-finalize",
+        help="Emit a session-summary observation and seal the session "
+             "(called by Claude Code's SessionEnd hook)",
+    )
+    p_sf.add_argument(
+        "--session-id", required=True, dest="session_id",
+        help="Claude Code session id to finalize",
+    )
+    p_sf.add_argument(
+        "--lore-home", default=None, dest="lore_home",
+        help="Override LORE_HOME (defaults to $LORE_HOME or ~/.lore)",
+    )
 
     # dream (Phase 6E) — LLM-driven memory consolidation pipeline.
     p_dream = sub.add_parser(
@@ -788,6 +824,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     from lore.cli.commands.recall import cmd_prompt, cmd_recall
     from lore.cli.commands.remember import cmd_remember
     from lore.cli.commands.server import cmd_mcp, cmd_serve, cmd_ui
+    from lore.cli.commands.session_finalize import cmd_session_finalize
     from lore.cli.commands.snapshot import cmd_consolidate, cmd_snapshot, cmd_snapshot_save
 
     if args.command == "keys":
@@ -860,6 +897,7 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "migrate": cmd_migrate,
         "observations": cmd_observations,
         "capture-extract": cmd_capture,
+        "session-finalize": cmd_session_finalize,
         "dream": cmd_dream,
     }
     if args.command == "doctor":

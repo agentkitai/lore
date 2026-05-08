@@ -25,6 +25,19 @@ from lore.persistence.exceptions import StoreNotFoundError
 logger = logging.getLogger(__name__)
 
 
+# Phase 6G: types whose default scope is 'global' — universal lessons that
+# apply regardless of which repo you're in. Everything else (notes, facts,
+# observations, etc.) defaults to 'project' so it stays scoped to the repo
+# it was captured in. Manual ``remember()`` callers can override via the
+# explicit ``scope=`` parameter.
+GLOBAL_TYPES = frozenset({"lesson", "preference", "pattern", "convention"})
+
+
+def default_scope_for_type(t: Optional[str]) -> str:
+    """Return the default scope ('global' or 'project') for a memory type."""
+    return "global" if (t or "") in GLOBAL_TYPES else "project"
+
+
 async def create_memory(
     store: Store,
     *,
@@ -38,9 +51,23 @@ async def create_memory(
     project: Optional[str] = None,
     expires_at: Optional[datetime] = None,
     meta: Optional[Mapping[str, Any]] = None,
+    scope: Optional[str] = None,
 ) -> StoredMemory:
-    """Insert a memory. Tag normalization and meta defaulting happen here."""
+    """Insert a memory. Tag normalization and meta defaulting happen here.
+
+    Phase 6G: ``scope`` is the project-vs-global discriminator. When the
+    caller passes ``None`` (the default), the scope is derived from
+    ``meta.get('type')`` via ``default_scope_for_type`` — universal types
+    (lesson/preference/pattern/convention) become 'global', everything else
+    stays 'project'. Pass ``scope='project'`` or ``scope='global'`` to
+    override the type-based default.
+    """
     normalized_tags = tuple(t.strip() for t in tags if t and t.strip())
+    effective_scope = (
+        scope
+        if scope is not None
+        else default_scope_for_type(meta.get("type") if meta else None)
+    )
     return await store.insert_memory(
         NewMemory(
             org_id=org_id,
@@ -53,6 +80,7 @@ async def create_memory(
             project=project,
             expires_at=expires_at,
             meta=dict(meta or {}),
+            scope=effective_scope,
         )
     )
 
@@ -135,6 +163,7 @@ async def search_memories(
     min_score: float = 0.3,
     project: Optional[str] = None,
     half_life_days: int = 30,
+    scope_mode: str = "default",
 ) -> Sequence[ScoredMemory]:
     return await store.recall_by_embedding(
         RecallParams(
@@ -144,6 +173,7 @@ async def search_memories(
             min_score=min_score,
             project=project,
             half_life_days=half_life_days,
+            scope_mode=scope_mode,
         )
     )
 

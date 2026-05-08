@@ -169,6 +169,10 @@ class HttpStore(Store):
             payload["embedding"] = embedding
         if expires_at is not None:
             payload["expires_at"] = expires_at
+        # Phase 6G: only include scope when caller explicitly set one. None
+        # lets the server apply its type-based default.
+        if getattr(memory, "scope", None) is not None:
+            payload["scope"] = memory.scope
 
         return payload
 
@@ -342,6 +346,7 @@ class HttpStore(Store):
         tier: Optional[str] = None,
         limit: int = 5,
         min_confidence: float = 0.0,
+        scope_mode: str = "default",
     ) -> List[RecallResult]:
         payload: Dict[str, Any] = {
             "embedding": embedding,
@@ -354,6 +359,10 @@ class HttpStore(Store):
             payload["project"] = project
         if tier is not None:
             payload["tier"] = tier
+        # Phase 6G: only include scope when caller wants the non-default
+        # behaviour, so older servers still parse the body cleanly.
+        if scope_mode != "default":
+            payload["scope"] = scope_mode
 
         resp = self._request("POST", "/v1/lessons/search", json=payload)
         data = resp.json()

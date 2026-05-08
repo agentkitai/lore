@@ -19,6 +19,10 @@ class NewMemory:
     project: Optional[str] = None
     expires_at: Optional[datetime] = None
     meta: Mapping[str, Any] = field(default_factory=dict)
+    # Phase 6G: project-vs-global discriminator. ``'project'`` is the
+    # default; recall applies (scope='global') OR (scope='project' AND
+    # project = current_project).
+    scope: str = "project"
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +45,8 @@ class NewObservation:
     source: Optional[str] = None  # e.g. "claude-code-capture"
     captured_by: str = "auto"     # "auto" | "manual"
     session_id: Optional[str] = None
+    # Phase 6G: see NewMemory.scope.
+    scope: str = "project"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,11 +68,18 @@ class StoredMemory:
     importance_score: float
     access_count: int
     last_accessed_at: Optional[datetime]
+    # Phase 6G: scope is read from the column with NOT NULL DEFAULT 'project',
+    # so the default here is purely for ergonomics on hand-built fixtures.
+    # Production rows always have a real scope from the row.
+    scope: str = "project"
 
 
 @dataclass(frozen=True, slots=True)
 class ScoredMemory(StoredMemory):
-    score: float
+    # Default present only to satisfy the dataclass field-order rule once
+    # ``StoredMemory.scope`` gained a default. All real construction sites
+    # pass ``score=`` explicitly as a kwarg.
+    score: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +119,11 @@ class RecallParams:
     project: Optional[str] = None
     half_life_days: int = 30
     exclude_expired: bool = True
+    # Phase 6G: project-vs-global scope predicate. ``'default'`` applies
+    # ``(scope='global') OR (scope='project' AND project=:current_project)``;
+    # when ``project`` is None, restrict to ``scope='global'`` only. Pass
+    # ``'all'`` to skip the predicate entirely (rare; cross-project recall).
+    scope_mode: str = "default"
 
 
 # Graph slice dataclasses

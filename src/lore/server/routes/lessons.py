@@ -105,6 +105,7 @@ async def create_lesson(
         embedding=body.embedding,
         expires_at=body.expires_at,
         meta=body.meta,
+        scope=body.scope,
     )
     return LessonCreateResponse(id=lesson_id)
 
@@ -131,6 +132,7 @@ async def search_lessons(
         tags=body.tags,
         limit=body.limit,
         min_confidence=body.min_confidence,
+        scope_mode=body.scope,
     )
 
     lessons = [

@@ -73,13 +73,28 @@ async def create(
     embedding: Optional[Sequence[float]],
     expires_at: Optional[datetime],
     meta: Optional[Mapping[str, Any]],
+    scope: Optional[str] = None,
 ) -> str:
     """Insert a lesson (memory) with field translation.
 
     `problem` maps to content, `resolution` maps to context.
     The `context` arg is intentionally ignored — matches pre-1H no-op behavior.
     Returns the new memory id.
+
+    Phase 6G: ``scope`` is the project-vs-global discriminator. When ``None``
+    (the default), the service derives it from ``meta.type`` via
+    ``default_scope_for_type`` — universal types (lesson/preference/pattern/
+    convention) become 'global', everything else stays 'project'.
     """
+    # Local import to avoid a circular import between services.lessons and
+    # services.memories at module-load time.
+    from lore.services.memories import default_scope_for_type
+
+    effective_scope = (
+        scope
+        if scope is not None
+        else default_scope_for_type((meta or {}).get("type") if meta else None)
+    )
     nm = NewMemory(
         org_id=org_id,
         content=problem,
@@ -91,6 +106,7 @@ async def create(
         embedding=embedding if embedding else [0.0] * 384,
         expires_at=expires_at,
         meta=dict(meta or {}),
+        scope=effective_scope,
     )
     stored = await store.insert_memory(nm)
     return stored.id
@@ -105,6 +121,7 @@ async def search(
     tags: Optional[Sequence[str]],
     limit: int,
     min_confidence: float,
+    scope_mode: str = "default",
 ) -> list[dict]:
     """Vector recall with time-decay re-ranking.
 
@@ -113,12 +130,18 @@ async def search(
 
     The route layer translates content→problem and context→resolution for the
     response wire shape.
+
+    Phase 6G: ``scope_mode`` is forwarded to ``recall_by_embedding`` so the
+    project-vs-global predicate runs at the SQL layer alongside the
+    per-row post-filter.
     """
     wider_limit = max(50, limit * 5)
     params = RecallParams(
         org_id=org_id,
         query_vec=embedding,
         limit=wider_limit,
+        project=project,
+        scope_mode=scope_mode,
     )
     candidates = await store.recall_by_embedding(params)
 

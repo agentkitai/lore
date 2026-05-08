@@ -41,8 +41,12 @@ class TestSetupClaudeCode:
         assert settings_path.exists()
         settings = json.loads(settings_path.read_text())
         hooks = settings["hooks"]["UserPromptSubmit"]
-        assert len(hooks) == 1
-        assert str(hooks_dir / "lore-retrieve.sh") in hooks[0]["hooks"][0]["command"]
+        # Phase 6G: UserPromptSubmit now hosts both lore-retrieve.sh
+        # (auto-retrieval) and lore-capture-prompt.sh (auto-capture).
+        assert len(hooks) == 2
+        commands = [h["hooks"][0]["command"] for h in hooks]
+        assert str(hooks_dir / "lore-retrieve.sh") in commands
+        assert str(hooks_dir / "lore-capture-prompt.sh") in commands
 
     def test_idempotent(self, tmp_path):
         from lore.setup import setup_claude_code
@@ -58,7 +62,9 @@ class TestSetupClaudeCode:
 
         settings = json.loads(settings_path.read_text())
         hooks = settings["hooks"]["UserPromptSubmit"]
-        assert len(hooks) == 1  # not duplicated
+        # Phase 6G: 2 hooks (retrieve + capture-prompt). Idempotency
+        # means the second invocation MUST NOT push duplicates.
+        assert len(hooks) == 2  # not duplicated
 
     def test_preserves_existing_settings(self, tmp_path):
         from lore.setup import setup_claude_code

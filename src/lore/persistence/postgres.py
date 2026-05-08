@@ -112,6 +112,12 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         meta = json.loads(meta)
     # Schema stores context as NOT NULL TEXT; surface "" as None at the API
     raw_context = row["context"]
+    # ``scope`` is Phase 6G; tolerate rows that pre-date the column for
+    # back-compat with hand-built test fixtures.
+    try:
+        scope_val = row["scope"]
+    except (KeyError, IndexError):
+        scope_val = None
     return StoredMemory(
         id=row["id"],
         org_id=row["org_id"],
@@ -130,6 +136,7 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=row["last_accessed_at"],
+        scope=scope_val if scope_val else "project",
     )
 
 
@@ -546,12 +553,12 @@ class PostgresStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, confidence, source,
-                     project, embedding, expires_at, meta)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, $10, $11::jsonb)
+                     project, embedding, expires_at, meta, scope)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, $10, $11::jsonb, $12)
                 RETURNING id, org_id, content, context, tags, confidence, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, importance_score, access_count,
-                          last_accessed_at
+                          last_accessed_at, scope
                 """,
                 memory_id,
                 memory.org_id,
@@ -564,6 +571,7 @@ class PostgresStore:
                 json.dumps(list(memory.embedding)),
                 memory.expires_at,
                 json.dumps(dict(memory.meta)),
+                memory.scope,
             )
         return _row_to_stored(row)
 
@@ -574,7 +582,7 @@ class PostgresStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories
                 WHERE id = $1
                   AND org_id = $2
@@ -636,7 +644,7 @@ class PostgresStore:
             "AND (expires_at IS NULL OR expires_at > now()) "
             "RETURNING id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at"
+            "meta, importance_score, access_count, last_accessed_at, scope"
         )
         async with self._acquire() as conn:
             row = await conn.fetchrow(sql, *params)
@@ -683,7 +691,7 @@ class PostgresStore:
         sql = (
             "SELECT id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at "
+            "meta, importance_score, access_count, last_accessed_at, scope "
             "FROM memories "
             f"WHERE {' AND '.join(where)} "
             "ORDER BY created_at DESC"
@@ -746,7 +754,7 @@ class PostgresStore:
         select_sql = (
             "SELECT id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at "
+            "meta, importance_score, access_count, last_accessed_at, scope "
             f"FROM memories WHERE {where_sql} "
             f"ORDER BY created_at DESC "
             f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
@@ -886,7 +894,19 @@ class PostgresStore:
         _check_embedding_dim(params.query_vec)
         where: list[str] = ["org_id = $1"]
         sql_params: list[Any] = [params.org_id]
-        if params.project is not None:
+        # Phase 6G: scope predicate. ``scope_mode='all'`` skips it entirely;
+        # ``'default'`` applies the standard predicate. ``project`` is a
+        # separate axis — ``scope_mode='all'`` plus an explicit project still
+        # narrows by project (the override is on scope, not project).
+        if params.scope_mode != "all":
+            if params.project is not None:
+                sql_params.append(params.project)
+                where.append(
+                    f"(scope = 'global' OR (scope = 'project' AND project = ${len(sql_params)}))"
+                )
+            else:
+                where.append("scope = 'global'")
+        elif params.project is not None:
             sql_params.append(params.project)
             where.append(f"project = ${len(sql_params)}")
         if params.exclude_expired:
@@ -903,7 +923,7 @@ class PostgresStore:
         sql = f"""
             SELECT id, org_id, content, context, tags, confidence, source, project,
                    created_at, updated_at, expires_at, upvotes, downvotes, meta,
-                   importance_score, access_count, last_accessed_at,
+                   importance_score, access_count, last_accessed_at, scope,
                    (1 - (embedding <=> ${emb_idx}::vector)) *
                    COALESCE(importance_score, 1.0) *
                    power(0.5,
@@ -946,6 +966,7 @@ class PostgresStore:
                     importance_score=sm.importance_score,
                     access_count=sm.access_count,
                     last_accessed_at=sm.last_accessed_at,
+                    scope=sm.scope,
                     score=float(r["score"]),
                 )
             )
@@ -1021,7 +1042,7 @@ class PostgresStore:
                 RETURNING id, org_id, content, context, tags, confidence, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, importance_score, access_count,
-                          last_accessed_at
+                          last_accessed_at, scope
                 """,
                 memory_id,
                 org_id,
@@ -1708,7 +1729,7 @@ class PostgresStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories
                 WHERE content ILIKE $1
                 ORDER BY importance_score DESC NULLS LAST, created_at DESC
@@ -1726,6 +1747,7 @@ class PostgresStore:
         *,
         limit: int = 20,
         project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, float]]:
         """Phase 6C FTS branch: ``ts_rank`` against the GIN index from 020_fts_index.sql.
 
@@ -1738,6 +1760,10 @@ class PostgresStore:
         to bring it into a more comparable scale before downstream consumers
         (RRF treats ranks not raw scores, so the multiplier doesn't change
         ordering — it only makes the per-signal breakdown more readable).
+
+        Phase 6G: ``scope_mode`` mirrors ``recall_by_embedding`` — ``'default'``
+        applies ``(scope='global') OR (scope='project' AND project=:current)``;
+        ``'all'`` skips the predicate.
         """
         if not query.strip():
             return []
@@ -1745,7 +1771,15 @@ class PostgresStore:
         sql_params: list[Any] = [org_id]
         sql_params.append(query)
         q_idx = len(sql_params)
-        if project is not None:
+        if scope_mode != "all":
+            if project is not None:
+                sql_params.append(project)
+                where.append(
+                    f"(scope = 'global' OR (scope = 'project' AND project = ${len(sql_params)}))"
+                )
+            else:
+                where.append("scope = 'global'")
+        elif project is not None:
             sql_params.append(project)
             where.append(f"project = ${len(sql_params)}")
         sql_params.append(limit)
@@ -1754,7 +1788,7 @@ class PostgresStore:
         sql = f"""
             SELECT id, org_id, content, context, tags, confidence, source, project,
                    created_at, updated_at, expires_at, upvotes, downvotes, meta,
-                   importance_score, access_count, last_accessed_at,
+                   importance_score, access_count, last_accessed_at, scope,
                    ts_rank(
                        to_tsvector('english', content || ' ' || COALESCE(context, '')),
                        plainto_tsquery('english', ${q_idx})
@@ -1776,6 +1810,8 @@ class PostgresStore:
         entity_ids: Sequence[str],
         *,
         limit: int = 20,
+        project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, int]]:
         """Phase 6C graph branch: rank memories by entity-overlap count.
 
@@ -1783,28 +1819,45 @@ class PostgresStore:
         number of distinct entity ids from the input that touch each memory.
         Returns ``[(memory, n_overlapping_entities)]`` sorted by count DESC,
         then created_at DESC for stable ordering.
+
+        Phase 6G: ``scope_mode`` + ``project`` mirror ``recall_by_embedding``.
         """
         if not entity_ids:
             return []
         ids = list(entity_ids)
-        sql = """
+        where: list[str] = ["em.entity_id = ANY($1)", "m.org_id = $2"]
+        sql_params: list[Any] = [ids, org_id]
+        if scope_mode != "all":
+            if project is not None:
+                sql_params.append(project)
+                where.append(
+                    f"(m.scope = 'global' OR (m.scope = 'project' AND m.project = ${len(sql_params)}))"
+                )
+            else:
+                where.append("m.scope = 'global'")
+        elif project is not None:
+            sql_params.append(project)
+            where.append(f"m.project = ${len(sql_params)}")
+        sql_params.append(limit)
+        limit_idx = len(sql_params)
+        sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta, m.importance_score,
-                   m.access_count, m.last_accessed_at,
+                   m.access_count, m.last_accessed_at, m.scope,
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
-            WHERE em.entity_id = ANY($1) AND m.org_id = $2
+            WHERE {' AND '.join(where)}
             GROUP BY m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                      m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                      m.upvotes, m.downvotes, m.meta, m.importance_score,
-                     m.access_count, m.last_accessed_at
+                     m.access_count, m.last_accessed_at, m.scope
             ORDER BY overlap_count DESC, m.created_at DESC
-            LIMIT $3
+            LIMIT ${limit_idx}
         """
         async with self._acquire() as conn:
-            rows = await conn.fetch(sql, ids, org_id, limit)
+            rows = await conn.fetch(sql, *sql_params)
         return [(_row_to_stored(r), int(r["overlap_count"])) for r in rows]
 
     # ── PolicyOps ─────────────────────────────────────────────────────
@@ -2295,7 +2348,7 @@ class PostgresStore:
                 RETURNING id, org_id, content, context, tags, confidence, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, importance_score, access_count,
-                          last_accessed_at
+                          last_accessed_at, scope
                 """,
                 memory_id,
                 org_id,
@@ -2331,7 +2384,7 @@ class PostgresStore:
         sql = (
             "SELECT id, org_id, content, context, tags, confidence, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at "
+            "meta, importance_score, access_count, last_accessed_at, scope "
             "FROM memories "
             f"WHERE {' AND '.join(where)} "
             f"ORDER BY created_at DESC LIMIT ${limit_idx}"
@@ -3787,6 +3840,105 @@ class PostgresStore:
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return [_row_to_stored(r) for r in rows]
+
+    async def list_timeline_around(
+        self,
+        *,
+        anchor_id: str,
+        org_id: str,
+        direction: str,
+        limit: int,
+        max_hours: float,
+    ) -> tuple[Optional[StoredMemory], list[StoredMemory]]:
+        """Phase 6G — chronologically adjacent memories around an anchor.
+
+        Mirror of the SQLite implementation, using ``INTERVAL '<n> hours'``
+        for the time window.
+        """
+        async with self._acquire() as conn:
+            anchor_row = await conn.fetchrow(
+                """
+                SELECT id, org_id, content, context, tags, confidence, source,
+                       project, created_at, updated_at, expires_at, upvotes,
+                       downvotes, meta, importance_score, access_count,
+                       last_accessed_at, scope
+                FROM memories
+                WHERE id = $1 AND org_id = $2
+                """,
+                anchor_id,
+                org_id,
+            )
+        if anchor_row is None:
+            return (None, [])
+        anchor = _row_to_stored(anchor_row)
+        if anchor.project is None:
+            return (anchor, [])
+
+        anchor_ts = anchor.created_at
+        # Convert max_hours to a timedelta so asyncpg can bind it as INTERVAL.
+        window = timedelta(hours=float(max_hours))
+
+        async def _fetch(predicate_sql: str, order_sql: str, n: int) -> list[StoredMemory]:
+            sql = f"""
+                SELECT id, org_id, content, context, tags, confidence, source,
+                       project, created_at, updated_at, expires_at, upvotes,
+                       downvotes, meta, importance_score, access_count,
+                       last_accessed_at, scope
+                FROM memories
+                WHERE org_id = $1
+                  AND project = $2
+                  AND id != $3
+                  AND created_at BETWEEN ($4::timestamptz - $5::interval)
+                                     AND ($4::timestamptz + $5::interval)
+                  AND {predicate_sql}
+                ORDER BY {order_sql}
+                LIMIT $6
+            """
+            async with self._acquire() as conn:
+                rows = await conn.fetch(
+                    sql,
+                    org_id,
+                    anchor.project,
+                    anchor_id,
+                    anchor_ts,
+                    window,
+                    int(n),
+                )
+            return [_row_to_stored(r) for r in rows]
+
+        if direction == "before":
+            rows = await _fetch(
+                "created_at < $4::timestamptz",
+                "created_at DESC",
+                int(limit),
+            )
+            return (anchor, list(reversed(rows)))
+        if direction == "after":
+            rows = await _fetch(
+                "created_at > $4::timestamptz",
+                "created_at ASC",
+                int(limit),
+            )
+            return (anchor, rows)
+        # 'both' split: ceil(limit/2) before + floor(limit/2) after.
+        before_n = (int(limit) + 1) // 2
+        after_n = int(limit) // 2
+        before_rows: list[StoredMemory] = []
+        after_rows: list[StoredMemory] = []
+        if before_n > 0:
+            rows = await _fetch(
+                "created_at < $4::timestamptz",
+                "created_at DESC",
+                before_n,
+            )
+            before_rows = list(reversed(rows))
+        if after_n > 0:
+            after_rows = await _fetch(
+                "created_at > $4::timestamptz",
+                "created_at ASC",
+                after_n,
+            )
+        return (anchor, before_rows + after_rows)
 
 
 class _BoundConn:

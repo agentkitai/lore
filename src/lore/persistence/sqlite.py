@@ -331,6 +331,13 @@ def _row_to_memory(row) -> StoredMemory:
     meta_raw = row["meta"]
     meta = json.loads(meta_raw) if isinstance(meta_raw, str) else (meta_raw or {})
     raw_context = row["context"]
+    # ``scope`` is Phase 6G; reads default to 'project' for back-compat
+    # with rows from before the column existed in tests that hand-build
+    # rows. Production rows always have a non-null scope.
+    try:
+        scope_val = row["scope"]
+    except (IndexError, KeyError):
+        scope_val = None
     return StoredMemory(
         id=row["id"],
         org_id=row["org_id"],
@@ -349,6 +356,7 @@ def _row_to_memory(row) -> StoredMemory:
         importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=_parse_iso(row["last_accessed_at"]),
+        scope=scope_val if scope_val else "project",
     )
 
 
@@ -1075,8 +1083,8 @@ class SqliteStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, confidence, source,
-                     project, expires_at, meta)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     project, expires_at, meta, scope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
@@ -1089,6 +1097,7 @@ class SqliteStore:
                     memory.project,
                     memory.expires_at.isoformat() if memory.expires_at else None,
                     json.dumps(dict(memory.meta)),
+                    memory.scope,
                 ),
             )
             rowid = cursor.lastrowid
@@ -1104,7 +1113,7 @@ class SqliteStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories WHERE rowid = ?
                 """,
                 (rowid,),
@@ -1129,7 +1138,7 @@ class SqliteStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories
                 WHERE id = ?
                   AND org_id = ?
@@ -1173,7 +1182,8 @@ class SqliteStore:
     _MEMORY_COLS = (
         "id, org_id, content, context, tags, confidence, source, "
         "project, created_at, updated_at, expires_at, upvotes, "
-        "downvotes, meta, importance_score, access_count, last_accessed_at"
+        "downvotes, meta, importance_score, access_count, last_accessed_at, "
+        "scope"
     )
 
     async def update_memory(
@@ -1555,7 +1565,22 @@ class SqliteStore:
         # subset of filters ``RecallParams`` actually exposes.
         where: list[str] = ["m.org_id = ?"]
         sql_params: list[Any] = [params.org_id]
-        if params.project is not None:
+        # Phase 6G: scope predicate. ``scope_mode='all'`` skips this entirely
+        # (cross-project search opt-in); ``'default'`` applies
+        # ``(scope='global') OR (scope='project' AND project=:current)``,
+        # collapsing to ``scope='global'`` only when ``project`` is None so
+        # orphaned ``project=NULL`` rows can't bleed across.
+        if params.scope_mode != "all":
+            if params.project is not None:
+                where.append(
+                    "(m.scope = 'global' OR (m.scope = 'project' AND m.project = ?))"
+                )
+                sql_params.append(params.project)
+            else:
+                where.append("m.scope = 'global'")
+        elif params.project is not None:
+            # ``scope_mode='all'`` plus an explicit project still narrows by
+            # project — the override is on scope, not project.
             where.append("m.project = ?")
             sql_params.append(params.project)
         if params.exclude_expired:
@@ -1571,7 +1596,7 @@ class SqliteStore:
                 m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                 m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                 m.upvotes, m.downvotes, m.meta, m.importance_score,
-                m.access_count, m.last_accessed_at,
+                m.access_count, m.last_accessed_at, m.scope,
                 v.distance AS distance,
                 (
                     (1.0 - v.distance)
@@ -1629,6 +1654,7 @@ class SqliteStore:
                     importance_score=sm.importance_score,
                     access_count=sm.access_count,
                     last_accessed_at=sm.last_accessed_at,
+                    scope=sm.scope,
                     score=float(r["score"]),
                 )
             )
@@ -5192,7 +5218,7 @@ class SqliteStore:
                 SELECT id, org_id, content, context, tags, confidence, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, importance_score, access_count,
-                       last_accessed_at
+                       last_accessed_at, scope
                 FROM memories
                 WHERE LOWER(content) LIKE ?
                 ORDER BY (importance_score IS NULL), importance_score DESC, created_at DESC
@@ -5232,6 +5258,7 @@ class SqliteStore:
         *,
         limit: int = 20,
         project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, float]]:
         """Phase 6C FTS branch on SQLite.
 
@@ -5249,6 +5276,11 @@ class SqliteStore:
         * the FTS5 table or sqlite_vec extension is missing (graceful
           degradation — the service layer treats an exception here as
           "no FTS signal" and falls through to vector + graph).
+
+        Phase 6G: ``scope_mode`` mirrors ``recall_by_embedding`` —
+        ``'default'`` applies the
+        ``(scope='global') OR (scope='project' AND project=:current)``
+        predicate; ``'all'`` skips it.
         """
         match_query = self._sanitize_fts_query(query)
         if not match_query:
@@ -5256,7 +5288,15 @@ class SqliteStore:
 
         where: list[str] = ["m.org_id = ?"]
         sql_params: list[Any] = [match_query, org_id]
-        if project is not None:
+        if scope_mode != "all":
+            if project is not None:
+                where.append(
+                    "(m.scope = 'global' OR (m.scope = 'project' AND m.project = ?))"
+                )
+                sql_params.append(project)
+            else:
+                where.append("m.scope = 'global'")
+        elif project is not None:
             where.append("m.project = ?")
             sql_params.append(project)
         sql_params.append(limit)
@@ -5265,7 +5305,7 @@ class SqliteStore:
             SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta, m.importance_score,
-                   m.access_count, m.last_accessed_at,
+                   m.access_count, m.last_accessed_at, m.scope,
                    -bm25(memories_fts) AS fts_rank
             FROM memories_fts
             JOIN memories m ON m.rowid = memories_fts.rowid
@@ -5285,31 +5325,53 @@ class SqliteStore:
         entity_ids: Sequence[str],
         *,
         limit: int = 20,
+        project: Optional[str] = None,
+        scope_mode: str = "default",
     ) -> Sequence[tuple[StoredMemory, int]]:
         """Phase 6C graph branch on SQLite.
 
         Mirrors ``PostgresStore.recall_by_entities``: counts entity-overlap
         per memory, sorted by count DESC then created_at DESC. SQLite has no
         ``= ANY($1)`` so the entity list expands to ``IN (?, ...)``.
+
+        Phase 6G: ``scope_mode`` + ``project`` mirror the rest of the recall
+        surface; ``'default'`` applies the standard scope predicate, ``'all'``
+        skips it.
         """
         if not entity_ids:
             return []
         ids = list(entity_ids)
         ent_placeholders = ", ".join(["?"] * len(ids))
+        where: list[str] = [
+            f"em.entity_id IN ({ent_placeholders})",
+            "m.org_id = ?",
+        ]
+        params_tail: list[Any] = [*ids, org_id]
+        if scope_mode != "all":
+            if project is not None:
+                where.append(
+                    "(m.scope = 'global' OR (m.scope = 'project' AND m.project = ?))"
+                )
+                params_tail.append(project)
+            else:
+                where.append("m.scope = 'global'")
+        elif project is not None:
+            where.append("m.project = ?")
+            params_tail.append(project)
         sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta, m.importance_score,
-                   m.access_count, m.last_accessed_at,
+                   m.access_count, m.last_accessed_at, m.scope,
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
-            WHERE em.entity_id IN ({ent_placeholders}) AND m.org_id = ?
+            WHERE {' AND '.join(where)}
             GROUP BY m.id
             ORDER BY overlap_count DESC, m.created_at DESC
             LIMIT ?
         """
-        params = (*ids, org_id, limit)
+        params = (*params_tail, limit)
         async with self._acquire() as conn:
             async with conn.execute(sql, params) as cur:
                 rows = await cur.fetchall()
@@ -5666,6 +5728,103 @@ class SqliteStore:
             async with conn.execute(sql, tuple(params)) as cur:
                 rows = await cur.fetchall()
         return [_row_to_memory(r) for r in rows]
+
+    async def list_timeline_around(
+        self,
+        *,
+        anchor_id: str,
+        org_id: str,
+        direction: str,
+        limit: int,
+        max_hours: float,
+    ) -> tuple[Optional[StoredMemory], list[StoredMemory]]:
+        """Phase 6G — chronologically adjacent memories around an anchor.
+
+        Two queries: anchor lookup gated by ``org_id``, then a
+        same-project ±``max_hours`` window query split by direction.
+        Time-window math uses ``julianday`` (days), translating
+        ``±max_hours`` to ``±max_hours/24.0`` days. Adjacent rows are
+        returned chronologically (ASC).
+        """
+        # Anchor lookup. We don't gate by ``expires_at`` here because the
+        # caller expects a deterministic 404 vs 200 against the visible row;
+        # if a row is expired it's already been swept by ``expire_memories``.
+        async with self._acquire() as conn:
+            async with conn.execute(
+                f"SELECT {self._MEMORY_COLS} FROM memories "
+                "WHERE id = ? AND org_id = ?",
+                (anchor_id, org_id),
+            ) as cur:
+                anchor_row = await cur.fetchone()
+        if anchor_row is None:
+            return (None, [])
+        anchor = _row_to_memory(anchor_row)
+        # NULL anchor.project → no adjacent rows (same-project requires a
+        # concrete project value; we never match NULL=NULL across rows).
+        if anchor.project is None:
+            return (anchor, [])
+
+        # Window in fractional days for julianday math.
+        days_window = float(max_hours) / 24.0
+        # ``created_at`` is stored as either the SQLite-native
+        # ``"YYYY-MM-DD HH:MM:SS"`` shape (from the column DEFAULT
+        # ``datetime('now')``) or as ISO-8601 if assigned by Python.
+        # ``julianday(...)`` accepts both, so we pass the raw column value
+        # for the anchor timestamp.
+        anchor_ts_raw = anchor_row["created_at"]
+
+        async def _fetch(predicate_sql: str, order_sql: str, n: int) -> list[StoredMemory]:
+            sql = (
+                f"SELECT {self._MEMORY_COLS} FROM memories "
+                "WHERE org_id = ? "
+                "  AND project = ? "
+                "  AND id != ? "
+                "  AND ABS(julianday(created_at) - julianday(?)) <= ? "
+                f"  AND {predicate_sql} "
+                f"ORDER BY {order_sql} "
+                "LIMIT ?"
+            )
+            params = (org_id, anchor.project, anchor_id, anchor_ts_raw,
+                      days_window, anchor_ts_raw, n)
+            async with self._acquire() as conn:
+                async with conn.execute(sql, params) as cur:
+                    rows = await cur.fetchall()
+            return [_row_to_memory(r) for r in rows]
+
+        if direction == "before":
+            rows = await _fetch(
+                "julianday(created_at) < julianday(?)",
+                "created_at DESC",
+                int(limit),
+            )
+            # most-recent-first → flip to ASC
+            return (anchor, list(reversed(rows)))
+        if direction == "after":
+            rows = await _fetch(
+                "julianday(created_at) > julianday(?)",
+                "created_at ASC",
+                int(limit),
+            )
+            return (anchor, rows)
+        # 'both' — split: ceil(limit/2) before + floor(limit/2) after.
+        before_n = (int(limit) + 1) // 2
+        after_n = int(limit) // 2
+        before_rows: list[StoredMemory] = []
+        after_rows: list[StoredMemory] = []
+        if before_n > 0:
+            rows = await _fetch(
+                "julianday(created_at) < julianday(?)",
+                "created_at DESC",
+                before_n,
+            )
+            before_rows = list(reversed(rows))
+        if after_n > 0:
+            after_rows = await _fetch(
+                "julianday(created_at) > julianday(?)",
+                "created_at ASC",
+                after_n,
+            )
+        return (anchor, before_rows + after_rows)
 
 
 async def check_dangling_vectors(store: "SqliteStore") -> list[str]:
