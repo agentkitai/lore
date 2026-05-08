@@ -286,6 +286,24 @@ class Store(Protocol):
         """Return an entity by id, or None if absent."""
         ...
 
+    async def find_entity_by_name_or_alias(
+        self, name: str,
+    ) -> Optional[StoredEntity]:
+        """Case-insensitive lookup matching ``name`` or any alias.
+
+        Used by the graph-extraction service to dedupe when the LLM emits
+        a name like ``"pinecone"`` and an entity already exists with
+        canonical name ``"Pinecone"`` or alias ``"PC"``. Behavior:
+
+        * ``LOWER(name) = LOWER(?)`` matches first.
+        * Falls back to ``? IN aliases`` (case-insensitive).
+
+        The exact-match ``get_entity_by_name`` and the upsert-by-name
+        ``upsert_entity`` paths are unchanged — services that already
+        normalize at the boundary keep their existing semantics.
+        """
+        ...
+
     async def get_entity_by_name(self, name: str) -> Optional[StoredEntity]:
         """Return an entity whose name matches exactly (case-sensitive); services normalize."""
         ...
@@ -336,6 +354,32 @@ class Store(Protocol):
         """Idempotent insert; (entity_id, memory_id) is unique."""
         ...
 
+    async def replace_memory_mentions(
+        self,
+        memory_id: str,
+        mentions: Sequence[NewMention],
+    ) -> int:
+        """Delete every existing mention for ``memory_id``, then insert
+        the supplied set. Used by the graph-extraction service so a
+        re-extraction of the same memory rewrites its edges atomically
+        without leaving stale rows. Returns the count of inserted rows.
+        """
+        ...
+
+    async def list_memories_without_mentions(
+        self,
+        org_id: str,
+        *,
+        project: Optional[str] = None,
+        limit: int = 1000,
+    ) -> Sequence[StoredMemory]:
+        """Memories with zero rows in ``entity_mentions``. Drives the
+        backfill endpoint: only memories that haven't been processed by
+        the graph-extraction pipeline are returned. Newest first so
+        recent activity gets the graph populated quickest.
+        """
+        ...
+
     async def count_memories_for_entity(self, entity_id: str) -> int:
         """Distinct memory count for an entity (COUNT DISTINCT memory_id)."""
         ...
@@ -367,6 +411,20 @@ class Store(Protocol):
 
     async def save_relationship(self, rel: NewRelationship) -> StoredRelationship:
         """Insert a new relationship row; returns the stored row with id and timestamps."""
+        ...
+
+    async def replace_memory_relationships(
+        self,
+        memory_id: str,
+        relationships: Sequence[NewRelationship],
+    ) -> int:
+        """Delete every relationship with ``source_memory_id = memory_id``
+        and insert the supplied set. Active-edge UNIQUE conflicts (same
+        ``source_entity_id`` / ``target_entity_id`` / ``rel_type`` already
+        present from another memory) are silently skipped — those edges
+        already exist; we don't double-count from a different source
+        memory. Returns the count of inserted rows.
+        """
         ...
 
     async def update_relationship_status(

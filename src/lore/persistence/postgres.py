@@ -1159,6 +1159,39 @@ class PostgresStore:
             )
         return _row_to_entity(row) if row else None
 
+    async def find_entity_by_name_or_alias(
+        self, name: str,
+    ) -> Optional[StoredEntity]:
+        """Case-insensitive lookup on canonical name OR any alias.
+
+        PG's ``aliases`` column is JSONB; we use ``jsonb_array_elements_text``
+        to flatten and a case-insensitive predicate. Single SQL pass,
+        no Python-side scan needed (unlike SQLite).
+        """
+        lname = name.lower()
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, entity_type, aliases, description, metadata,
+                       mention_count, first_seen_at, last_seen_at,
+                       created_at, updated_at
+                FROM entities
+                WHERE LOWER(name) = $1
+                   OR EXISTS (
+                       SELECT 1 FROM jsonb_array_elements_text(
+                           CASE jsonb_typeof(aliases)
+                               WHEN 'array' THEN aliases
+                               ELSE '[]'::jsonb
+                           END
+                       ) AS a
+                       WHERE LOWER(a) = $1
+                   )
+                LIMIT 1
+                """,
+                lname,
+            )
+        return _row_to_entity(row) if row else None
+
     async def list_entities(
         self,
         *,
@@ -1277,6 +1310,68 @@ class PostgresStore:
             )
         return int(result or 0)
 
+    async def replace_memory_mentions(
+        self,
+        memory_id: str,
+        mentions: Sequence[NewMention],
+    ) -> int:
+        """Atomically replace this memory's mention rows."""
+        inserted = 0
+        async with self._acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM entity_mentions WHERE memory_id = $1",
+                    memory_id,
+                )
+                for m in mentions:
+                    mention_id = f"emen_{ULID()}"
+                    await conn.execute(
+                        """
+                        INSERT INTO entity_mentions
+                            (id, entity_id, memory_id, mention_type, confidence)
+                        VALUES ($1, $2, $3, $4, $5)
+                        ON CONFLICT (entity_id, memory_id) DO NOTHING
+                        """,
+                        mention_id,
+                        m.entity_id,
+                        m.memory_id,
+                        m.mention_type,
+                        m.confidence,
+                    )
+                    inserted += 1
+        return inserted
+
+    async def list_memories_without_mentions(
+        self,
+        org_id: str,
+        *,
+        project: Optional[str] = None,
+        limit: int = 1000,
+    ) -> Sequence[StoredMemory]:
+        """Memories with zero rows in entity_mentions, newest first."""
+        params: list[Any] = [org_id]
+        where = ["m.org_id = $1", "em.id IS NULL"]
+        if project is not None:
+            params.append(project)
+            where.append(f"m.project = ${len(params)}")
+        params.append(limit)
+        sql = f"""
+            SELECT m.id, m.org_id, m.content, m.context, m.tags,
+                   m.confidence, m.source, m.project,
+                   m.created_at, m.updated_at, m.expires_at,
+                   m.upvotes, m.downvotes, m.meta,
+                   m.importance_score, m.access_count, m.last_accessed_at
+            FROM memories m
+            LEFT JOIN entity_mentions em ON em.memory_id = m.id
+            WHERE {' AND '.join(where)}
+            GROUP BY m.id
+            ORDER BY m.created_at DESC
+            LIMIT ${len(params)}
+        """
+        async with self._acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [_row_to_stored(r) for r in rows]
+
     # T7
     async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
         async with self._acquire() as conn:
@@ -1345,6 +1440,56 @@ class PostgresStore:
                 rel.status,
             )
         return _row_to_relationship(row)
+
+    async def replace_memory_relationships(
+        self,
+        memory_id: str,
+        relationships: Sequence[NewRelationship],
+    ) -> int:
+        """Replace this memory's outgoing relationships atomically.
+
+        Active-edge UNIQUE conflicts (the partial unique index from
+        migration 007 — same source/target/type with valid_until NULL)
+        are silently skipped because the edge already exists from
+        another memory; ON CONFLICT DO NOTHING handles that without
+        rolling back the whole replace.
+        """
+        inserted = 0
+        async with self._acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM relationships WHERE source_memory_id = $1",
+                    memory_id,
+                )
+                for r in relationships:
+                    rel_id = f"rel_{ULID()}"
+                    valid_from = r.valid_from or datetime.now(timezone.utc)
+                    result = await conn.execute(
+                        """
+                        INSERT INTO relationships
+                            (id, source_entity_id, target_entity_id, rel_type, weight,
+                             properties, source_fact_id, source_memory_id,
+                             valid_from, valid_until, status)
+                        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+                        ON CONFLICT (source_entity_id, target_entity_id, rel_type)
+                            WHERE valid_until IS NULL
+                            DO NOTHING
+                        """,
+                        rel_id,
+                        r.source_entity_id,
+                        r.target_entity_id,
+                        r.rel_type,
+                        r.weight,
+                        json.dumps(dict(r.properties)),
+                        r.source_fact_id,
+                        r.source_memory_id or memory_id,
+                        valid_from,
+                        r.valid_until,
+                        r.status,
+                    )
+                    if result.endswith(" 1"):
+                        inserted += 1
+        return inserted
 
     # T8
     async def list_relationships_for_entity(
