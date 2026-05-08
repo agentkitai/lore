@@ -415,7 +415,11 @@ def _spawn_subagent(
     log_fh = extract_log.open("a", encoding="utf-8")
     try:
         return subprocess.Popen(  # noqa: S603 — internal prompt
-            ["claude", "-p", prompt, "--output-format", "stream-json"],
+            # Claude Code 2.1.x rejects `--print --output-format stream-json`
+            # without `--verbose`. Without it the subagent exits immediately
+            # with "When using --print, --output-format=stream-json requires
+            # --verbose" and the buffer never gets extracted into memories.
+            ["claude", "-p", prompt, "--output-format", "stream-json", "--verbose"],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,

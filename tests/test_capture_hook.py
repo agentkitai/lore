@@ -271,6 +271,14 @@ class TestCaptureExtractIntegration:
         assert "Help me refactor" in prompt
         assert "Already saved A" in prompt
         assert "PROCESSED_THROUGH_SEQ=" in prompt
+        # Claude Code 2.1.x requires --verbose alongside stream-json; without
+        # it the extraction subagent exits immediately ("requires --verbose")
+        # and the session buffer keeps growing without ever being extracted
+        # into memories.
+        flag_args = cmd[3:]
+        assert "--output-format" in flag_args
+        assert "stream-json" in flag_args
+        assert "--verbose" in flag_args
         # Detached invocation hygiene.
         assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
         assert captured["kwargs"]["start_new_session"] is True

@@ -226,6 +226,13 @@ class TestCmdDreamForce:
         prompt = captured["cmd"][2]
         assert "PHASE_3_CONSOLIDATE_COMPLETE" in prompt
         assert "RUN_ID:" in prompt
+        # Claude Code 2.1.x requires --verbose alongside stream-json; without
+        # it the subagent exits immediately and the session buffer never
+        # gets extracted. Pin the flag so it can't silently regress.
+        flag_args = captured["cmd"][3:]
+        assert "--output-format" in flag_args
+        assert "stream-json" in flag_args
+        assert "--verbose" in flag_args
         # Detached invocation hygiene.
         assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
         assert captured["kwargs"]["start_new_session"] is True
