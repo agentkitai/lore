@@ -18,10 +18,6 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from unittest.mock import patch
-
-import pytest
-
 
 # ── _resolve_mcp_env ───────────────────────────────────────────────
 
