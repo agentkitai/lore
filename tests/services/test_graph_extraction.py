@@ -118,7 +118,7 @@ class TestParseExtractionResponse:
 
 
 class TestSpawnClaudeArgs:
-    def test_passes_required_flags(self, monkeypatch):
+    def test_passes_required_flags(self, monkeypatch, tmp_path):
         captured = {}
 
         class FakePopen:
@@ -127,6 +127,7 @@ class TestSpawnClaudeArgs:
                 captured["kwargs"] = kwargs
 
         monkeypatch.setattr(subprocess, "Popen", FakePopen)
+        monkeypatch.setenv("LORE_HOME", str(tmp_path))
         gx._spawn_claude("hello prompt")
         cmd = captured["cmd"]
         assert cmd[0] == "claude"
@@ -142,6 +143,13 @@ class TestSpawnClaudeArgs:
         assert "--verbose" in flags
         assert "--permission-mode" in flags
         assert "default" in flags  # not bypassPermissions
+        # Cheap-subagent flags (lore.subagent_config) — guards against
+        # silently regressing back to inheriting the user's full Claude
+        # Code stack on every spawn.
+        assert "--model" in flags
+        assert "--strict-mcp-config" in flags
+        assert "--mcp-config" in flags
+        assert "--settings" in flags
         # Stdin/stdout hygiene.
         assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
 

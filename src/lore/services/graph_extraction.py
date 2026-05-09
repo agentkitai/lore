@@ -45,6 +45,7 @@ from lore.persistence import (
     NewRelationship,
     Store,
 )
+from lore.subagent_config import subagent_config
 
 logger = logging.getLogger(__name__)
 
@@ -238,12 +239,14 @@ def _spawn_claude(prompt: str) -> "subprocess.Popen[bytes]":
 
     Caller is responsible for ``.wait()`` and reading stdout.
     """
+    cfg = subagent_config(role="graph", with_lore_mcp=False)
     return subprocess.Popen(  # noqa: S603 — internal prompt
         [
             "claude", "-p", prompt,
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", "default",
+            *cfg.claude_flags(),
         ],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
