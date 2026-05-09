@@ -41,6 +41,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from lore.subagent_config import subagent_config
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_ORG_ID = "solo"
@@ -413,6 +415,7 @@ def _spawn_subagent(
         return None
     extract_log.parent.mkdir(parents=True, exist_ok=True)
     log_fh = extract_log.open("a", encoding="utf-8")
+    cfg = subagent_config(role="dream", with_lore_mcp=True)
     try:
         return subprocess.Popen(  # noqa: S603 — internal prompt
             # See cli/commands/capture.py for why both flags are required:
@@ -422,11 +425,16 @@ def _spawn_subagent(
             # call from being denied with "you haven't granted it yet".
             # Dream is a trusted internal subagent; bypassing prompts is
             # the correct trust posture.
+            #
+            # ``cfg.claude_flags()`` pins the dream subagent to Sonnet
+            # (overridable via LORE_DREAM_MODEL / LORE_SUBAGENT_MODEL)
+            # with only ``mcp__lore__*`` exposed and no plugins / thinking.
             [
                 "claude", "-p", prompt,
                 "--output-format", "stream-json",
                 "--verbose",
                 "--permission-mode", "bypassPermissions",
+                *cfg.claude_flags(),
             ],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,

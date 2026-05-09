@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from lore.cli.commands._project import resolve_project
+from lore.subagent_config import subagent_config
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +582,7 @@ def _spawn_subagent(
         return None
     extract_log.parent.mkdir(parents=True, exist_ok=True)
     log_fh = extract_log.open("a", encoding="utf-8")
+    cfg = subagent_config(role="capture", with_lore_mcp=True)
     try:
         proc = subprocess.Popen(  # noqa: S603 — input is internal, not user-supplied
             # Claude Code 2.1.x rejects `--print --output-format stream-json`
@@ -598,11 +600,17 @@ def _spawn_subagent(
             # The capture prompt is internally generated and only invokes
             # mcp__lore__* tools (read + write own memory store), so
             # bypassing permission prompts is the correct trust posture.
+            #
+            # ``cfg.claude_flags()`` adds ``--model``, ``--strict-mcp-config``,
+            # ``--mcp-config``, and ``--settings`` so the subagent runs on
+            # Haiku with only ``mcp__lore__*`` exposed and no inherited
+            # plugins / thinking — see lore.subagent_config.
             [
                 "claude", "-p", prompt,
                 "--output-format", "stream-json",
                 "--verbose",
                 "--permission-mode", "bypassPermissions",
+                *cfg.claude_flags(),
             ],
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
