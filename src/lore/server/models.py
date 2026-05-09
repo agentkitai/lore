@@ -21,7 +21,6 @@ class LessonCreateRequest(BaseModel):
     resolution: str = Field(..., min_length=1)
     context: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     source: Optional[str] = None
     project: Optional[str] = None
     embedding: Optional[List[float]] = Field(default=None)
@@ -56,7 +55,6 @@ class LessonResponse(BaseModel):
     resolution: str
     context: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
-    confidence: float
     source: Optional[str] = None
     project: Optional[str] = None
     created_at: datetime
@@ -76,7 +74,6 @@ class LessonUpdateRequest(BaseModel):
     All fields optional. upvotes/downvotes can be "+1"/"-1" for atomic increment.
     """
 
-    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     tags: Optional[List[str]] = None
     upvotes: Optional[Union[str, int]] = None
     downvotes: Optional[Union[str, int]] = None
@@ -115,7 +112,6 @@ class LessonExportItem(BaseModel):
     resolution: str
     context: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
-    confidence: float
     source: Optional[str] = None
     project: Optional[str] = None
     embedding: Optional[List[float]] = None
@@ -141,7 +137,6 @@ class LessonImportItem(BaseModel):
     resolution: str = Field(..., min_length=1)
     context: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     source: Optional[str] = None
     project: Optional[str] = None
     embedding: List[float] = Field(..., min_length=384, max_length=384)
@@ -173,7 +168,7 @@ class LessonSearchRequest(BaseModel):
     tags: Optional[List[str]] = None
     project: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=50)
-    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    min_score: float = Field(default=0.0, ge=0.0, le=1.0)
     # Phase 6G: scope predicate selector. 'default' applies the standard
     # ``(scope='global') OR (scope='project' AND project=:current)``
     # predicate; 'all' skips it entirely.
@@ -208,7 +203,6 @@ class MemoryCreateRequest(BaseModel):
     content: str = Field(..., min_length=1)
     context: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
-    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     source: Optional[str] = None
     project: Optional[str] = None
     embedding: Optional[List[float]] = Field(default=None)
@@ -241,7 +235,6 @@ class MemoryResponse(BaseModel):
     content: str
     context: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
-    confidence: float
     source: Optional[str] = None
     project: Optional[str] = None
     created_at: datetime
@@ -257,7 +250,6 @@ class MemoryResponse(BaseModel):
 class MemoryUpdateRequest(BaseModel):
     """Request body for PATCH /v1/memories/{id}."""
 
-    confidence: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     tags: Optional[List[str]] = None
     upvotes: Optional[Union[str, int]] = None
     downvotes: Optional[Union[str, int]] = None
@@ -289,7 +281,7 @@ class MemorySearchRequest(BaseModel):
     tags: Optional[List[str]] = None
     project: Optional[str] = None
     limit: int = Field(default=5, ge=1, le=50)
-    min_confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    min_score: float = Field(default=0.0, ge=0.0, le=1.0)
     # Phase 6G: scope predicate selector. 'default' applies the standard
     # ``(scope='global') OR (scope='project' AND project=:current)``
     # predicate; 'all' skips it entirely.

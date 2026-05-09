@@ -1,4 +1,4 @@
-"""Retention policy endpoints — preview and apply age/importance-based cleanup."""
+"""Retention policy endpoints — preview and apply age-based cleanup."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ router = APIRouter(prefix="/v1/retention", tags=["retention"])
 
 class RetentionRequest(BaseModel):
     max_age_days: int = Field(90, ge=1, description="Max age in days")
-    min_importance_score: float = Field(0.3, ge=0.0, le=1.0, description="Importance threshold")
     archive: bool = Field(False, description="Archive before deleting")
     dry_run: bool = Field(False, description="Preview only, do not delete")
 
@@ -29,7 +28,6 @@ class RetentionRequest(BaseModel):
 class AffectedMemory(BaseModel):
     id: str
     content_preview: str
-    importance_score: float
     created_at: str
 
 
@@ -57,7 +55,6 @@ def _run_retention(params: RetentionRequest) -> RetentionResponse:
     lore = _get_lore()
     policy = RetentionPolicy(
         max_age_days=params.max_age_days,
-        min_importance_score=params.min_importance_score,
         archive_on_expire=params.archive,
         dry_run=params.dry_run,
     )
@@ -70,7 +67,6 @@ def _run_retention(params: RetentionRequest) -> RetentionResponse:
         AffectedMemory(
             id=m.id,
             content_preview=m.content[:120],
-            importance_score=m.importance_score,
             created_at=m.created_at,
         )
         for m in expired
@@ -90,13 +86,11 @@ def _run_retention(params: RetentionRequest) -> RetentionResponse:
 @router.get("/preview", response_model=RetentionResponse)
 async def preview_retention(
     max_age_days: int = 90,
-    min_importance_score: float = 0.3,
     auth: AuthContext = Depends(get_auth_context),
 ) -> RetentionResponse:
     """Preview which memories would be affected by a retention policy (dry-run)."""
     params = RetentionRequest(
         max_age_days=max_age_days,
-        min_importance_score=min_importance_score,
         archive=False,
         dry_run=True,
     )
