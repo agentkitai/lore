@@ -16,11 +16,11 @@ from lore.classify.base import Classification, Classifier
 from lore.classify.llm import LLMClassifier
 from lore.classify.rules import RuleBasedClassifier
 from lore.consolidation import ConsolidationResult
+from lore.decay import decay_factor, resolve_half_life
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder, make_code_embedder
 from lore.embed.router import EmbeddingRouter
 from lore.exceptions import MemoryNotFoundError, SecretBlockedError
-from lore.decay import decay_factor, resolve_half_life
 from lore.recent import group_memories_by_project
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
@@ -528,7 +528,7 @@ class Lore:
         "Format as a bulleted list. Omit categories with nothing to report. Max 300 words.")
 
     def save_snapshot(self, content: str, *, title=None, session_id=None, tags=None):
-        """Save a session snapshot as a high-importance memory."""
+        """Save a session snapshot."""
         if not content or not content.strip():
             raise ValueError("content must be non-empty")
         import uuid

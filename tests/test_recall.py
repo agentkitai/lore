@@ -63,14 +63,6 @@ class TestRecall:
         results = lore.recall("memory", limit=3)
         assert len(results) == 3
 
-    def test_recall_with_min_confidence(self) -> None:
-        lore = _make_lore()
-        lore.remember("low confidence", confidence=0.2)
-        lore.remember("high confidence", confidence=0.8)
-        results = lore.recall("test", min_confidence=0.5)
-        assert len(results) == 1
-        assert results[0].memory.confidence >= 0.5
-
     def test_recall_scores_reasonable(self) -> None:
         lore = _make_lore()
         for i in range(5):

@@ -24,7 +24,7 @@ def _fake_embed(text: str) -> List[float]:
 
 
 def _make_lore() -> Lore:
-    return Lore(store=MemoryStore(), embedding_fn=_fake_embed, importance_threshold=0.0)
+    return Lore(store=MemoryStore(), embedding_fn=_fake_embed, decay_threshold=0.0)
 
 
 def _utc(year, month, day, hour=0, minute=0, second=0):

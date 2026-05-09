@@ -36,7 +36,6 @@ def _seed_data(store):
         tags=["sqlite"], source="test",
         created_at="2026-01-10T10:00:00Z",
         updated_at="2026-01-10T10:00:00Z",
-        confidence=0.9, importance_score=0.8,
     )
     m2 = Memory(
         id="m2", content="Docker build fails on M1",

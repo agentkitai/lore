@@ -70,8 +70,8 @@ async def _insert_memory_with_embedding(
     await conn.execute(
         """
         INSERT INTO memories
-            (id, org_id, content, context, embedding, importance_score, access_count)
-        VALUES ($1, $2, $3, '', $4::vector, 0.5, 0)
+            (id, org_id, content, context, embedding, access_count)
+        VALUES ($1, $2, $3, '', $4::vector, 0)
         """,
         mem_id,
         org_id,

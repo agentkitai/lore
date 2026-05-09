@@ -17,9 +17,6 @@ from tests.persistence.conftest import _is_sqlite
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-_UNSET = object()
-
-
 async def _insert_memory_with_embedding(
     store,
     *,
@@ -27,7 +24,6 @@ async def _insert_memory_with_embedding(
     org_id="solo",
     content="x",
     embedding=None,
-    importance_score=_UNSET,
     meta=None,
 ) -> str:
     """Insert a memory with an optional embedding.
@@ -42,13 +38,11 @@ async def _insert_memory_with_embedding(
 
     mid = memory_id or f"mem_{ULID()}"
     meta_param = json.dumps(dict(meta or {}))
-    # importance_score=_UNSET means use default 0.5; explicit None inserts NULL
-    importance = None if importance_score is None else (0.5 if importance_score is _UNSET else importance_score)
     if _is_sqlite(store):
         cursor = await store._conn.execute(
-            """INSERT INTO memories (id, org_id, content, context, tags, confidence, meta, importance_score)
-               VALUES (?, ?, ?, '', '[]', 0.5, ?, ?)""",
-            (mid, org_id, content, meta_param, importance),
+            """INSERT INTO memories (id, org_id, content, context, tags, meta)
+               VALUES (?, ?, ?, '', '[]', ?)""",
+            (mid, org_id, content, meta_param),
         )
         rowid = cursor.lastrowid
         await cursor.close()
@@ -61,14 +55,13 @@ async def _insert_memory_with_embedding(
     else:
         embedding_param = json.dumps(list(embedding)) if embedding is not None else None
         await store._conn.execute(
-            """INSERT INTO memories (id, org_id, content, context, tags, confidence, embedding, meta, importance_score)
-               VALUES ($1, $2, $3, '', '[]'::jsonb, 0.5, $4::vector, $5::jsonb, $6)""",
+            """INSERT INTO memories (id, org_id, content, context, tags, embedding, meta)
+               VALUES ($1, $2, $3, '', '[]'::jsonb, $4::vector, $5::jsonb)""",
             mid,
             org_id,
             content,
             embedding_param,
             meta_param,
-            importance,
         )
     return mid
 
@@ -321,24 +314,6 @@ async def test_list_candidates_org_isolation(store: Store):
     assert mid_a in ids_a
     assert mid_b not in ids_a
     assert len(results_a) == 1
-
-
-@pytest.mark.asyncio
-async def test_list_candidates_ordered_by_importance_score_desc_nulls_last(store: Store):
-    mid_null = await _insert_memory_with_embedding(
-        store, org_id="solo", content="null-imp", embedding=_EMB, importance_score=None
-    )
-    mid_low = await _insert_memory_with_embedding(
-        store, org_id="solo", content="low-imp", embedding=_EMB, importance_score=0.5
-    )
-    mid_high = await _insert_memory_with_embedding(
-        store, org_id="solo", content="high-imp", embedding=_EMB, importance_score=0.9
-    )
-
-    results = await store.list_candidate_memories_for_recommendation("solo")
-    ids = [r.id for r in results]
-    assert ids.index(mid_high) < ids.index(mid_low)
-    assert ids.index(mid_low) < ids.index(mid_null)
 
 
 @pytest.mark.asyncio

@@ -24,61 +24,42 @@ from lore.services.graph.review import (
 
 
 def test_compute_risk_score_perfect_low_risk():
-    """Weight 1.0, max importance, no mentions, fresh — should be low risk."""
+    """Weight 1.0, no mentions, fresh — should be low risk."""
     rs = _compute_risk_score(
         weight=1.0,
-        source_importance=1.0,
         source_mention_count=0,
         target_mention_count=0,
         age_hours=0.0,
     )
     assert rs.confidence_risk == 0.0
-    assert rs.source_reliability == 0.0
     assert rs.entity_importance == 2.5  # max(0,0,1) * 2.5
     assert rs.staleness_risk == 0.0
     assert rs.total == 2.5
 
 
 def test_compute_risk_score_worst_case():
-    """Weight 0, importance 0, many mentions, very stale — should be high."""
+    """Weight 0, many mentions, very stale — should be high."""
     rs = _compute_risk_score(
         weight=0.0,
-        source_importance=0.0,
         source_mention_count=20,
         target_mention_count=10,
         age_hours=336.0,  # 2 weeks
     )
     assert rs.confidence_risk == 40.0
-    assert rs.source_reliability == 25.0
     assert rs.entity_importance == 25.0  # capped at 25
     assert rs.staleness_risk == 10.0  # capped at 10
-    assert rs.total == 100.0
-
-
-def test_compute_risk_score_default_importance():
-    """source_importance None falls back to 0.5."""
-    rs = _compute_risk_score(
-        weight=1.0,
-        source_importance=None,
-        source_mention_count=0,
-        target_mention_count=0,
-        age_hours=0.0,
-    )
-    # imp defaults to 0.5 → reliability = (1-0.5)*25 = 12.5
-    assert rs.source_reliability == 12.5
+    assert rs.total == 75.0
 
 
 def test_compute_risk_score_clamps():
     """Extreme inputs should still produce values in expected ranges."""
     rs = _compute_risk_score(
         weight=2.0,  # >1, should clamp
-        source_importance=2.0,  # >1, should clamp
         source_mention_count=1000,
         target_mention_count=1000,
         age_hours=10000.0,
     )
     assert rs.confidence_risk == 0.0
-    assert rs.source_reliability == 0.0
     assert rs.entity_importance == 25.0
     assert rs.staleness_risk == 10.0
 

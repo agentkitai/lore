@@ -24,11 +24,9 @@ def _make_scored_memory(
     content: str = "problem text",
     context: str = "resolution text",
     score: float = 0.9,
-    importance_score: float = 1.0,
     created_at: datetime | None = None,
     last_accessed_at: datetime | None = None,
     tags: tuple = (),
-    confidence: float = 0.8,
     source: str | None = None,
     project: str | None = None,
     upvotes: int = 0,
@@ -42,7 +40,6 @@ def _make_scored_memory(
         content=content,
         context=context,
         tags=tags,
-        confidence=confidence,
         source=source,
         project=project,
         created_at=created_at or now,
@@ -51,7 +48,6 @@ def _make_scored_memory(
         upvotes=upvotes,
         downvotes=downvotes,
         meta=meta or {},
-        importance_score=importance_score,
         access_count=0,
         last_accessed_at=last_accessed_at,
         score=score,
@@ -71,7 +67,6 @@ async def test_create_inserts_with_field_translation(store):
         resolution="The resolution",
         context="legacy context field",
         tags=["a", "b"],
-        confidence=0.9,
         source="manual",
         project=None,
         embedding=None,
@@ -94,7 +89,6 @@ async def test_create_drops_context_field_silently(store):
         resolution="res",
         context="this should be ignored",
         tags=[],
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,
@@ -119,7 +113,6 @@ async def test_search_applies_time_decay(store, monkeypatch):
     recent = _make_scored_memory(
         memory_id="recent",
         score=0.8,
-        importance_score=1.0,
         created_at=now - timedelta(days=1),
         meta={"type": "lesson"},  # half_life=30
     )
@@ -127,7 +120,6 @@ async def test_search_applies_time_decay(store, monkeypatch):
     old = _make_scored_memory(
         memory_id="old",
         score=0.8,
-        importance_score=1.0,
         created_at=now - timedelta(days=60),
         meta={"type": "lesson"},  # half_life=30
     )
@@ -144,7 +136,7 @@ async def test_search_applies_time_decay(store, monkeypatch):
         project=None,
         tags=[],
         limit=5,
-        min_confidence=0.0,
+        min_score=0.0,
     )
 
     assert len(results) == 2
@@ -156,8 +148,8 @@ async def test_search_applies_time_decay(store, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_search_filters_below_min_confidence(store, monkeypatch):
-    """Memories whose final score < min_confidence are excluded."""
+async def test_search_filters_below_min_score(store, monkeypatch):
+    """Memories whose final score < min_score are excluded."""
     now = datetime.now(timezone.utc)
     high = _make_scored_memory(memory_id="high", score=0.9, created_at=now)
     low = _make_scored_memory(memory_id="low", score=0.1, created_at=now)
@@ -174,7 +166,7 @@ async def test_search_filters_below_min_confidence(store, monkeypatch):
         project=None,
         tags=[],
         limit=5,
-        min_confidence=0.5,
+        min_score=0.5,
     )
 
     ids = [r["id"] for r in results]
@@ -195,7 +187,6 @@ async def test_record_access_returns_dict(store):
         resolution="",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,
@@ -208,7 +199,6 @@ async def test_record_access_returns_dict(store):
     assert result["id"] == lesson_id
     assert result["access_count"] == 1
     assert result["last_accessed_at"] is not None
-    assert "importance_score" in result
 
 
 @pytest.mark.asyncio
@@ -233,7 +223,6 @@ async def test_record_access_404_on_project_mismatch(store):
         resolution="",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project="project-a",
         embedding=None,
@@ -259,7 +248,6 @@ async def test_get_returns_stored_memory(store):
         resolution="got it",
         context=None,
         tags=["x"],
-        confidence=0.7,
         source="test",
         project=None,
         embedding=None,
@@ -284,7 +272,6 @@ async def test_get_404_on_project_mismatch(store):
         resolution="",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project="project-a",
         embedding=None,
@@ -301,37 +288,6 @@ async def test_get_404_on_project_mismatch(store):
 
 
 @pytest.mark.asyncio
-async def test_update_changes_confidence(store):
-    """update() patches confidence and returns the updated StoredMemory."""
-    lesson_id = await lessons.create(
-        store,
-        org_id="solo",
-        problem="update me",
-        resolution="",
-        context=None,
-        tags=[],
-        confidence=0.3,
-        source=None,
-        project=None,
-        embedding=None,
-        expires_at=None,
-        meta={},
-    )
-    updated = await lessons.update(
-        store,
-        org_id="solo",
-        lesson_id=lesson_id,
-        project=None,
-        confidence=0.9,
-        tags=None,
-        meta=None,
-        upvotes=None,
-        downvotes=None,
-    )
-    assert updated.confidence == pytest.approx(0.9, abs=1e-4)
-
-
-@pytest.mark.asyncio
 async def test_update_with_plus_one_upvote(store):
     """upvotes='+1' increments upvotes by 1."""
     lesson_id = await lessons.create(
@@ -341,7 +297,6 @@ async def test_update_with_plus_one_upvote(store):
         resolution="",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,
@@ -353,7 +308,6 @@ async def test_update_with_plus_one_upvote(store):
         org_id="solo",
         lesson_id=lesson_id,
         project=None,
-        confidence=None,
         tags=None,
         meta=None,
         upvotes="+1",
@@ -372,7 +326,6 @@ async def test_update_with_minus_one_vote_raises(store):
         resolution="",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,
@@ -385,7 +338,6 @@ async def test_update_with_minus_one_vote_raises(store):
             org_id="solo",
             lesson_id=lesson_id,
             project=None,
-            confidence=None,
             tags=None,
             meta=None,
             upvotes="-1",
@@ -403,7 +355,6 @@ async def test_update_with_absolute_vote_raises(store):
         resolution="",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,
@@ -416,7 +367,6 @@ async def test_update_with_absolute_vote_raises(store):
             org_id="solo",
             lesson_id=lesson_id,
             project=None,
-            confidence=None,
             tags=None,
             meta=None,
             upvotes=5,
@@ -434,7 +384,6 @@ async def test_update_no_fields_raises(store):
         resolution="",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,
@@ -447,7 +396,6 @@ async def test_update_no_fields_raises(store):
             org_id="solo",
             lesson_id=lesson_id,
             project=None,
-            confidence=None,
             tags=None,
             meta=None,
             upvotes=None,
@@ -483,7 +431,6 @@ async def test_list_returns_total_and_lessons(store):
         resolution="",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project="list-proj",
         embedding=None,
@@ -518,7 +465,6 @@ async def test_export_includes_embeddings(store):
         resolution="exported",
         context=None,
         tags=[],
-        confidence=0.5,
         source=None,
         project="export-proj",
         embedding=[0.1] * 384,
@@ -548,7 +494,6 @@ async def test_import_upserts(store):
         problem="imported problem",
         resolution="imported resolution",
         tags=["imported"],
-        confidence=0.8,
         source="import",
         project="import-proj",
         embedding=[0.0] * 384,
@@ -590,7 +535,6 @@ async def test_import_uses_project_override(store):
         problem="override test",
         resolution="",
         tags=[],
-        confidence=0.5,
         source=None,
         project="original-project",
         embedding=None,

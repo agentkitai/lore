@@ -75,7 +75,7 @@ class TestMultiplicativeScoring:
         store = MemoryStore()
         lore = Lore(store=store, embedding_fn=_fixed_embed)
 
-        lore.remember("test content", type="lesson", confidence=1.0)
+        lore.remember("test content", type="lesson")
         # Memory is brand new (age ~0), so TAI ≈ importance (1.0)
         # Long tier weight = 1.2
         results = lore.recall("anything", limit=1)
@@ -139,8 +139,8 @@ class TestMultiplicativeScoring:
 
         lore = Lore(store=store, embedding_fn=_embed)
 
-        mid_recent = lore.remember("recent code fix", type="code", confidence=1.0)
-        mid_old = lore.remember("old code fix", type="code", confidence=1.0)
+        mid_recent = lore.remember("recent code fix", type="code")
+        mid_old = lore.remember("old code fix", type="code")
 
         m_recent = store.get(mid_recent)
         m_old = store.get(mid_old)
@@ -209,8 +209,8 @@ class TestScoringBackwardCompatibility:
         lore = Lore(store=store, embedding_fn=_fixed_embed)
         now = datetime.now(timezone.utc)
 
-        mid1 = lore.remember("stripe 429 — backoff", confidence=0.9)
-        mid2 = lore.remember("stripe 429 — backoff", confidence=0.9)
+        mid1 = lore.remember("stripe 429 — backoff")
+        mid2 = lore.remember("stripe 429 — backoff")
 
         m1 = store.get(mid1)
         m2 = store.get(mid2)
@@ -225,39 +225,11 @@ class TestScoringBackwardCompatibility:
         scores = {r.memory.id: r.score for r in results}
         assert scores[mid1] > scores[mid2]
 
-    def test_upvotes_still_boost_score(self) -> None:
-        store = MemoryStore()
-        lore = Lore(store=store, embedding_fn=_fixed_embed)
-
-        mid1 = lore.remember("stripe 429 — backoff", confidence=0.9)
-        mid2 = lore.remember("stripe 429 — backoff", confidence=0.9)
-
-        for _ in range(5):
-            lore.upvote(mid1)
-
-        results = lore.recall("stripe rate limit", limit=10)
-        scores = {r.memory.id: r.score for r in results}
-        assert scores[mid1] > scores[mid2]
-
-    def test_downvotes_still_reduce_score(self) -> None:
-        store = MemoryStore()
-        lore = Lore(store=store, embedding_fn=_fixed_embed)
-
-        mid1 = lore.remember("stripe 429 — backoff", confidence=0.9)
-        mid2 = lore.remember("stripe 429 — backoff", confidence=0.9)
-
-        for _ in range(3):
-            lore.downvote(mid2)
-
-        results = lore.recall("stripe rate limit", limit=10)
-        scores = {r.memory.id: r.score for r in results}
-        assert scores[mid1] > scores[mid2]
-
     def test_vote_factor_clamped_at_0_1(self) -> None:
         store = MemoryStore()
         lore = Lore(store=store, embedding_fn=_seeded_embed)
 
-        mid = lore.remember("test memory", confidence=0.9)
+        mid = lore.remember("test memory")
         for _ in range(100):
             lore.downvote(mid)
 

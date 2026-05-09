@@ -78,8 +78,8 @@ class TestDecay:
 
         now = datetime.now(timezone.utc)
 
-        mid1 = lore.remember("stripe 429 — backoff", confidence=0.9)
-        mid2 = lore.remember("stripe 429 — backoff", confidence=0.9)
+        mid1 = lore.remember("stripe 429 — backoff")
+        mid2 = lore.remember("stripe 429 — backoff")
 
         m1 = store.get(mid1)
         m2 = store.get(mid2)
@@ -94,49 +94,13 @@ class TestDecay:
         scores = {r.memory.id: r.score for r in results}
         assert scores[mid1] > scores[mid2]
 
-    def test_upvotes_boost_score(self) -> None:
-        """A memory with 5 upvotes scores higher than identical with 0."""
-        fixed_vec = np.random.RandomState(42).randn(_DIM).astype(np.float32)
-        fixed_vec = (fixed_vec / np.linalg.norm(fixed_vec)).tolist()
-
-        store = MemoryStore()
-        lore = Lore(store=store, embedding_fn=lambda _: fixed_vec)
-
-        mid1 = lore.remember("stripe 429 — backoff", confidence=0.9)
-        mid2 = lore.remember("stripe 429 — backoff", confidence=0.9)
-
-        for _ in range(5):
-            lore.upvote(mid1)
-
-        results = lore.recall("stripe rate limit", limit=10)
-        scores = {r.memory.id: r.score for r in results}
-        assert scores[mid1] > scores[mid2]
-
-    def test_downvotes_reduce_score(self) -> None:
-        """More downvotes than upvotes reduces score."""
-        fixed_vec = np.random.RandomState(42).randn(_DIM).astype(np.float32)
-        fixed_vec = (fixed_vec / np.linalg.norm(fixed_vec)).tolist()
-
-        store = MemoryStore()
-        lore = Lore(store=store, embedding_fn=lambda _: fixed_vec)
-
-        mid1 = lore.remember("stripe 429 — backoff", confidence=0.9)
-        mid2 = lore.remember("stripe 429 — backoff", confidence=0.9)
-
-        for _ in range(3):
-            lore.downvote(mid2)
-
-        results = lore.recall("stripe rate limit", limit=10)
-        scores = {r.memory.id: r.score for r in results}
-        assert scores[mid1] > scores[mid2]
-
     def test_configurable_half_life(self) -> None:
         """Custom half-life affects decay."""
         store = MemoryStore()
         lore_short = Lore(store=store, embedding_fn=_fake_embed, decay_half_life_days=7)
 
         now = datetime.now(timezone.utc)
-        mid = lore_short.remember("test memory", confidence=1.0)
+        mid = lore_short.remember("test memory")
         memory = store.get(mid)
         assert memory is not None
         memory.created_at = (now - timedelta(days=7)).isoformat()
@@ -151,7 +115,7 @@ class TestDecay:
         store = MemoryStore()
         lore = Lore(store=store, embedding_fn=_fake_embed)
 
-        mid = lore.remember("test memory", confidence=0.9)
+        mid = lore.remember("test memory")
         for _ in range(100):
             lore.downvote(mid)
 

@@ -556,14 +556,6 @@ class TestAsyncLoreConsolidationAndMaintenance:
             count = await lore.cleanup_expired()
             assert count == 0
 
-    @pytest.mark.asyncio
-    async def test_recalculate_importance_noop(self):
-        from lore import AsyncLore
-
-        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
-            assert await lore.recalculate_importance() == 0
-
-
 class TestAsyncLoreEnrichment:
     """``enrich_memories`` short-circuits on already-enriched rows."""
 

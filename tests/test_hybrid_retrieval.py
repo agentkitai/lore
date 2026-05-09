@@ -50,8 +50,7 @@ def _vec(seed: int) -> Sequence[float]:
     return [((seed + i * 7) % 100) / 100.0 for i in range(384)]
 
 
-def _make_stored(mid: str, content: str, *, age_days: float = 0.0,
-                 importance: float = 0.5) -> StoredMemory:
+def _make_stored(mid: str, content: str, *, age_days: float = 0.0) -> StoredMemory:
     created = NOW - timedelta(days=age_days)
     return StoredMemory(
         id=mid,
@@ -59,7 +58,6 @@ def _make_stored(mid: str, content: str, *, age_days: float = 0.0,
         content=content,
         context=None,
         tags=(),
-        confidence=1.0,
         source=None,
         project=None,
         created_at=created,
@@ -68,7 +66,6 @@ def _make_stored(mid: str, content: str, *, age_days: float = 0.0,
         upvotes=0,
         downvotes=0,
         meta={},
-        importance_score=importance,
         access_count=0,
         last_accessed_at=None,
     )
@@ -197,10 +194,10 @@ def _fake_store_with(*, vec=None, fts=None, graph=None, fail=()):
         for m, s in (vec or []):
             out.append(ScoredMemory(
                 id=m.id, org_id=m.org_id, content=m.content, context=m.context,
-                tags=m.tags, confidence=m.confidence, source=m.source,
+                tags=m.tags, source=m.source,
                 project=m.project, created_at=m.created_at, updated_at=m.updated_at,
                 expires_at=m.expires_at, upvotes=m.upvotes, downvotes=m.downvotes,
-                meta=m.meta, importance_score=m.importance_score,
+                meta=m.meta,
                 access_count=m.access_count, last_accessed_at=m.last_accessed_at,
                 score=s,
             ))
@@ -238,8 +235,8 @@ def _fake_store_with(*, vec=None, fts=None, graph=None, fail=()):
 
 @pytest.mark.asyncio
 async def test_hybrid_recall_combines_signals():
-    a = _make_stored("a", "alpha", importance=0.8)
-    b = _make_stored("b", "beta", importance=0.5)
+    a = _make_stored("a", "alpha")
+    b = _make_stored("b", "beta")
     store = _fake_store_with(
         vec=[(a, 0.9), (b, 0.4)],
         fts=[(a, 5.0)],
@@ -257,7 +254,6 @@ async def test_hybrid_recall_combines_signals():
     assert sigs["fts"] == pytest.approx(5.0)
     assert sigs["graph"] == pytest.approx(2.0)
     assert 0.0 < sigs["recency"] <= 1.0
-    assert sigs["importance"] == pytest.approx(0.8)
     # Diagnostic plumbing must reflect that all three branches succeeded.
     assert report.attempted == {"vector": "ok", "fts": "ok", "graph": "ok"}
     assert report.best_score >= results[0].score
@@ -370,7 +366,6 @@ def _scored_memory(memory_id="m1", content="hello", score=0.85,
         content=content,
         context=None,
         tags=tags,
-        confidence=1.0,
         source=None,
         project=project,
         created_at=NOW,
@@ -379,7 +374,6 @@ def _scored_memory(memory_id="m1", content="hello", score=0.85,
         upvotes=0,
         downvotes=0,
         meta=meta or {"type": "note", "tier": "long"},
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
         score=score,
@@ -421,7 +415,7 @@ def mock_embedder():
 
 @pytest.mark.asyncio
 async def test_v1_retrieve_returns_signals_breakdown(client):
-    """Each memory in the response carries vector/fts/graph/recency/importance signals."""
+    """Each memory in the response carries vector/fts/graph/recency/superseded signals."""
     sm = _scored_memory("mem-001", "kubernetes ingress troubleshooting", 0.85)
     fake_store = MagicMock()
     fake_store.recall_by_embedding = AsyncMock(return_value=[sm])
@@ -449,7 +443,7 @@ async def test_v1_retrieve_returns_signals_breakdown(client):
     assert data["count"] == 1
     sigs = data["memories"][0]["signals"]
     assert set(sigs.keys()) == {
-        "vector", "fts", "graph", "recency", "importance", "superseded",
+        "vector", "fts", "graph", "recency", "superseded",
     }
     assert sigs["vector"] > 0
     assert sigs["fts"] == 0

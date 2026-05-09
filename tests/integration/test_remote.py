@@ -186,10 +186,10 @@ async def test_full_flow_publish_query_verify(client: AsyncClient) -> None:
 
     _stored = StoredMemory(
         id="lesson-flow-001", org_id=ORG_ID, content="test problem",
-        context="test resolution", tags=("test",), confidence=0.8,
+        context="test resolution", tags=("test",),
         source=None, project=None, created_at=NOW, updated_at=NOW,
         expires_at=None, upvotes=0, downvotes=0, meta={},
-        access_count=0, last_accessed_at=None, importance_score=1.0,
+        access_count=0, last_accessed_at=None,
     )
 
     with patch("lore.server.auth.get_store", return_value=auth_store), \
@@ -295,17 +295,17 @@ async def test_upvote_downvote_round_trip(client: AsyncClient) -> None:
 
     _after_upvote = StoredMemory(
         id="lesson-vote-001", org_id=ORG_ID, content="test problem",
-        context="test resolution", tags=(), confidence=0.8,
+        context="test resolution", tags=(),
         source=None, project=None, created_at=NOW, updated_at=NOW,
         expires_at=None, upvotes=1, downvotes=0, meta={},
-        access_count=0, last_accessed_at=None, importance_score=1.0,
+        access_count=0, last_accessed_at=None,
     )
     _after_downvote = StoredMemory(
         id="lesson-vote-001", org_id=ORG_ID, content="test problem",
-        context="test resolution", tags=(), confidence=0.8,
+        context="test resolution", tags=(),
         source=None, project=None, created_at=NOW, updated_at=NOW,
         expires_at=None, upvotes=1, downvotes=1, meta={},
-        access_count=0, last_accessed_at=None, importance_score=1.0,
+        access_count=0, last_accessed_at=None,
     )
 
     with patch("lore.server.auth.get_store", return_value=auth_store), \

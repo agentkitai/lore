@@ -12,7 +12,6 @@ def test_memory_creation_minimal():
     assert memory.content == "some knowledge"
     assert memory.type == "general"
     assert memory.tags == []
-    assert memory.confidence == 1.0
     assert memory.upvotes == 0
     assert memory.metadata is None
     assert memory.ttl is None
@@ -33,7 +32,6 @@ def test_memory_creation_full():
         updated_at="2026-01-01T00:00:00+00:00",
         ttl=3600,
         expires_at="2026-01-01T01:00:00+00:00",
-        confidence=0.9,
         upvotes=3,
         downvotes=1,
     )
@@ -41,12 +39,6 @@ def test_memory_creation_full():
     assert memory.tags == ["a", "b"]
     assert memory.metadata == {"problem": "rate limiting", "resolution": "backoff"}
     assert memory.ttl == 3600
-    assert memory.confidence == 0.9
-
-
-def test_memory_default_confidence_is_1():
-    memory = Memory(id="x", content="test")
-    assert memory.confidence == 1.0
 
 
 def test_memory_type_default():

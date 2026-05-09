@@ -23,7 +23,6 @@ def _make_stored_memory(
     content: str = "Use type hints everywhere",
     context: Optional[str] = "Python best practices",
     tags: Sequence[str] = ("python",),
-    confidence: float = 0.9,
     source: Optional[str] = "manual",
     project: Optional[str] = "lore",
     upvotes: int = 3,
@@ -39,7 +38,6 @@ def _make_stored_memory(
         content=content,
         context=context,
         tags=tuple(tags),
-        confidence=confidence,
         source=source,
         project=project,
         created_at=now,
@@ -48,7 +46,6 @@ def _make_stored_memory(
         upvotes=upvotes,
         downvotes=downvotes,
         meta=dict(meta or {}),
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
     )
@@ -189,7 +186,7 @@ class TestMemoryUpdate:
         from lore.persistence.exceptions import StoreNotFoundError
         store.update_memory.side_effect = StoreNotFoundError("memory", "nonexistent")
         resp = test_client.patch("/v1/memories/nonexistent", json={
-            "confidence": 0.8,
+            "tags": ["x"],
         })
         assert resp.status_code == 404
 
@@ -219,7 +216,6 @@ class TestMemoryModels:
         req = MemoryCreateRequest(content="test memory")
         assert req.content == "test memory"
         assert req.context is None
-        assert req.confidence == 0.5
         assert req.tags == []
         assert req.enrich is None
 
@@ -230,7 +226,6 @@ class TestMemoryModels:
             id="mem-001",
             content="test",
             context="ctx",
-            confidence=0.9,
             created_at=now,
             updated_at=now,
         )

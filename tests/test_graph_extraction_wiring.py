@@ -36,10 +36,10 @@ def _stored(memory_id="mem-1", content="Pinecone ships Nexus."):
     now = datetime.now(timezone.utc)
     return StoredMemory(
         id=memory_id, org_id="org-001", content=content, context=None,
-        tags=(), confidence=0.5, source=None, project=None,
+        tags=(), source=None, project=None,
         created_at=now, updated_at=now, expires_at=None,
         upvotes=0, downvotes=0, meta={},
-        importance_score=0.5, access_count=0, last_accessed_at=None,
+        access_count=0, last_accessed_at=None,
     )
 
 

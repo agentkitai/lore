@@ -27,7 +27,6 @@ def _make_stored_memory(memory_id: str = "mem-001", content: str = "Test content
         content=content,
         context=None,
         tags=(),
-        confidence=0.5,
         source=None,
         project=None,
         created_at=now,
@@ -36,7 +35,6 @@ def _make_stored_memory(memory_id: str = "mem-001", content: str = "Test content
         upvotes=0,
         downvotes=0,
         meta={},
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
     )

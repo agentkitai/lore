@@ -288,7 +288,6 @@ def _make_memory(**overrides) -> Memory:
         updated_at="2026-01-01T00:00:00+00:00",
         ttl=None,
         expires_at=None,
-        confidence=0.9,
         upvotes=2,
         downvotes=1,
     )
@@ -304,7 +303,6 @@ class TestMemoryToLesson:
         assert lesson["resolution"] == "Always use retries"
         assert lesson["context"] == "HTTP calls"
         assert lesson["tags"] == ["http", "retry"]
-        assert lesson["confidence"] == 0.9
         assert lesson["source"] == "test"
         assert lesson["project"] == "myproject"
 
@@ -350,7 +348,6 @@ class TestLessonToMemory:
             "resolution": "Use retries",
             "context": "HTTP",
             "tags": ["retry"],
-            "confidence": 0.8,
             "source": "test",
             "project": "proj",
             "created_at": "2026-01-01T00:00:00+00:00",
@@ -365,7 +362,6 @@ class TestLessonToMemory:
         assert mem.content == "Use retries"
         assert mem.type == "lesson"
         assert mem.tags == ["retry"]
-        assert mem.confidence == 0.8
         assert mem.upvotes == 3
         assert mem.embedding is None
 
@@ -459,7 +455,7 @@ class TestGet:
         store = _make_store()
         lesson_data = {
             "id": "srv-1", "problem": "content", "resolution": "content",
-            "context": None, "tags": ["a"], "confidence": 0.9,
+            "context": None, "tags": ["a"],
             "source": "s", "project": "p",
             "created_at": "2026-01-01T00:00:00+00:00",
             "updated_at": "2026-01-01T00:00:00+00:00",
@@ -623,13 +619,13 @@ class TestSearch:
             tags=["http"],
             project="proj",
             limit=10,
-            min_confidence=0.5,
+            min_score=0.5,
         )
         body = store._client.request.call_args[1]["json"]
         assert body["tags"] == ["http"]
         assert body["project"] == "proj"
         assert body["limit"] == 10
-        assert body["min_confidence"] == 0.5
+        assert body["min_score"] == 0.5
         store.close()
 
     def test_search_empty_results(self):
@@ -663,7 +659,7 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._importance_threshold = 0.05
+            lore._decay_threshold = 0.05
             lore._decay_config = None
             lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
 
@@ -689,7 +685,7 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._importance_threshold = 0.05
+            lore._decay_threshold = 0.05
             lore._decay_config = None
             lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
 
@@ -720,7 +716,7 @@ class TestRecallDispatch:
             lore._last_cleanup_count = 0
             lore._half_life_days = 30
             lore._half_lives = {}
-            lore._importance_threshold = 0.05
+            lore._decay_threshold = 0.05
             lore._decay_config = None
             lore._tier_weights = {"working": 1.0, "short": 1.1, "long": 1.2}
             lore._dual_embedding = True

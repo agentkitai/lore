@@ -49,7 +49,6 @@ def _make_stored_memory(
         content=content,
         context=context,
         tags=list(tags),
-        confidence=0.9,
         source=None,
         project=project,
         created_at=now,
@@ -58,7 +57,6 @@ def _make_stored_memory(
         upvotes=0,
         downvotes=0,
         meta={},
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
     )
