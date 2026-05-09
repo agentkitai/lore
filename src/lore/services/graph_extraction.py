@@ -251,6 +251,8 @@ def _spawn_claude(prompt: str) -> "subprocess.Popen[bytes]":
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
+        # Recursion guard — see lore.subagent_config docstring.
+        env={**os.environ, **cfg.env_overrides()},
     )
 
 

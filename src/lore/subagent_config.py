@@ -10,9 +10,30 @@ the system prompt before the subagent does its real work.
 
 This module materializes two artifacts under ``~/.lore/subagent/`` —
 a minimal MCP config (lore-only or empty) and a minimal settings
-override (no plugins, no thinking, low effort) — and returns the
-paths plus the chosen model. Spawn sites add ``--model``,
+override (no plugins, no thinking, low effort, **no hooks**) — and
+returns the paths plus the chosen model. Spawn sites add ``--model``,
 ``--strict-mcp-config``, ``--mcp-config``, and ``--settings``.
+
+Recursion guard
+---------------
+Subagents are themselves Claude Code sessions, which means the user's
+PostToolUse / Stop / SessionEnd hooks fire for **the subagent's own
+tool uses**. Without a guard, a single capture-extract spawn produces
+its own session JSONL, accumulates tool-use entries in its own
+buffer.jsonl, crosses ``LORE_CAPTURE_N``, and spawns *another*
+capture-extract for itself — and the cascade continues. This was
+observed in production: ~700 spawns/hour for a single user, ~$34/h
+of background spend on Haiku.
+
+Two layers of defense:
+
+  1. ``settings_body()`` writes ``hooks`` as empty arrays. ``--settings``
+     overrides the user's hooks for the subagent's session.
+  2. ``env_overrides()`` returns ``LORE_AUTO_SAVE=false`` and
+     ``LORE_DREAM_AUTO=false``. The hook scripts honor these as master
+     kill switches and exit 0 immediately. Spawn sites merge this into
+     the subprocess env so the guard survives any caching of
+     ``settings.json`` by the running Claude Code process.
 
 Environment overrides:
   * ``LORE_SUBAGENT_MODEL``  — fallback default for all roles
@@ -90,11 +111,21 @@ def _mcp_empty_body() -> dict:
 
 def _settings_body() -> dict:
     # ``--settings`` merges with the user's settings.json. Setting these
-    # keys explicitly overrides any inherited values.
+    # keys explicitly overrides any inherited values. ``hooks`` as empty
+    # arrays prevents the recursion described in the module docstring —
+    # without it, the subagent's own PostToolUse / Stop / SessionEnd
+    # events would fire the user's lore-capture-* hooks and spawn nested
+    # capture-extracts ad infinitum.
     return {
         "enabledPlugins": {},
         "alwaysThinkingEnabled": False,
         "effortLevel": "low",
+        "hooks": {
+            "UserPromptSubmit": [],
+            "PostToolUse": [],
+            "Stop": [],
+            "SessionEnd": [],
+        },
     }
 
 
@@ -125,6 +156,21 @@ class SubagentConfig:
             "--mcp-config", str(self.mcp_config_path),
             "--settings", str(self.settings_path),
         ]
+
+    def env_overrides(self) -> dict[str, str]:
+        """Env additions for the subagent's subprocess.
+
+        Master kill switches the lore hooks honor — keeps the
+        recursion guard working even if the parent Claude Code
+        process has cached ``~/.claude/settings.json`` and is still
+        firing the user's hooks against the subagent's session.
+        Spawn sites should pass ``env={**os.environ, **cfg.env_overrides()}``
+        to ``subprocess.Popen``.
+        """
+        return {
+            "LORE_AUTO_SAVE": "false",
+            "LORE_DREAM_AUTO": "false",
+        }
 
 
 def subagent_config(*, role: str, with_lore_mcp: bool) -> SubagentConfig:

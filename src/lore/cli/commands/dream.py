@@ -440,6 +440,8 @@ def _spawn_subagent(
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            # Recursion guard — see lore.subagent_config docstring.
+            env={**os.environ, **cfg.env_overrides()},
         )
     except OSError:
         log_fh.close()

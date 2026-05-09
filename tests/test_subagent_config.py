@@ -88,6 +88,44 @@ class TestSettings:
         assert body["alwaysThinkingEnabled"] is False
         assert body["effortLevel"] == "low"
 
+    def test_hooks_are_empty_to_break_subagent_recursion(self, _isolated_lore_home):
+        # Without this, the subagent's own PostToolUse / Stop / SessionEnd
+        # events fire the user's lore-capture-* hooks and spawn nested
+        # capture-extracts ad infinitum. Observed in production:
+        # ~700 spawns/hour on Haiku, ~$34/h.
+        cfg = sc.subagent_config(role="capture", with_lore_mcp=True)
+        body = json.loads(Path(cfg.settings_path).read_text())
+        assert body["hooks"] == {
+            "UserPromptSubmit": [],
+            "PostToolUse": [],
+            "Stop": [],
+            "SessionEnd": [],
+        }
+
+
+# ── env_overrides() — recursion guard fallback ────────────────────
+
+
+class TestEnvOverrides:
+    def test_disarms_capture_and_dream_hook_kill_switches(self, _isolated_lore_home):
+        cfg = sc.subagent_config(role="capture", with_lore_mcp=True)
+        env = cfg.env_overrides()
+        # Master kill switches the lore hook scripts honor — second line
+        # of defense in case the parent claude process has cached
+        # ~/.claude/settings.json and is still firing user hooks against
+        # the subagent's session.
+        assert env["LORE_AUTO_SAVE"] == "false"
+        assert env["LORE_DREAM_AUTO"] == "false"
+
+    def test_env_overrides_same_for_all_roles(self, _isolated_lore_home):
+        # Recursion is a Claude-Code-level concern; affects all subagent
+        # types equally regardless of role.
+        for role in ("capture", "dream", "graph"):
+            cfg = sc.subagent_config(role=role, with_lore_mcp=False)
+            env = cfg.env_overrides()
+            assert env["LORE_AUTO_SAVE"] == "false"
+            assert env["LORE_DREAM_AUTO"] == "false"
+
 
 # ── claude_flags() shape ──────────────────────────────────────────
 
