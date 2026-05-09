@@ -345,13 +345,13 @@ class HttpStore(Store):
         project: Optional[str] = None,
         tier: Optional[str] = None,
         limit: int = 5,
-        min_confidence: float = 0.0,
+        min_score: float = 0.0,
         scope_mode: str = "default",
     ) -> List[RecallResult]:
         payload: Dict[str, Any] = {
             "embedding": embedding,
             "limit": limit,
-            "min_confidence": min_confidence,
+            "min_score": min_score,
         }
         if tags:
             payload["tags"] = tags

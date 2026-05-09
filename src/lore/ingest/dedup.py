@@ -65,7 +65,7 @@ class Deduplicator:
             embedding=embedding,
             project=project,
             limit=5,
-            min_confidence=0.0,
+            min_score=0.0,
         )
         for result in similar:
             if result.score >= self.threshold:

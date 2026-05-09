@@ -14,8 +14,6 @@ class GraphNode(BaseModel):
     type: str
     tier: Optional[str] = None
     project: Optional[str] = None
-    importance: Optional[float] = None
-    confidence: Optional[float] = None
     tags: Optional[List[str]] = None
     created_at: Optional[str] = None
     upvotes: Optional[int] = None
@@ -57,7 +55,6 @@ class StatsResponse(BaseModel):
     by_project: Dict[str, int] = {}
     by_tier: Dict[str, int] = {}
     by_entity_type: Dict[str, int] = {}
-    avg_importance: float = 0.0
     top_entities: List[Dict[str, Any]] = []
     recent_24h: int = 0
     recent_7d: int = 0
@@ -83,8 +80,6 @@ class MemoryDetailResponse(BaseModel):
     tier: str = "long"
     project: Optional[str] = None
     tags: List[str] = []
-    importance_score: float = 1.0
-    confidence: float = 1.0
     upvotes: int = 0
     downvotes: int = 0
     access_count: int = 0
@@ -114,7 +109,6 @@ class SearchResult(BaseModel):
     content: str
     type: str
     project: Optional[str] = None
-    score: float = 0.0
     created_at: str = ""
 
 

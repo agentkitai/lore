@@ -516,21 +516,16 @@ async def _hybrid_recall(
             )
             superseded_set = set()
 
-    # Annotate with recency + importance, multiplicative.
+    # Annotate with recency, multiplicative.
     annotated: list[HybridResult] = []
     for memory, base_score, raw_signals in fused[: max(params.limit * 2, params.limit)]:
         recency = _recency_signal(memory.created_at, profile.recency_bias)
-        importance = (
-            float(memory.importance_score) if memory.importance_score is not None else 0.5
-        )
         is_superseded = memory.id in superseded_set
         supersession_multiplier = 0.1 if is_superseded else 1.0
-        # multiplicative annotations: recency multiplier ∈ [1.0, 1.5];
-        # importance multiplier ∈ [0.75, 1.25] for importance ∈ [0, 1].
+        # recency multiplier ∈ [1.0, 1.5].
         final = (
             base_score
             * (1.0 + 0.5 * recency)
-            * (1.0 + 0.5 * (importance - 0.5))
             * supersession_multiplier
         )
         signals: Dict[str, float] = {
@@ -538,7 +533,6 @@ async def _hybrid_recall(
             "fts": raw_signals.get("signal_1", 0.0),
             "graph": raw_signals.get("signal_2", 0.0),
             "recency": recency,
-            "importance": importance,
             # ``superseded`` lands in signals so the route can surface it
             # alongside the per-signal breakdown. Float (1.0/0.0) keeps
             # the existing ``Mapping[str, float]`` shape from changing.

@@ -121,7 +121,6 @@ class ConversationExtractor:
                 metadata=metadata,
                 source="conversation",
                 project=project or self._lore.project,
-                confidence=candidate.get("confidence", 0.8),
             )
             job.memory_ids.append(memory_id)
 
