@@ -616,6 +616,12 @@ def _spawn_subagent(
             stdout=log_fh,
             stderr=subprocess.STDOUT,
             start_new_session=not foreground,
+            # Recursion guard: the subagent is itself a Claude Code
+            # session, so the user's PostToolUse / Stop hooks fire on
+            # *its* tool uses. Without these env vars the lore-capture-*
+            # hooks would spawn another capture-extract for the
+            # subagent's session, which spawns another, etc.
+            env={**os.environ, **cfg.env_overrides()},
         )
     except OSError:
         log_fh.close()

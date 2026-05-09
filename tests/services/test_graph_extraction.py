@@ -152,6 +152,13 @@ class TestSpawnClaudeArgs:
         assert "--settings" in flags
         # Stdin/stdout hygiene.
         assert captured["kwargs"]["stdin"] is subprocess.DEVNULL
+        # Recursion-guard env vars must be set (LORE_AUTO_SAVE=false,
+        # LORE_DREAM_AUTO=false). Without these, the subagent's own
+        # tool uses fire the user's lore-capture-* hooks and spawn
+        # nested capture-extracts.
+        env = captured["kwargs"]["env"]
+        assert env["LORE_AUTO_SAVE"] == "false"
+        assert env["LORE_DREAM_AUTO"] == "false"
 
 
 # ── extract_and_persist with stub spawn_fn ─────────────────────────
