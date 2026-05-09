@@ -306,7 +306,6 @@ def _row_to_exported(row, embedding: Optional[list[float]]) -> ExportedMemory:
         content=row["content"],
         context=raw_context if raw_context else None,
         tags=tuple(tags or ()),
-        confidence=float(row["confidence"]) if row["confidence"] is not None else 0.5,
         source=row["source"],
         project=row["project"],
         embedding=embedding,
@@ -344,7 +343,6 @@ def _row_to_memory(row) -> StoredMemory:
         content=row["content"],
         context=raw_context if raw_context else None,
         tags=tuple(tags or ()),
-        confidence=float(row["confidence"]) if row["confidence"] is not None else 0.5,
         source=row["source"],
         project=row["project"],
         created_at=_parse_iso(row["created_at"]),
@@ -353,7 +351,6 @@ def _row_to_memory(row) -> StoredMemory:
         upvotes=row["upvotes"] or 0,
         downvotes=row["downvotes"] or 0,
         meta=dict(meta or {}),
-        importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=_parse_iso(row["last_accessed_at"]),
         scope=scope_val if scope_val else "project",
@@ -1082,9 +1079,9 @@ class SqliteStore:
             cursor = await tx.execute(
                 """
                 INSERT INTO memories
-                    (id, org_id, content, context, tags, confidence, source,
-                     project, expires_at, meta, scope, importance_score)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, org_id, content, context, tags, source,
+                     project, expires_at, meta, scope)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
@@ -1092,13 +1089,11 @@ class SqliteStore:
                     memory.content,
                     memory.context or "",  # NOT NULL in PG schema; mirror
                     json.dumps(list(memory.tags)),
-                    memory.confidence,
                     memory.source,
                     memory.project,
                     memory.expires_at.isoformat() if memory.expires_at else None,
                     json.dumps(dict(memory.meta)),
                     memory.scope,
-                    memory.importance_score if memory.importance_score is not None else memory.confidence,
                 ),
             )
             rowid = cursor.lastrowid
@@ -1111,9 +1106,9 @@ class SqliteStore:
 
             async with tx.execute(
                 """
-                SELECT id, org_id, content, context, tags, confidence, source,
+                SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
-                       downvotes, meta, importance_score, access_count,
+                       downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories WHERE rowid = ?
                 """,
@@ -1136,9 +1131,9 @@ class SqliteStore:
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, org_id, content, context, tags, confidence, source,
+                SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
-                       downvotes, meta, importance_score, access_count,
+                       downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories
                 WHERE id = ?
@@ -1181,9 +1176,9 @@ class SqliteStore:
     # ── MemoryOps: rest of the slice (Phase 3D) ───────────────────────
 
     _MEMORY_COLS = (
-        "id, org_id, content, context, tags, confidence, source, "
+        "id, org_id, content, context, tags, source, "
         "project, created_at, updated_at, expires_at, upvotes, "
-        "downvotes, meta, importance_score, access_count, last_accessed_at, "
+        "downvotes, meta, access_count, last_accessed_at, "
         "scope"
     )
 
@@ -1396,17 +1391,11 @@ class SqliteStore:
         org_id: str,
         memory_ids: Sequence[str],
     ) -> None:
-        """Atomically bump access_count + last_accessed_at + importance_score.
+        """Atomically bump access_count + last_accessed_at.
 
         Mirrors ``PostgresStore.bump_access_counts``: increments
-        ``access_count``, sets ``last_accessed_at = now()``, and recomputes
-        ``importance_score`` from confidence, vote delta, and the (slightly
-        damped) log of the new access count.
-
-        Translation notes:
-        * PG ``GREATEST(0.1, x)`` → SQLite ``MAX(0.1, x)``.
-        * SQLite has ``ln`` since 3.35; the formula matches PG verbatim.
-        * Cross-org isolation is preserved by the WHERE clause.
+        ``access_count`` and sets ``last_accessed_at = now()``. The prior
+        ``importance_score`` recomputation was removed in 025_drop_quality_score_columns.
         """
         if not memory_ids:
             return
@@ -1414,10 +1403,7 @@ class SqliteStore:
         sql = (
             "UPDATE memories SET "
             "access_count = COALESCE(access_count, 0) + 1, "
-            "last_accessed_at = datetime('now'), "
-            "importance_score = COALESCE(confidence, 1.0) "
-            " * MAX(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1) "
-            " * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1) "
+            "last_accessed_at = datetime('now') "
             f"WHERE id IN ({placeholders}) AND org_id = ?"
         )
         params: list[Any] = list(memory_ids)
@@ -1512,7 +1498,7 @@ class SqliteStore:
         # TEXT" — guard with CASE so LEFT JOIN misses surface as NULL.
         sql = (
             "SELECT m.id, m.org_id, m.content, m.context, m.tags, "
-            "m.confidence, m.source, m.project, m.created_at, m.updated_at, "
+            "m.source, m.project, m.created_at, m.updated_at, "
             "m.expires_at, m.upvotes, m.downvotes, m.meta, "
             "CASE WHEN v.embedding IS NULL THEN NULL "
             "     ELSE vec_to_json(v.embedding) END AS embedding_json "
@@ -1537,7 +1523,7 @@ class SqliteStore:
 
         Mirrors PG's ``recall_by_embedding``:
 
-        ``score = (1 - cosine_distance) * importance_score
+        ``score = (1 - cosine_distance)
                   * 0.5 ^ ( min(days_since_created, days_since_last_accessed)
                             / half_life_days )``
 
@@ -1594,14 +1580,13 @@ class SqliteStore:
         # virtual constraint syntax. We thread it as a bind param.
         sql = f"""
             SELECT
-                m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+                m.id, m.org_id, m.content, m.context, m.tags,
                 m.source, m.project, m.created_at, m.updated_at, m.expires_at,
-                m.upvotes, m.downvotes, m.meta, m.importance_score,
+                m.upvotes, m.downvotes, m.meta,
                 m.access_count, m.last_accessed_at, m.scope,
                 v.distance AS distance,
                 (
                     (1.0 - v.distance)
-                    * COALESCE(m.importance_score, 1.0)
                     * pow(
                         0.5,
                         MIN(
@@ -1643,7 +1628,6 @@ class SqliteStore:
                     content=sm.content,
                     context=sm.context,
                     tags=sm.tags,
-                    confidence=sm.confidence,
                     source=sm.source,
                     project=sm.project,
                     created_at=sm.created_at,
@@ -1652,7 +1636,6 @@ class SqliteStore:
                     upvotes=sm.upvotes,
                     downvotes=sm.downvotes,
                     meta=sm.meta,
-                    importance_score=sm.importance_score,
                     access_count=sm.access_count,
                     last_accessed_at=sm.last_accessed_at,
                     scope=sm.scope,
@@ -1923,10 +1906,8 @@ class SqliteStore:
         """Increment access counters and return the updated memory, or None.
 
         Mirrors ``PostgresStore.record_memory_access``: bumps
-        ``access_count`` by 1, sets ``last_accessed_at = now()``, and
-        recomputes ``importance_score`` from confidence, vote delta, and
-        the (slightly damped) log of the new access count. Returns the
-        updated row, or None if (id, org_id) does not match.
+        ``access_count`` by 1 and sets ``last_accessed_at = now()``.
+        Returns the updated row, or None if (id, org_id) does not match.
 
         SQLite has no ``UPDATE … RETURNING`` (added in 3.35; aiosqlite's
         wrapper doesn't expose it everywhere), so we issue an UPDATE and
@@ -1937,9 +1918,6 @@ class SqliteStore:
             "UPDATE memories SET "
             "access_count = COALESCE(access_count, 0) + 1, "
             "last_accessed_at = datetime('now'), "
-            "importance_score = COALESCE(confidence, 1.0) "
-            " * MAX(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1) "
-            " * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1), "
             "updated_at = datetime('now') "
             "WHERE id = ? AND org_id = ?"
         )
@@ -3106,17 +3084,17 @@ class SqliteStore:
         self, org_id: str, *, limit: int = 500,
     ) -> Sequence[RecommendationCandidate]:
         """List candidate memories (memories with embeddings) for the
-        recommendation engine, ordered by ``importance_score`` DESC NULLS LAST.
+        recommendation engine, ordered by ``created_at`` DESC.
 
         Translation: PG selects ``embedding`` directly from ``memories``;
         SQLite stores embeddings in the ``memory_vectors`` vec0 virtual
         table joined by ``memory_rowid``. Memories without a vec0 row are
         excluded (mirrors PG's ``embedding IS NOT NULL`` filter).
 
-        ``ORDER BY importance_score DESC NULLS LAST``: SQLite's NULL
-        ordering is opposite to PG's (NULLs sort first by default with
-        ``DESC``), so we use ``CASE WHEN ... IS NULL THEN 1 ELSE 0 END``
-        as a primary sort key to match PG's ``NULLS LAST`` semantics.
+        Recency-first ordering replaces the prior ``importance_score``
+        ordering — that column was dropped in
+        025_drop_quality_score_columns.sql. ``RecommendationEngine``
+        re-scores candidates anyway via signal weighting.
         """
         sql = (
             "SELECT m.id, m.content, m.meta, m.created_at, "
@@ -3125,8 +3103,7 @@ class SqliteStore:
             "FROM memories m "
             "INNER JOIN memory_vectors v ON v.memory_rowid = m.rowid "
             "WHERE m.org_id = ? "
-            "ORDER BY CASE WHEN m.importance_score IS NULL THEN 1 ELSE 0 END, "
-            "         m.importance_score DESC "
+            "ORDER BY m.created_at DESC "
             "LIMIT ?"
         )
         async with self._acquire() as conn:
@@ -4699,10 +4676,10 @@ class SqliteStore:
         params.append(limit)
         sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags,
-                   m.confidence, m.source, m.project,
+                   m.source, m.project,
                    m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta,
-                   m.importance_score, m.access_count, m.last_accessed_at
+                   m.access_count, m.last_accessed_at
             FROM memories m
             LEFT JOIN entity_mentions em ON em.memory_id = m.id
             WHERE {' AND '.join(where)}
@@ -5166,13 +5143,6 @@ class SqliteStore:
                 recent_7d = int(row["n"]) if row and row["n"] is not None else 0
 
                 async with conn.execute(
-                    "SELECT AVG(COALESCE(importance_score, 1.0)) AS v FROM memories WHERE project = ?",
-                    (project,),
-                ) as cur:
-                    row = await cur.fetchone()
-                avg_imp = row["v"] if row else None
-
-                async with conn.execute(
                     "SELECT MIN(created_at) AS v FROM memories WHERE project = ?",
                     (project,),
                 ) as cur:
@@ -5218,12 +5188,6 @@ class SqliteStore:
                 ) as cur:
                     row = await cur.fetchone()
                 recent_7d = int(row["n"]) if row and row["n"] is not None else 0
-
-                async with conn.execute(
-                    "SELECT AVG(COALESCE(importance_score, 1.0)) AS v FROM memories"
-                ) as cur:
-                    row = await cur.fetchone()
-                avg_imp = row["v"] if row else None
 
                 async with conn.execute(
                     "SELECT MIN(created_at) AS v FROM memories"
@@ -5293,7 +5257,6 @@ class SqliteStore:
             by_project=by_project,
             by_entity_type=by_entity_type,
             top_entities=top_entities,
-            avg_importance=round(float(avg_imp or 0), 3),
             recent_24h=recent_24h,
             recent_7d=recent_7d,
             oldest_memory=oldest,
@@ -5367,10 +5330,10 @@ class SqliteStore:
 
         sql = f"""
             SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,
-                            m.confidence, m.source, m.project,
+                            m.source, m.project,
                             m.created_at, m.updated_at, m.expires_at,
                             m.upvotes, m.downvotes, m.meta,
-                            m.importance_score, m.access_count, m.last_accessed_at
+                            m.access_count, m.last_accessed_at
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
             WHERE {' AND '.join(where)}
@@ -5400,13 +5363,13 @@ class SqliteStore:
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, org_id, content, context, tags, confidence, source,
+                SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
-                       downvotes, meta, importance_score, access_count,
+                       downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories
                 WHERE LOWER(content) LIKE ?
-                ORDER BY (importance_score IS NULL), importance_score DESC, created_at DESC
+                ORDER BY created_at DESC
                 LIMIT ?
                 """,
                 (like_pattern, limit),
@@ -5487,9 +5450,9 @@ class SqliteStore:
         sql_params.append(limit)
 
         sql = f"""
-            SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+            SELECT m.id, m.org_id, m.content, m.context, m.tags,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
-                   m.upvotes, m.downvotes, m.meta, m.importance_score,
+                   m.upvotes, m.downvotes, m.meta,
                    m.access_count, m.last_accessed_at, m.scope,
                    -bm25(memories_fts) AS fts_rank
             FROM memories_fts
@@ -5544,9 +5507,9 @@ class SqliteStore:
             where.append("m.project = ?")
             params_tail.append(project)
         sql = f"""
-            SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+            SELECT m.id, m.org_id, m.content, m.context, m.tags,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
-                   m.upvotes, m.downvotes, m.meta, m.importance_score,
+                   m.upvotes, m.downvotes, m.meta,
                    m.access_count, m.last_accessed_at, m.scope,
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
@@ -5915,10 +5878,10 @@ class SqliteStore:
         params.append(limit)
         sql = f"""
             SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,
-                            m.confidence, m.source, m.project,
+                            m.source, m.project,
                             m.created_at, m.updated_at, m.expires_at,
                             m.upvotes, m.downvotes, m.meta,
-                            m.importance_score, m.access_count, m.last_accessed_at
+                            m.access_count, m.last_accessed_at
             FROM memories m
             {joins}
             WHERE {' AND '.join(where)}

@@ -210,7 +210,6 @@ class GraphStats:
     by_project: Mapping[str, int]
     by_entity_type: Mapping[str, int]
     top_entities: Sequence[Mapping[str, Any]]
-    avg_importance: float
     recent_24h: int
     recent_7d: int
     oldest_memory: Optional[datetime]
