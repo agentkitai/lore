@@ -23,6 +23,7 @@ class NewMemory:
     # default; recall applies (scope='global') OR (scope='project' AND
     # project = current_project).
     scope: str = "project"
+    importance_score: Optional[float] = None
 
 
 @dataclass(frozen=True, slots=True)

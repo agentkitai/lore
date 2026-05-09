@@ -52,6 +52,7 @@ async def create_memory(
     expires_at: Optional[datetime] = None,
     meta: Optional[Mapping[str, Any]] = None,
     scope: Optional[str] = None,
+    importance_score: Optional[float] = None,
 ) -> StoredMemory:
     """Insert a memory. Tag normalization and meta defaulting happen here.
 
@@ -81,6 +82,7 @@ async def create_memory(
             expires_at=expires_at,
             meta=dict(meta or {}),
             scope=effective_scope,
+            importance_score=importance_score,
         )
     )
 

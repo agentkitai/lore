@@ -1083,8 +1083,8 @@ class SqliteStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, confidence, source,
-                     project, expires_at, meta, scope)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     project, expires_at, meta, scope, importance_score)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
@@ -1098,6 +1098,7 @@ class SqliteStore:
                     memory.expires_at.isoformat() if memory.expires_at else None,
                     json.dumps(dict(memory.meta)),
                     memory.scope,
+                    memory.importance_score if memory.importance_score is not None else memory.confidence,
                 ),
             )
             rowid = cursor.lastrowid

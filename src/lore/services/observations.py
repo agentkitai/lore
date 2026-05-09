@@ -82,6 +82,7 @@ async def create_observation(
     if kind is not None:
         meta["kind"] = kind
 
+    importance_score = 0.5 * 1.0 * 1.0
     return await create_memory(
         store,
         org_id=obs.org_id,
@@ -94,4 +95,5 @@ async def create_observation(
         project=obs.project,
         meta=meta,
         scope=obs.scope,
+        importance_score=importance_score,
     )

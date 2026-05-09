@@ -553,8 +553,8 @@ class PostgresStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, confidence, source,
-                     project, embedding, expires_at, meta, scope)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, $10, $11::jsonb, $12)
+                     project, embedding, expires_at, meta, scope, importance_score)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, $10, $11::jsonb, $12, $13)
                 RETURNING id, org_id, content, context, tags, confidence, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, importance_score, access_count,
@@ -572,6 +572,7 @@ class PostgresStore:
                 memory.expires_at,
                 json.dumps(dict(memory.meta)),
                 memory.scope,
+                memory.importance_score if memory.importance_score is not None else memory.confidence,
             )
         return _row_to_stored(row)
 
