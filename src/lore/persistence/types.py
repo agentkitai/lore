@@ -14,7 +14,6 @@ class NewMemory:
     embedding: Sequence[float]
     context: Optional[str] = None
     tags: Sequence[str] = ()
-    confidence: float = 0.5
     source: Optional[str] = None
     project: Optional[str] = None
     expires_at: Optional[datetime] = None
@@ -23,7 +22,6 @@ class NewMemory:
     # default; recall applies (scope='global') OR (scope='project' AND
     # project = current_project).
     scope: str = "project"
-    importance_score: Optional[float] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +55,6 @@ class StoredMemory:
     content: str
     context: Optional[str]
     tags: Sequence[str]
-    confidence: float
     source: Optional[str]
     project: Optional[str]
     created_at: datetime
@@ -66,7 +63,6 @@ class StoredMemory:
     upvotes: int
     downvotes: int
     meta: Mapping[str, Any]
-    importance_score: float
     access_count: int
     last_accessed_at: Optional[datetime]
     # Phase 6G: scope is read from the column with NOT NULL DEFAULT 'project',
@@ -104,7 +100,6 @@ class MemoryPatch:
     content: Optional[str] = None
     context: Optional[str] = None
     tags: Optional[Sequence[str]] = None
-    confidence: Optional[float] = None
     source: Optional[str] = None
     project: Optional[str] = None
     expires_at: Optional[datetime] = None
@@ -508,7 +503,6 @@ class ExportedMemory:
     content: str
     context: Optional[str]
     tags: Sequence[str]
-    confidence: float
     source: Optional[str]
     project: Optional[str]
     embedding: Optional[Sequence[float]]
