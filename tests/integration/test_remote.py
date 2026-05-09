@@ -101,7 +101,6 @@ def _lesson_row(
         "resolution": "test resolution",
         "context": None,
         "tags": json.dumps(["test"]),
-        "confidence": 0.8,
         "source": None,
         "project": project,
         "created_at": NOW,
@@ -222,7 +221,6 @@ async def test_full_flow_publish_query_verify(client: AsyncClient) -> None:
         assert data["problem"] == "test problem"
         assert data["resolution"] == "test resolution"
         assert data["tags"] == ["test"]
-        assert data["confidence"] == 0.8
 
 
 # ── Integration Test: Project Scoping Isolation ────────────────────
@@ -345,14 +343,14 @@ async def test_export_import_between_contexts(client: AsyncClient) -> None:
     _exported_mems = [
         ExportedMemory(
             id="lesson-exp-001", org_id=ORG_ID, content="test problem",
-            context="test resolution", tags=("test",), confidence=0.8,
+            context="test resolution", tags=("test",),
             source=None, project=None, created_at=NOW, updated_at=NOW,
             expires_at=None, upvotes=0, downvotes=0, meta={},
             embedding=[0.1] * 384,
         ),
         ExportedMemory(
             id="lesson-exp-002", org_id=ORG_ID, content="test problem",
-            context="test resolution", tags=("test",), confidence=0.8,
+            context="test resolution", tags=("test",),
             source=None, project=None, created_at=NOW, updated_at=NOW,
             expires_at=None, upvotes=0, downvotes=0, meta={},
             embedding=[0.1] * 384,
@@ -381,7 +379,6 @@ async def test_export_import_between_contexts(client: AsyncClient) -> None:
                     "resolution": l["resolution"],
                     "embedding": l["embedding"],
                     "tags": l["tags"],
-                    "confidence": l["confidence"],
                 }
                 for l in exported
             ]},
