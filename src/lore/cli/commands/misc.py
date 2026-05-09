@@ -405,7 +405,6 @@ def cmd_on_this_day(args: argparse.Namespace) -> None:
                     "content": m.content,
                     "type": m.type,
                     "tier": m.tier,
-                    "importance_score": m.importance_score,
                     "created_at": m.created_at,
                     "project": m.project,
                     "tags": m.tags,

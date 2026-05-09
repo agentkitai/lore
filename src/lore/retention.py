@@ -1,4 +1,4 @@
-"""Policy-based retention — find and remove stale, low-importance memories."""
+"""Policy-based retention — find and remove stale memories."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ class RetentionPolicy:
     """Declarative retention policy."""
 
     max_age_days: int = 90
-    min_importance_score: float = 0.3
     archive_on_expire: bool = False
     dry_run: bool = False
 
@@ -37,7 +36,7 @@ class RetentionResult:
 
 
 def _find_expired(lore: "Lore", policy: RetentionPolicy) -> List["Memory"]:
-    """Return memories that exceed *max_age_days* and fall below *min_importance_score*."""
+    """Return memories older than *max_age_days*."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=policy.max_age_days)
     memories = lore.list_memories()
     expired: List["Memory"] = []
@@ -50,7 +49,7 @@ def _find_expired(lore: "Lore", policy: RetentionPolicy) -> List["Memory"]:
                 created = created.replace(tzinfo=timezone.utc)
         except (ValueError, TypeError):
             continue
-        if created < cutoff and m.importance_score < policy.min_importance_score:
+        if created < cutoff:
             expired.append(m)
     return expired
 
@@ -67,7 +66,6 @@ def _archive_memories(memories: List["Memory"], output_path: str) -> int:
             "tags": m.tags,
             "project": m.project,
             "source": m.source,
-            "importance_score": m.importance_score,
             "created_at": m.created_at,
             "metadata": m.metadata,
         })

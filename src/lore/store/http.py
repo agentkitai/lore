@@ -160,7 +160,6 @@ class HttpStore(Store):
             "resolution": memory.content,
             "context": memory.context,
             "tags": memory.tags,
-            "confidence": memory.confidence,
             "source": memory.source,
             "project": memory.project,
             "meta": meta,
@@ -219,10 +218,8 @@ class HttpStore(Store):
             updated_at=_to_iso(data.get("updated_at")),
             ttl=None,
             expires_at=_to_iso(data.get("expires_at")) or None,
-            confidence=data.get("confidence", 1.0),
             upvotes=data.get("upvotes", 0),
             downvotes=data.get("downvotes", 0),
-            importance_score=data.get("importance_score", 1.0),
             access_count=data.get("access_count", 0),
             last_accessed_at=data.get("last_accessed_at"),
             archived=data.get("archived", False),
@@ -281,8 +278,6 @@ class HttpStore(Store):
 
     def update(self, memory: Memory) -> bool:
         payload: Dict[str, Any] = {}
-        if memory.confidence is not None:
-            payload["confidence"] = memory.confidence
         if memory.tags:
             payload["tags"] = memory.tags
         meta = dict(memory.metadata) if memory.metadata else {}

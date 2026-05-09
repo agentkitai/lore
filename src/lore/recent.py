@@ -74,7 +74,7 @@ def format_detailed(result: RecentActivityResult) -> str:
         for m in group.memories:
             ts = _format_time(m.created_at)
             prefix = "[Session Snapshot] " if m.type == "session_snapshot" else ""
-            lines.append(f"**[{ts}] {prefix}{m.type}** (tier: {m.tier}, importance: {m.importance_score:.2f})")
+            lines.append(f"**[{ts}] {prefix}{m.type}** (tier: {m.tier})")
             lines.append(m.content)
             if m.tags:
                 lines.append(f"Tags: {', '.join(m.tags)}")
@@ -96,7 +96,6 @@ def format_structured(result: RecentActivityResult) -> Dict[str, Any]:
                         "tier": m.tier,
                         "created_at": m.created_at,
                         "tags": m.tags,
-                        "importance_score": m.importance_score,
                     }
                     for m in g.memories
                 ],

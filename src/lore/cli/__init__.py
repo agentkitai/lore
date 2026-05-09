@@ -46,7 +46,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--context", default=None, help="Additional context for the memory")
     p.add_argument("--ttl", type=int, default=None, help="Time-to-live in seconds")
     p.add_argument("--source", default=None)
-    p.add_argument("--confidence", type=float, default=1.0)
     p.add_argument("--project", default=None, help="Project namespace")
     p.add_argument("--metadata", default=None, help="JSON metadata (e.g. '{\"key\": \"val\"}')")
 
@@ -112,10 +111,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter by memory tier",
     )
     p.add_argument("--limit", type=int, default=None)
-    p.add_argument(
-        "--sort", type=str, choices=["created", "importance"],
-        default="created", help="Sort order (default: created)",
-    )
 
     # stats
     sub.add_parser("stats", help="Show memory statistics")
@@ -569,11 +564,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_restore.add_argument("--input", "-i", required=True, dest="input_file", help="Path to backup JSON file")
 
     # retention
-    p_ret = sub.add_parser("retention", help="Apply retention policy to remove old low-importance memories")
+    p_ret = sub.add_parser("retention", help="Apply retention policy to remove old memories")
     p_ret.add_argument("--max-age-days", type=int, default=90, dest="max_age_days",
                         help="Delete memories older than N days (default: 90)")
-    p_ret.add_argument("--min-importance", type=float, default=0.3, dest="min_importance",
-                        help="Only delete memories below this importance score (default: 0.3)")
     p_ret.add_argument("--archive", action="store_true", default=False,
                         help="Export affected memories to JSON before deleting")
     p_ret.add_argument("--dry-run", action="store_true", default=False, dest="dry_run",

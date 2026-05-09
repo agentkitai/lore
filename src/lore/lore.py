@@ -140,7 +140,7 @@ class Lore:
         dual_embedding: bool = False,
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        importance_threshold: float = 0.05,
+        decay_threshold: float = 0.05,
         decay_config: Optional[Dict[Tuple[str, str], float]] = None,
         tier_recall_weights: Optional[Dict[str, float]] = None,
         classify: bool = False,
@@ -168,7 +168,7 @@ class Lore:
         self._half_lives: Dict[str, float] = {**DECAY_HALF_LIVES}
         if decay_half_lives:
             self._half_lives.update(decay_half_lives)
-        self._importance_threshold = importance_threshold
+        self._decay_threshold = decay_threshold
         self._decay_config = decay_config
         self._last_cleanup: float = 0.0
         self._last_cleanup_count: int = 0
@@ -383,7 +383,6 @@ class Lore:
         source: Optional[str] = None,
         project: Optional[str] = None,
         ttl: Optional[int] = None,
-        confidence: float = 1.0,
         scope: Optional[str] = None,
     ) -> str:
         """Store a memory. Returns the memory ID (ULID).
@@ -404,10 +403,6 @@ class Lore:
             raise ValueError(
                 f"invalid memory type {type!r}, "
                 f"must be one of: {', '.join(sorted(VALID_MEMORY_TYPES))}"
-            )
-        if not (0.0 <= confidence <= 1.0):
-            raise ValueError(
-                f"confidence must be between 0.0 and 1.0, got {confidence}"
             )
 
         # Security scan and redact before storage
@@ -491,7 +486,6 @@ class Lore:
             updated_at=now,
             ttl=effective_ttl,
             expires_at=expires_at,
-            confidence=confidence,
             scope=scope,
         )
         self._store.save(memory)
@@ -740,7 +734,7 @@ class Lore:
         tier: Optional[str] = None,
         limit: int = 5,
         offset: int = 0,
-        min_confidence: float = 0.0,
+        min_score: float = 0.0,
         check_freshness: bool = False,
         repo_path: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -829,7 +823,7 @@ class Lore:
                 project=self.project,
                 tier=tier,
                 limit=limit,
-                min_confidence=min_confidence,
+                min_score=min_score,
                 scope_mode=scope_mode,
             )
         else:
@@ -837,7 +831,7 @@ class Lore:
             results = self._recall_local(
                 query_vec, tags=tags, type=type, tier=tier, limit=limit,
                 offset=offset,
-                min_confidence=min_confidence,
+                min_score=min_score,
                 query_vecs=query_vecs,
                 user_id=user_id,
                 intent=intent, domain=domain, emotion=emotion,
@@ -920,7 +914,7 @@ class Lore:
         tier: Optional[str] = None,
         limit: int = 5,
         offset: int = 0,
-        min_confidence: float = 0.0,
+        min_score: float = 0.0,
         query_vecs: Optional[Dict[str, List[float]]] = None,
         user_id: Optional[str] = None,
         intent: Optional[str] = None,
@@ -977,12 +971,6 @@ class Lore:
             all_memories = [
                 m for m in all_memories
                 if tag_set.issubset(set(m.tags))
-            ]
-
-        # Filter by min_confidence
-        if min_confidence > 0.0:
-            all_memories = [
-                m for m in all_memories if m.confidence >= min_confidence
             ]
 
         # Filter out memories without embeddings
@@ -1074,6 +1062,10 @@ class Lore:
                     results.append(RecallResult(memory=mem, score=final_score))
 
         results.sort(key=lambda r: r.score, reverse=True)
+
+        # Filter by min_score (post-scoring)
+        if min_score > 0.0:
+            results = [r for r in results if r.score >= min_score]
 
         # Classification post-filter
         if intent or domain or emotion:
@@ -1573,9 +1565,9 @@ class Lore:
     # TTL Cleanup
     # ------------------------------------------------------------------
 
-    def cleanup_expired(self, importance_threshold: Optional[float] = None) -> int:
-        """Remove expired memories AND memories below importance threshold."""
-        threshold = importance_threshold if importance_threshold is not None else self._importance_threshold
+    def cleanup_expired(self, decay_threshold: Optional[float] = None) -> int:
+        """Remove expired memories AND memories whose decay multiplier is below threshold."""
+        threshold = decay_threshold if decay_threshold is not None else self._decay_threshold
         now = datetime.now(timezone.utc)
         count = 0
 

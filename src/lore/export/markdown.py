@@ -134,8 +134,6 @@ class MarkdownRenderer:
                 "tier": mem.tier,
                 "project": mem.project,
                 "tags": mem.tags or [],
-                "confidence": mem.confidence,
-                "importance_score": mem.importance_score,
                 "upvotes": mem.upvotes,
                 "downvotes": mem.downvotes,
                 "created_at": mem.created_at,

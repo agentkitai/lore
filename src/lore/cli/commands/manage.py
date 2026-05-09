@@ -25,17 +25,14 @@ def cmd_memories(args: argparse.Namespace) -> None:
     if not memories:
         print("No memories.")
         return
-    sort_key = getattr(args, "sort", "created")
-    if sort_key == "importance":
-        memories.sort(key=lambda m: m.importance_score, reverse=True)
-    print(f"{'ID':<28} {'Tier':<10} {'Type':<12} {'Importance':<12} {'Created':<22} {'Topics':<30} {'Content':<40}")
-    print("-" * 154)
+    print(f"{'ID':<28} {'Tier':<10} {'Type':<12} {'Created':<22} {'Topics':<30} {'Content':<40}")
+    print("-" * 142)
     for m in memories:
         created = m.created_at[:19] if m.created_at else ""
         enrichment = (m.metadata or {}).get("enrichment", {})
         topics = ", ".join(enrichment.get("topics", [])) if enrichment else "-"
         print(
-            f"{m.id:<28} {m.tier:<10} {m.type:<12} {m.importance_score:<12.2f} "
+            f"{m.id:<28} {m.tier:<10} {m.type:<12} "
             f"{created:<22} {topics:<30} {m.content[:40]:<40}"
         )
 
@@ -206,13 +203,12 @@ def cmd_restore(args: argparse.Namespace) -> None:
 
 
 def cmd_retention(args: argparse.Namespace) -> None:
-    """Apply a retention policy to prune old low-importance memories."""
+    """Apply a retention policy to prune old memories."""
     from lore.retention import RetentionPolicy, apply_retention
 
     lore = _helpers._get_lore(args.db)
     policy = RetentionPolicy(
         max_age_days=args.max_age_days,
-        min_importance_score=args.min_importance,
         archive_on_expire=args.archive,
         dry_run=args.dry_run,
     )

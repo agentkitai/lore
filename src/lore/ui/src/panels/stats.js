@@ -96,12 +96,6 @@ export class StatsPanel {
     }
     this.container.appendChild(totals);
 
-    // Average importance
-    const avgDiv = document.createElement('div');
-    avgDiv.className = 'stat-row';
-    avgDiv.textContent = 'Avg Importance: ' + ((data.avg_importance || 0) * 100).toFixed(0) + '%';
-    this.container.appendChild(avgDiv);
-
     // Recent activity
     const recentDiv = document.createElement('div');
     recentDiv.className = 'stat-row';
