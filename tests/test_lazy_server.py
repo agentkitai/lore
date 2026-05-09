@@ -21,6 +21,7 @@ import asyncio
 import os
 import subprocess
 import sys
+import time
 from unittest.mock import patch
 
 import pytest
@@ -379,6 +380,13 @@ class TestEnsureServerBash:
         )
         # rc=1 because curl never succeeds in the polling loop either.
         assert "rc=1" in result.stdout
+        # The production code spawns ``nohup ... & disown`` — fire-and-forget,
+        # so the parent script can return before the backgrounded fake-nohup
+        # has had a chance to write its args. Wait briefly for the marker
+        # before asserting (CI runners on Python 3.10 have lost this race).
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.05)
         assert marker.exists(), "spawn args marker should be written"
         spawned = marker.read_text()
         assert "lore" in spawned
