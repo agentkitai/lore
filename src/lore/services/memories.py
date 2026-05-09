@@ -46,13 +46,11 @@ async def create_memory(
     embedding: Sequence[float],
     context: Optional[str] = None,
     tags: Sequence[str] = (),
-    confidence: float = 0.5,
     source: Optional[str] = None,
     project: Optional[str] = None,
     expires_at: Optional[datetime] = None,
     meta: Optional[Mapping[str, Any]] = None,
     scope: Optional[str] = None,
-    importance_score: Optional[float] = None,
 ) -> StoredMemory:
     """Insert a memory. Tag normalization and meta defaulting happen here.
 
@@ -76,13 +74,11 @@ async def create_memory(
             embedding=embedding,
             context=context,
             tags=normalized_tags,
-            confidence=confidence,
             source=source,
             project=project,
             expires_at=expires_at,
             meta=dict(meta or {}),
             scope=effective_scope,
-            importance_score=importance_score,
         )
     )
 
@@ -101,7 +97,6 @@ async def update_memory(
     content: Optional[str] = None,
     context: Optional[str] = None,
     tags: Optional[Sequence[str]] = None,
-    confidence: Optional[float] = None,
     source: Optional[str] = None,
     project: Optional[str] = None,
     expires_at: Optional[datetime] = None,
@@ -111,7 +106,6 @@ async def update_memory(
         content=content,
         context=context,
         tags=tuple(tags) if tags is not None else None,
-        confidence=confidence,
         source=source,
         project=project,
         expires_at=expires_at,

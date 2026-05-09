@@ -67,7 +67,6 @@ async def create(
     resolution: Optional[str],
     context: Optional[str],  # intentionally unused — wire-compat only
     tags: Optional[Sequence[str]],
-    confidence: float,
     source: Optional[str],
     project: Optional[str],
     embedding: Optional[Sequence[float]],
@@ -100,7 +99,6 @@ async def create(
         content=problem,
         context=resolution if resolution is not None else "",
         tags=tuple(tags or ()),
-        confidence=confidence,
         source=source,
         project=project,
         embedding=embedding if embedding else [0.0] * 384,
@@ -120,7 +118,7 @@ async def search(
     project: Optional[str],
     tags: Optional[Sequence[str]],
     limit: int,
-    min_confidence: float,
+    min_score: float,
     scope_mode: str = "default",
 ) -> list[dict]:
     """Vector recall with time-decay re-ranking.
@@ -164,9 +162,9 @@ async def search(
         effective_age = min(age_created_days, age_accessed_days)
         half_life = _half_life_for(m.meta)
         time_decay = 0.5 ** (effective_age / half_life)
-        final_score = m.score * (m.importance_score or 1.0) * time_decay
+        final_score = m.score * time_decay
 
-        if final_score < min_confidence:
+        if final_score < min_score:
             continue
 
         results.append({
@@ -174,7 +172,6 @@ async def search(
             "content": m.content,
             "context": m.context,
             "tags": list(m.tags),
-            "confidence": m.confidence,
             "source": m.source,
             "project": m.project,
             "created_at": m.created_at,
@@ -214,7 +211,6 @@ async def record_access(
         "id": updated.id,
         "access_count": updated.access_count,
         "last_accessed_at": updated.last_accessed_at,
-        "importance_score": updated.importance_score,
     }
 
 
@@ -241,7 +237,6 @@ async def update(
     org_id: str,
     lesson_id: str,
     project: Optional[str],
-    confidence: Optional[float],
     tags: Optional[Sequence[str]],
     meta: Optional[Mapping[str, Any]],
     upvotes: Optional[Union[str, int]],
@@ -261,13 +256,12 @@ async def update(
         raise StoreNotFoundError("memories", lesson_id)
 
     patch = MemoryPatch(
-        confidence=confidence,
         tags=tuple(tags) if tags is not None else None,
         meta=dict(meta) if meta is not None else None,
     )
 
     has_non_vote_patch = any(
-        getattr(patch, f) is not None for f in ("confidence", "tags", "meta")
+        getattr(patch, f) is not None for f in ("tags", "meta")
     )
 
     # Validate vote modes early, before any writes
@@ -369,7 +363,7 @@ async def import_lessons(
 ) -> int:
     """Upsert a batch of lesson records.
 
-    Each lesson must have: id, problem, resolution, tags, confidence, source,
+    Each lesson must have: id, problem, resolution, tags, source,
     project, embedding, expires_at, upvotes, downvotes, meta.
 
     Returns the count of items processed.
@@ -384,7 +378,6 @@ async def import_lessons(
             content=lesson.problem,
             context=lesson.resolution if lesson.resolution else "",
             tags=tuple(lesson.tags or ()),
-            confidence=lesson.confidence,
             source=lesson.source,
             project=project,
             embedding=list(lesson.embedding) if lesson.embedding else None,
