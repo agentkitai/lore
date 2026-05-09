@@ -61,7 +61,6 @@ async def _seed_sqlite_with_data(url: str, *, n_memories: int = 5) -> list[str]:
                 content=f"memory content {i}",
                 context=f"context {i}",
                 tags=("alpha", "beta"),
-                confidence=0.9,
                 source="test",
                 project="test_project",
                 embedding=tuple([0.01 * i] * migrate_mod.EMBED_DIM),

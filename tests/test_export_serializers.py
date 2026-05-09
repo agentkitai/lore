@@ -51,10 +51,8 @@ def _make_memory(**overrides) -> Memory:
         updated_at="2026-01-15T10:30:00Z",
         ttl=3600,
         expires_at="2026-01-15T11:00:00Z",
-        confidence=0.95,
         upvotes=3,
         downvotes=1,
-        importance_score=0.82,
         access_count=5,
         last_accessed_at="2026-01-15T10:30:00Z",
         archived=False,
@@ -79,10 +77,8 @@ class TestMemoryRoundtrip:
         assert d["project"] == "lore"
         assert d["embedding"] is not None  # base64
         assert d["created_at"] == "2026-01-15T10:00:00Z"
-        assert d["confidence"] == 0.95
         assert d["upvotes"] == 3
         assert d["downvotes"] == 1
-        assert d["importance_score"] == 0.82
         assert d["access_count"] == 5
         assert d["archived"] is False
         assert d["consolidated_into"] is None
@@ -101,10 +97,8 @@ class TestMemoryRoundtrip:
         assert m2.source == m.source
         assert m2.project == m.project
         assert m2.embedding == m.embedding
-        assert m2.confidence == m.confidence
         assert m2.upvotes == m.upvotes
         assert m2.downvotes == m.downvotes
-        assert m2.importance_score == m.importance_score
         assert m2.access_count == m.access_count
         assert m2.archived == m.archived
 

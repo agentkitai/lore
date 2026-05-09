@@ -1,7 +1,6 @@
 // Filter sidebar
 
 import { MEMORY_COLORS, ENTITY_COLORS } from '../colors.js';
-import { debounce } from '../utils.js';
 
 export class FilterPanel {
   constructor(container, state) {
@@ -107,32 +106,6 @@ export class FilterPanel {
       ['working', 'short', 'long'], {}, 'tiers', inner
     );
 
-    // Importance slider
-    inner.appendChild(this._createLabel('Min Importance'));
-    const sliderRow = document.createElement('div');
-    sliderRow.className = 'slider-row';
-    const slider = document.createElement('input');
-    slider.type = 'range';
-    slider.min = '0';
-    slider.max = '100';
-    slider.value = String(Math.round((this.state.filters.minImportance || 0) * 100));
-    slider.className = 'filter-slider';
-    const sliderVal = document.createElement('span');
-    sliderVal.className = 'slider-value';
-    sliderVal.textContent = slider.value + '%';
-    const debouncedSlider = debounce((v) => {
-      this.state.setFilter('minImportance', v / 100);
-    }, 100);
-    slider.oninput = () => {
-      sliderVal.textContent = slider.value + '%';
-      debouncedSlider(parseInt(slider.value));
-    };
-    sliderRow.appendChild(slider);
-    sliderRow.appendChild(sliderVal);
-    inner.appendChild(sliderRow);
-    this._importanceSlider = slider;
-    this._importanceValue = sliderVal;
-
     // Date range
     inner.appendChild(this._createLabel('Date Range'));
     const dateRow = document.createElement('div');
@@ -226,10 +199,6 @@ export class FilterPanel {
 
   _refreshControls() {
     if (this._projectSelect) this._projectSelect.value = '';
-    if (this._importanceSlider) {
-      this._importanceSlider.value = '0';
-      this._importanceValue.textContent = '0%';
-    }
     if (this._sinceInput) this._sinceInput.value = '';
     if (this._untilInput) this._untilInput.value = '';
     if (this._memTypeCheckboxes) {

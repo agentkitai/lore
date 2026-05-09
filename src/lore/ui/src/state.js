@@ -20,7 +20,6 @@ export class AppState extends EventTarget {
       types: new Set(),
       entityTypes: new Set(),
       tiers: new Set(),
-      minImportance: 0,
       dateRange: [null, null],
     };
     this._nodeMap = new Map();
@@ -83,7 +82,6 @@ export class AppState extends EventTarget {
       types: new Set(),
       entityTypes: new Set(),
       tiers: new Set(),
-      minImportance: 0,
       dateRange: [null, null],
     };
     this._recomputeFiltered();
@@ -114,7 +112,6 @@ export class AppState extends EventTarget {
     if (this.filters.types.size > 0) count++;
     if (this.filters.entityTypes.size > 0) count++;
     if (this.filters.tiers.size > 0) count++;
-    if (this.filters.minImportance > 0) count++;
     if (this.filters.dateRange[0] || this.filters.dateRange[1]) count++;
     return count;
   }
@@ -135,7 +132,6 @@ export class AppState extends EventTarget {
       if (f.project && node.project !== f.project) return false;
       if (f.types.size > 0 && !f.types.has(node.type)) return false;
       if (f.tiers.size > 0 && !f.tiers.has(node.tier)) return false;
-      if (f.minImportance > 0 && (node.importance || 0) < f.minImportance) return false;
       if (f.dateRange[0] && node.created_at < f.dateRange[0]) return false;
       if (f.dateRange[1] && node.created_at > f.dateRange[1]) return false;
     }
@@ -151,7 +147,6 @@ export class AppState extends EventTarget {
     if (this.filters.types.size > 0) params.set('type', [...this.filters.types].join(','));
     if (this.filters.entityTypes.size > 0) params.set('entity_type', [...this.filters.entityTypes].join(','));
     if (this.filters.tiers.size > 0) params.set('tier', [...this.filters.tiers].join(','));
-    if (this.filters.minImportance > 0) params.set('min_importance', this.filters.minImportance);
     if (this.filters.dateRange[0]) params.set('since', this.filters.dateRange[0]);
     if (this.filters.dateRange[1]) params.set('until', this.filters.dateRange[1]);
     if (this.searchQuery) params.set('search', this.searchQuery);
@@ -168,7 +163,6 @@ export class AppState extends EventTarget {
     if (params.has('type')) this.filters.types = new Set(params.get('type').split(','));
     if (params.has('entity_type')) this.filters.entityTypes = new Set(params.get('entity_type').split(','));
     if (params.has('tier')) this.filters.tiers = new Set(params.get('tier').split(','));
-    if (params.has('min_importance')) this.filters.minImportance = parseFloat(params.get('min_importance'));
     if (params.has('since')) this.filters.dateRange[0] = params.get('since');
     if (params.has('until')) this.filters.dateRange[1] = params.get('until');
     if (params.has('search')) this.searchQuery = params.get('search');

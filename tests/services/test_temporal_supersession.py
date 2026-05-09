@@ -54,9 +54,9 @@ def _make_stored(mid: str, content: str) -> StoredMemory:
     now = datetime.now(timezone.utc)
     return StoredMemory(
         id=mid, org_id="solo", content=content, context=None, tags=(),
-        confidence=0.5, source=None, project=None, created_at=now,
+        source=None, project=None, created_at=now,
         updated_at=now, expires_at=None, upvotes=0, downvotes=0,
-        meta={}, importance_score=0.5, access_count=0, last_accessed_at=None,
+        meta={}, access_count=0, last_accessed_at=None,
     )
 
 
@@ -319,10 +319,10 @@ class _FakeStore:
         for m in self._memories:
             out.append(ScoredMemory(
                 id=m.id, org_id=m.org_id, content=m.content, context=m.context,
-                tags=m.tags, confidence=m.confidence, source=m.source,
+                tags=m.tags, source=m.source,
                 project=m.project, created_at=m.created_at, updated_at=m.updated_at,
                 expires_at=m.expires_at, upvotes=m.upvotes, downvotes=m.downvotes,
-                meta=m.meta, importance_score=m.importance_score,
+                meta=m.meta,
                 access_count=m.access_count, last_accessed_at=m.last_accessed_at,
                 score=1.0,
             ))
@@ -487,7 +487,6 @@ def http_client(monkeypatch):
                 id=new_id, org_id=nm.org_id, content=nm.content,
                 context=getattr(nm, "context", None),
                 tags=tuple(getattr(nm, "tags", ())),
-                confidence=getattr(nm, "confidence", 0.5),
                 source=getattr(nm, "source", None),
                 project=getattr(nm, "project", None),
                 created_at=datetime.now(timezone.utc),
@@ -495,7 +494,7 @@ def http_client(monkeypatch):
                 expires_at=getattr(nm, "expires_at", None),
                 upvotes=0, downvotes=0,
                 meta=dict(getattr(nm, "meta", {}) or {}),
-                importance_score=0.5, access_count=0, last_accessed_at=None,
+                access_count=0, last_accessed_at=None,
             )
             self.memories[new_id] = stored
             return stored
@@ -645,12 +644,12 @@ def test_http_provenance_returns_sources_chain_and_meta(http_client):
     fake.memories["m-merged"] = _make_stored("m-merged", "merged")
     fake.memories["m-merged"] = StoredMemory(
         id="m-merged", org_id="solo", content="merged", context=None,
-        tags=(), confidence=0.5, source="consolidation", project=None,
+        tags=(), source="consolidation", project=None,
         created_at=datetime.now(timezone.utc),
         updated_at=datetime.now(timezone.utc),
         expires_at=None, upvotes=0, downvotes=0,
         meta={"type": "lesson", "consolidated_from": ["legacy-x"]},
-        importance_score=0.5, access_count=0, last_accessed_at=None,
+        access_count=0, last_accessed_at=None,
     )
     fake.events.append(("m-old", "m-merged", "merge old", "api"))
     fake.events.append(("m-new", "m-merged", "merge new", "api"))

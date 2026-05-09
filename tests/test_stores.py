@@ -204,13 +204,6 @@ class TestLore:
             lore.remember("test")
         assert len(lore.list_memories(limit=3)) == 3
 
-    def test_confidence_validation(self) -> None:
-        lore = Lore(store=MemoryStore(), embedding_fn=_stub_embed)
-        with pytest.raises(ValueError, match="confidence"):
-            lore.remember("test", confidence=1.5)
-        with pytest.raises(ValueError, match="confidence"):
-            lore.remember("test", confidence=-0.1)
-
     def test_context_manager(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             os.path.join(tmpdir, "test.db")

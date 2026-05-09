@@ -119,7 +119,7 @@ class Store(Protocol):
         ...
 
     async def bump_access_counts(self, org_id: str, memory_ids: Sequence[str]) -> None:
-        """Increment access_count + last_accessed_at + recompute importance_score."""
+        """Increment access_count + last_accessed_at."""
         ...
 
     async def vote_memory(
@@ -142,7 +142,6 @@ class Store(Protocol):
         tags: Sequence[str],
         source: str,
         meta: Mapping[str, Any],
-        confidence: float,
     ) -> bool:
         """Insert a pre-extracted memory with a caller-supplied id; returns True if inserted, False if duplicate."""
         ...
@@ -167,7 +166,6 @@ class Store(Protocol):
         content: str,
         context: Optional[str],
         tags: Sequence[str],
-        confidence: float,
         source: Optional[str],
         project: Optional[str],
         embedding: Optional[Sequence[float]],

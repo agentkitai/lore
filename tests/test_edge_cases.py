@@ -124,24 +124,6 @@ class TestSpecialCharacters:
         assert "c#" in memory.tags
 
 
-class TestConfidenceBoundaries:
-    def test_confidence_zero(self, lore):
-        mid = lore.remember("test", confidence=0.0)
-        memory = lore.get(mid)
-        assert memory.confidence == 0.0
-
-    def test_confidence_one(self, lore):
-        mid = lore.remember("test", confidence=1.0)
-        memory = lore.get(mid)
-        assert memory.confidence == 1.0
-
-    def test_confidence_negative_raises(self, lore):
-        with pytest.raises(ValueError):
-            lore.remember("test", confidence=-0.1)
-
-    def test_confidence_above_one_raises(self, lore):
-        with pytest.raises(ValueError):
-            lore.remember("test", confidence=1.1)
 
 
 class TestRedactionEdgeCases:

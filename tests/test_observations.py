@@ -215,7 +215,6 @@ def _make_stored(memory_id="mem-1", **overrides):
         content="narrative body",
         context="title",
         tags=["a"],
-        confidence=0.5,
         source="observation",
         project=None,
         created_at=now,
@@ -230,7 +229,6 @@ def _make_stored(memory_id="mem-1", **overrides):
             "narrative": "narrative body",
             "captured_by": "auto",
         },
-        importance_score=0.0,
         access_count=0,
         last_accessed_at=None,
     )

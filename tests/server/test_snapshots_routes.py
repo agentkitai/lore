@@ -39,7 +39,6 @@ def _make_stored_snapshot_memory(memory_id="mem_test", **kwargs):
         content="snapshot content",
         context=None,
         tags=("session_snapshot", "sess_abc"),
-        confidence=1.0,
         source=None,
         project=None,
         created_at=now,
@@ -54,7 +53,6 @@ def _make_stored_snapshot_memory(memory_id="mem_test", **kwargs):
             "type": "session_snapshot",
             "tier": "long",
         },
-        importance_score=0.95,
         access_count=0,
         last_accessed_at=None,
     )

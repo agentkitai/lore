@@ -57,7 +57,6 @@ class TestSaveSnapshotRaw:
         assert mem is not None
         assert mem.type == "session_snapshot"
         assert mem.tier == "long"
-        assert mem.importance_score == 0.95
         assert "session_snapshot" in mem.tags
         assert mem.metadata is not None
         assert mem.metadata["extraction_method"] == "raw"
@@ -88,11 +87,6 @@ class TestSaveSnapshotRaw:
         lore = _make_lore()
         with pytest.raises(ValueError, match="non-empty"):
             lore.save_snapshot("   ")
-
-    def test_importance_score_is_0_95(self):
-        lore = _make_lore()
-        mem = lore.save_snapshot("important context")
-        assert mem.importance_score == 0.95
 
     def test_tags_include_session_id_and_type(self):
         lore = _make_lore()
@@ -207,16 +201,6 @@ class TestSnapshotSurfacing:
         result = lore.recent_activity(hours=24)
         output = format_cli(result)
         assert "[Session Snapshot]" in output
-
-    def test_snapshot_has_high_importance(self):
-        lore = _make_lore()
-        lore.save_snapshot("important snapshot")
-        result = lore.recent_activity(hours=24)
-        for group in result.groups:
-            snapshots = [m for m in group.memories if m.type == "session_snapshot"]
-            for s in snapshots:
-                assert s.importance_score == 0.95
-
 
 # ── E3-S5: save_snapshot MCP tool ─────────────────────────────────
 

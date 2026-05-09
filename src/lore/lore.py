@@ -16,15 +16,11 @@ from lore.classify.base import Classification, Classifier
 from lore.classify.llm import LLMClassifier
 from lore.classify.rules import RuleBasedClassifier
 from lore.consolidation import ConsolidationResult
+from lore.decay import decay_factor, resolve_half_life
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder, make_code_embedder
 from lore.embed.router import EmbeddingRouter
 from lore.exceptions import MemoryNotFoundError, SecretBlockedError
-from lore.importance import (
-    compute_importance,
-    resolve_half_life,
-    time_adjusted_importance,
-)
 from lore.recent import group_memories_by_project
 from lore.redact.pipeline import RedactionPipeline
 from lore.store.base import Store
@@ -81,6 +77,28 @@ def _deserialize_embedding(data: bytes) -> np.ndarray:
     return np.array(struct.unpack(f"{count}f", data), dtype=np.float32)
 
 
+def _memory_decay(memory, half_life_days: float, *, now=None) -> float:
+    """Recency decay multiplier for a memory.
+
+    Replaces the prior ``time_adjusted_importance``: returns just the
+    decay factor (no importance_score multiplier — that column is gone).
+    Uses ``min(age_since_created, age_since_last_accessed)`` so
+    recently-accessed memories decay from their last access.
+    """
+    from datetime import datetime as _dt
+    now = now or _dt.utcnow()
+    created = _dt.fromisoformat(memory.created_at)
+    if memory.last_accessed_at:
+        last_access = _dt.fromisoformat(memory.last_accessed_at)
+        age_days = min(
+            (now - created).total_seconds() / 86400,
+            (now - last_access).total_seconds() / 86400,
+        )
+    else:
+        age_days = (now - created).total_seconds() / 86400
+    return decay_factor(age_days, half_life_days)
+
+
 class _FnEmbedder(Embedder):
     """Wraps a user-provided embedding function as an Embedder."""
 
@@ -122,7 +140,7 @@ class Lore:
         dual_embedding: bool = False,
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
-        importance_threshold: float = 0.05,
+        decay_threshold: float = 0.05,
         decay_config: Optional[Dict[Tuple[str, str], float]] = None,
         tier_recall_weights: Optional[Dict[str, float]] = None,
         classify: bool = False,
@@ -150,7 +168,7 @@ class Lore:
         self._half_lives: Dict[str, float] = {**DECAY_HALF_LIVES}
         if decay_half_lives:
             self._half_lives.update(decay_half_lives)
-        self._importance_threshold = importance_threshold
+        self._decay_threshold = decay_threshold
         self._decay_config = decay_config
         self._last_cleanup: float = 0.0
         self._last_cleanup_count: int = 0
@@ -161,7 +179,7 @@ class Lore:
             warnings.warn(
                 "decay_similarity_weight and decay_freshness_weight are deprecated "
                 "and ignored. Scoring now uses multiplicative model: "
-                "score = cosine_similarity * time_adjusted_importance. "
+                "score = cosine_similarity * decay * tier_weight * graph_boost. "
                 "Remove these parameters. They will be deleted in v0.7.0.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -365,7 +383,6 @@ class Lore:
         source: Optional[str] = None,
         project: Optional[str] = None,
         ttl: Optional[int] = None,
-        confidence: float = 1.0,
         scope: Optional[str] = None,
     ) -> str:
         """Store a memory. Returns the memory ID (ULID).
@@ -386,10 +403,6 @@ class Lore:
             raise ValueError(
                 f"invalid memory type {type!r}, "
                 f"must be one of: {', '.join(sorted(VALID_MEMORY_TYPES))}"
-            )
-        if not (0.0 <= confidence <= 1.0):
-            raise ValueError(
-                f"confidence must be between 0.0 and 1.0, got {confidence}"
             )
 
         # Security scan and redact before storage
@@ -473,7 +486,6 @@ class Lore:
             updated_at=now,
             ttl=effective_ttl,
             expires_at=expires_at,
-            confidence=confidence,
             scope=scope,
         )
         self._store.save(memory)
@@ -516,7 +528,7 @@ class Lore:
         "Format as a bulleted list. Omit categories with nothing to report. Max 300 words.")
 
     def save_snapshot(self, content: str, *, title=None, session_id=None, tags=None):
-        """Save a session snapshot as a high-importance memory."""
+        """Save a session snapshot."""
         if not content or not content.strip():
             raise ValueError("content must be non-empty")
         import uuid
@@ -537,11 +549,8 @@ class Lore:
                 logger.warning("Snapshot LLM extraction failed, saving raw", exc_info=True)
         all_tags = ["session_snapshot", session_id] + (tags or [])
         metadata = {"session_id": session_id, "title": title, "extraction_method": extraction_method}
-        memory_id = self.remember(content=content, type="session_snapshot", tier="long", context=context, tags=all_tags, metadata=metadata, confidence=1.0)
+        memory_id = self.remember(content=content, type="session_snapshot", tier="long", context=context, tags=all_tags, metadata=metadata)
         memory = self._store.get(memory_id)
-        if memory:
-            memory.importance_score = 0.95
-            self._store.update(memory)
         return memory
 
     # ------------------------------------------------------------------
@@ -725,7 +734,7 @@ class Lore:
         tier: Optional[str] = None,
         limit: int = 5,
         offset: int = 0,
-        min_confidence: float = 0.0,
+        min_score: float = 0.0,
         check_freshness: bool = False,
         repo_path: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -814,7 +823,7 @@ class Lore:
                 project=self.project,
                 tier=tier,
                 limit=limit,
-                min_confidence=min_confidence,
+                min_score=min_score,
                 scope_mode=scope_mode,
             )
         else:
@@ -822,7 +831,7 @@ class Lore:
             results = self._recall_local(
                 query_vec, tags=tags, type=type, tier=tier, limit=limit,
                 offset=offset,
-                min_confidence=min_confidence,
+                min_score=min_score,
                 query_vecs=query_vecs,
                 user_id=user_id,
                 intent=intent, domain=domain, emotion=emotion,
@@ -905,7 +914,7 @@ class Lore:
         tier: Optional[str] = None,
         limit: int = 5,
         offset: int = 0,
-        min_confidence: float = 0.0,
+        min_score: float = 0.0,
         query_vecs: Optional[Dict[str, List[float]]] = None,
         user_id: Optional[str] = None,
         intent: Optional[str] = None,
@@ -964,12 +973,6 @@ class Lore:
                 if tag_set.issubset(set(m.tags))
             ]
 
-        # Filter by min_confidence
-        if min_confidence > 0.0:
-            all_memories = [
-                m for m in all_memories if m.confidence >= min_confidence
-            ]
-
         # Filter out memories without embeddings
         candidates = [m for m in all_memories if m.embedding]
         if not candidates:
@@ -1010,7 +1013,10 @@ class Lore:
                     depth=graph_depth,
                 )
 
-        # Multiplicative scoring: cosine_similarity * time_adjusted_importance * graph_boost
+        # Multiplicative scoring: cosine_similarity * time_decay * tier_weight * graph_boost.
+        # Per-memory importance was dropped in 025_drop_quality_score_columns; ranking now
+        # depends purely on (a) semantic similarity, (b) recency decay against tier-typed
+        # half-life, (c) tier weight, (d) optional graph proximity boost.
         results: List[RecallResult] = []
         for i, memory in enumerate(candidates):
             # Pick cosine score matching the model that embedded this memory
@@ -1027,10 +1033,10 @@ class Lore:
                 memory.type,
                 overrides=self._decay_config,
             )
-            tai = time_adjusted_importance(memory, half_life, now=now)
+            decay = _memory_decay(memory, half_life, now=now)
             tier_weight = self._tier_weights.get(memory.tier, 1.0)
             graph_boost = self._compute_graph_boost(memory.id, graph_context) if graph_context else 1.0
-            final_score = cosine_score * tai * tier_weight * graph_boost
+            final_score = cosine_score * decay * tier_weight * graph_boost
             results.append(RecallResult(memory=memory, score=final_score))
 
         # Add graph-discovered memories not in vector results
@@ -1049,13 +1055,17 @@ class Lore:
                     mem_norm = mem_vec / max(float(np.linalg.norm(mem_vec)), 1e-9)
                     cosine_score = float(query_norm @ mem_norm)
                     half_life = resolve_half_life(mem.tier, mem.type, overrides=self._decay_config)
-                    tai = time_adjusted_importance(mem, half_life, now=now)
+                    decay = _memory_decay(mem, half_life, now=now)
                     tier_weight = self._tier_weights.get(mem.tier, 1.0)
                     graph_boost = self._compute_graph_boost(mid, graph_context)
-                    final_score = cosine_score * tai * tier_weight * graph_boost
+                    final_score = cosine_score * decay * tier_weight * graph_boost
                     results.append(RecallResult(memory=mem, score=final_score))
 
         results.sort(key=lambda r: r.score, reverse=True)
+
+        # Filter by min_score (post-scoring)
+        if min_score > 0.0:
+            results = [r for r in results if r.score >= min_score]
 
         # Classification post-filter
         if intent or domain or emotion:
@@ -1084,7 +1094,6 @@ class Lore:
             memory = r.memory
             memory.access_count += 1
             memory.last_accessed_at = access_now
-            memory.importance_score = compute_importance(memory)
             self._store.update(memory)
 
         return top_results
@@ -1392,7 +1401,7 @@ class Lore:
         return self._store.get_consolidation_log(limit=limit, project=project)
 
     def upvote(self, memory_id: str) -> None:
-        """Increment upvotes for a memory and recompute importance."""
+        """Increment upvotes for a memory."""
         if hasattr(self._store, 'upvote'):
             self._store.upvote(memory_id)
             return
@@ -1400,12 +1409,11 @@ class Lore:
         if memory is None:
             raise MemoryNotFoundError(memory_id)
         memory.upvotes += 1
-        memory.importance_score = compute_importance(memory)
         memory.updated_at = _utc_now_iso()
         self._store.update(memory)
 
     def downvote(self, memory_id: str) -> None:
-        """Increment downvotes for a memory and recompute importance."""
+        """Increment downvotes for a memory."""
         if hasattr(self._store, 'downvote'):
             self._store.downvote(memory_id)
             return
@@ -1413,7 +1421,6 @@ class Lore:
         if memory is None:
             raise MemoryNotFoundError(memory_id)
         memory.downvotes += 1
-        memory.importance_score = compute_importance(memory)
         memory.updated_at = _utc_now_iso()
         self._store.update(memory)
 
@@ -1558,16 +1565,19 @@ class Lore:
     # TTL Cleanup
     # ------------------------------------------------------------------
 
-    def cleanup_expired(self, importance_threshold: Optional[float] = None) -> int:
-        """Remove expired memories AND memories below importance threshold."""
-        threshold = importance_threshold if importance_threshold is not None else self._importance_threshold
+    def cleanup_expired(self, decay_threshold: Optional[float] = None) -> int:
+        """Remove expired memories AND memories whose decay multiplier is below threshold."""
+        threshold = decay_threshold if decay_threshold is not None else self._decay_threshold
         now = datetime.now(timezone.utc)
         count = 0
 
         # Phase 1: TTL/expiry cleanup
         count += self._store.cleanup_expired()
 
-        # Phase 2: Importance-based cleanup
+        # Phase 2: decay-based cleanup. Memories whose recency-decay
+        # multiplier falls below ``threshold`` (computed against the
+        # tier-typed half-life) are pruned. Replaces the prior
+        # importance-based cleanup; the importance_score column is gone.
         all_memories = self._store.list(limit=10000)
         to_delete = []
         for memory in all_memories:
@@ -1576,26 +1586,14 @@ class Lore:
                 memory.type,
                 overrides=self._decay_config,
             )
-            tai = time_adjusted_importance(memory, half_life, now=now)
-            if tai < threshold:
+            decay = _memory_decay(memory, half_life, now=now)
+            if decay < threshold:
                 to_delete.append(memory.id)
 
         for memory_id in to_delete:
             self._store.delete(memory_id)
             count += 1
 
-        return count
-
-    def recalculate_importance(self, project: Optional[str] = None) -> int:
-        """Recompute importance_score for all memories. Returns count updated."""
-        memories = self._store.list(project=project, limit=100000)
-        count = 0
-        for memory in memories:
-            new_score = compute_importance(memory)
-            if memory.importance_score != new_score:
-                memory.importance_score = new_score
-                self._store.update(memory)
-                count += 1
         return count
 
     def _maybe_cleanup_expired(self) -> None:

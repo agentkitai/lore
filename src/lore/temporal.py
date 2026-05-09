@@ -61,7 +61,7 @@ class OnThisDayEngine:
 
         Returns:
             Dict mapping year (int) to list of Memory objects, sorted by
-            year DESC, then importance_score DESC within each year.
+            year DESC, then created_at DESC within each year.
 
         Raises:
             ValueError: If month or day values are out of range.
@@ -125,14 +125,13 @@ class OnThisDayEngine:
 
             matched.append(mem)
 
-        # Sort by year DESC, then importance DESC, then created_at DESC
+        # Sort by year DESC, then created_at DESC
         matched.sort(
             key=lambda m: (
-                -datetime.fromisoformat(m.created_at).year,
-                -m.importance_score,
+                datetime.fromisoformat(m.created_at).year,
                 m.created_at,
             ),
-            reverse=False,
+            reverse=True,
         )
 
         # Apply offset and limit
@@ -178,8 +177,7 @@ class OnThisDayEngine:
             lines.append(f"--- {year} ---")
             for mem in memories:
                 lines.append(
-                    f"  [{mem.id}] (importance: {mem.importance_score:.2f}, "
-                    f"type: {mem.type}, tier: {mem.tier})"
+                    f"  [{mem.id}] (type: {mem.type}, tier: {mem.tier})"
                 )
                 lines.append(f"    {mem.content[:200]}")
                 if include_metadata:

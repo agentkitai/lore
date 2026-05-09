@@ -28,7 +28,6 @@ def _make_memory(
     mid: str,
     content: str,
     created_at: str,
-    importance_score: float = 1.0,
     tier: str = "long",
     project: str | None = None,
     archived: bool = False,
@@ -41,7 +40,6 @@ def _make_memory(
         content=content,
         created_at=created_at,
         updated_at=created_at,
-        importance_score=importance_score,
         tier=tier,
         project=project,
         archived=archived,
@@ -98,18 +96,18 @@ class TestOnThisDayEngine:
         assert isinstance(results, dict)
         assert set(results.keys()) == {2024, 2023, 2022}
 
-    def test_ordered_by_year_desc_then_importance_desc(self):
+    def test_ordered_by_year_desc_then_created_at_desc(self):
         store = MemoryStore()
-        store.save(_make_memory("m1", "low", "2024-03-06T10:00:00+00:00", importance_score=0.5))
-        store.save(_make_memory("m2", "high", "2024-03-06T12:00:00+00:00", importance_score=0.9))
-        store.save(_make_memory("m3", "old", "2022-03-06T10:00:00+00:00", importance_score=0.8))
+        store.save(_make_memory("m1", "earlier", "2024-03-06T10:00:00+00:00"))
+        store.save(_make_memory("m2", "later", "2024-03-06T12:00:00+00:00"))
+        store.save(_make_memory("m3", "old", "2022-03-06T10:00:00+00:00"))
 
         engine = OnThisDayEngine(store)
         results = engine.on_this_day(month=3, day=6, date_window_days=0)
 
         years = list(results.keys())
         assert years == [2024, 2022]  # DESC
-        # Within 2024, high importance first
+        # Within 2024, most recent first
         assert results[2024][0].id == "m2"
         assert results[2024][1].id == "m1"
 
@@ -185,7 +183,7 @@ class TestGroupingByYear:
         store = MemoryStore()
         mem = _make_memory(
             "m1", "test content", "2024-03-06T10:00:00+00:00",
-            importance_score=0.75, tier="short", project="proj1",
+            tier="short", project="proj1",
             source="test", tags=["tag1"],
         )
         store.save(mem)
@@ -198,7 +196,6 @@ class TestGroupingByYear:
         assert m.content == "test content"
         assert m.tier == "short"
         assert m.project == "proj1"
-        assert m.importance_score == 0.75
         assert m.source == "test"
         assert m.tags == ["tag1"]
 
@@ -459,7 +456,6 @@ class TestEdgeCases:
         for i in range(5):
             store.save(_make_memory(
                 f"m{i}", f"mem {i}", "2024-03-06T10:00:00+00:00",
-                importance_score=float(i),
             ))
 
         engine = OnThisDayEngine(store)
@@ -472,7 +468,6 @@ class TestEdgeCases:
         for i in range(5):
             store.save(_make_memory(
                 f"m{i}", f"mem {i}", "2024-03-06T10:00:00+00:00",
-                importance_score=float(i),
             ))
 
         engine = OnThisDayEngine(store)

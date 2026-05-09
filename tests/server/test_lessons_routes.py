@@ -37,7 +37,6 @@ def _make_stored_memory(
     content="KeyError when dict key absent",
     context="Use .get() with a default instead of direct access",
     tags=("python", "dict"),
-    confidence=0.9,
     source=None,
     project=None,
     upvotes=0,
@@ -54,7 +53,6 @@ def _make_stored_memory(
         content=content,
         context=context,
         tags=list(tags),
-        confidence=confidence,
         source=source,
         project=project,
         created_at=now,
@@ -63,7 +61,6 @@ def _make_stored_memory(
         upvotes=upvotes,
         downvotes=downvotes,
         meta=meta if meta is not None else {},
-        importance_score=0.0,
         access_count=0,
         last_accessed_at=None,
     )
@@ -87,7 +84,6 @@ def _make_exported_memory(
         content=content,
         context=context,
         tags=[],
-        confidence=0.9,
         source=None,
         project=None,
         embedding=embedding,
@@ -115,7 +111,6 @@ def _make_search_result_dict(
         content=content,
         context=context,
         tags=[],
-        confidence=0.9,
         source=None,
         project=None,
         created_at=now,
@@ -196,7 +191,6 @@ def test_post_returns_201_with_id(client, monkeypatch):
             "problem": "KeyError in dict access",
             "resolution": "Use .get() method",
             "tags": ["python"],
-            "confidence": 0.8,
         },
     )
     assert resp.status_code == 201
@@ -254,7 +248,6 @@ def test_post_access_returns_dict(client, monkeypatch):
                 "id": "mem-1",
                 "access_count": 5,
                 "last_accessed_at": now,
-                "importance_score": 0.75,
             }
         ),
     )
@@ -263,7 +256,6 @@ def test_post_access_returns_dict(client, monkeypatch):
     body = resp.json()
     assert body["id"] == "mem-1"
     assert body["access_count"] == 5
-    assert body["importance_score"] == 0.75
 
 
 def test_post_access_404_on_missing(client, monkeypatch):
@@ -329,7 +321,7 @@ def test_patch_changes_field(client, monkeypatch):
         memory_id="mem-1",
         content="KeyError in dict access",
         context="Use .get() with a default",
-        confidence=0.95,
+        tags=("python", "dict", "new-tag"),
     )
     monkeypatch.setattr(
         lessons_service,
@@ -338,12 +330,11 @@ def test_patch_changes_field(client, monkeypatch):
     )
     resp = test_client.patch(
         "/v1/lessons/mem-1",
-        json={"confidence": 0.95},
+        json={"tags": ["python", "dict", "new-tag"]},
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["id"] == "mem-1"
-    assert body["confidence"] == 0.95
     assert body["problem"] == "KeyError in dict access"
     assert body["resolution"] == "Use .get() with a default"
 
@@ -387,7 +378,7 @@ def test_patch_404_on_missing(client, monkeypatch):
         "update",
         AsyncMock(side_effect=StoreNotFoundError("memories", "mem-gone")),
     )
-    resp = test_client.patch("/v1/lessons/mem-gone", json={"confidence": 0.5})
+    resp = test_client.patch("/v1/lessons/mem-gone", json={"tags": ["x"]})
     assert resp.status_code == 404
 
 
@@ -488,7 +479,6 @@ def test_import_returns_count(client, monkeypatch):
             "problem": f"Problem {i}",
             "resolution": f"Resolution {i}",
             "embedding": [0.1] * 384,
-            "confidence": 0.8,
         }
         for i in range(3)
     ]

@@ -26,8 +26,6 @@ class GraphNode:
     type: str  # mtype for memories, entity_type for entities
     tier: Optional[str] = None
     project: Optional[str] = None
-    importance: Optional[float] = None
-    confidence: Optional[float] = None
     tags: Optional[Sequence[str]] = None
     created_at: Optional[datetime] = None
     upvotes: Optional[int] = None
@@ -70,7 +68,6 @@ class SearchHit:
     content: str  # first 200 chars
     type: str
     project: Optional[str]
-    score: float
     created_at: datetime
 
 
@@ -161,8 +158,6 @@ def _memory_node(m: StoredMemory) -> GraphNode:
         type=mtype,
         tier=mtier,
         project=m.project,
-        importance=m.importance_score,
-        confidence=m.confidence,
         tags=tuple(m.tags),
         created_at=m.created_at,
         upvotes=m.upvotes,
@@ -182,7 +177,6 @@ async def get_graph_data(
     project: Optional[str] = None,
     type: Optional[str] = None,
     tier: Optional[str] = None,
-    min_importance: float = 0.0,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
     limit: int = 1000,
@@ -213,10 +207,6 @@ async def get_graph_data(
         limit=limit,
     )
     memories = await store.list_memories(f)
-
-    # Filter by min_importance in Python (MemoryFilter has no field for it).
-    if min_importance > 0.0:
-        memories = [m for m in memories if m.importance_score >= min_importance]
 
     # 3. Fetch all entities (no limit in legacy SQL).
     entities = await store.list_entities(limit=10000)
@@ -323,7 +313,6 @@ async def search_graph_memories(
             content=(m.content or "")[:200],
             type=(m.meta or {}).get("type", "general"),
             project=m.project,
-            score=m.importance_score,
             created_at=m.created_at,
         )
         for m in memories
@@ -432,8 +421,6 @@ async def get_clusters(
                 type=mtype,
                 tier=mtier,
                 project=m.project,
-                importance=m.importance_score,
-                confidence=m.confidence,
                 tags=tuple(m.tags),
                 created_at=m.created_at,
                 upvotes=m.upvotes,

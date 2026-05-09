@@ -31,8 +31,8 @@ def _make_full_dataset(store):
         created_at="2026-01-10T10:00:00Z",
         updated_at="2026-01-10T10:30:00Z",
         ttl=None, expires_at=None,
-        confidence=0.95, upvotes=3, downvotes=1,
-        importance_score=0.82, access_count=5,
+        upvotes=3, downvotes=1,
+        access_count=5,
         last_accessed_at="2026-01-10T10:30:00Z",
         archived=False, consolidated_into=None,
     )

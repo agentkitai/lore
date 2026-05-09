@@ -113,10 +113,8 @@ class Memory:
     updated_at: str = ""
     ttl: Optional[int] = None
     expires_at: Optional[str] = None
-    confidence: float = 1.0
     upvotes: int = 0
     downvotes: int = 0
-    importance_score: float = 1.0
     access_count: int = 0
     last_accessed_at: Optional[str] = None
     archived: bool = False
@@ -151,8 +149,6 @@ class MemoryStats:
     oldest: Optional[str] = None
     newest: Optional[str] = None
     expired_cleaned: int = 0
-    avg_importance: Optional[float] = None
-    below_threshold_count: int = 0
     archived_count: int = 0
     consolidation_count: int = 0
     last_consolidation_at: Optional[str] = None

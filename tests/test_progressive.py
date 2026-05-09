@@ -59,7 +59,6 @@ def _stored_memory(
         content=content,
         context=None,
         tags=tuple(tags),
-        confidence=1.0,
         source="conversation",
         project=project,
         created_at=NOW,
@@ -68,7 +67,6 @@ def _stored_memory(
         upvotes=0,
         downvotes=0,
         meta=meta or {"type": "preference", "tier": "long"},
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
     )
@@ -186,7 +184,6 @@ def _make_hybrid_results(memories_with_score):
                     "fts": 0.5,
                     "graph": 0.0,
                     "recency": 1.0,
-                    "importance": 0.8,
                 },
             )
         )
@@ -242,7 +239,7 @@ async def test_search_signals_carry_through(client):
 
     assert resp.status_code == 200
     sigs = resp.json()["hits"][0]["signals"]
-    for k in ("vector", "fts", "graph", "recency", "importance"):
+    for k in ("vector", "fts", "graph", "recency"):
         assert k in sigs
 
 
@@ -799,7 +796,7 @@ def test_token_budget_compact_index_is_5x_smaller_than_full_payload():
                 "title": memory_title(m),
                 "score": 0.85,
                 "signals": {"vector": 0.9, "fts": 0.5, "graph": 0.0,
-                            "recency": 1.0, "importance": 0.8},
+                            "recency": 1.0},
             }
             for m in memories
         ],
@@ -814,7 +811,6 @@ def test_token_budget_compact_index_is_5x_smaller_than_full_payload():
                 "content": m.content,
                 "context": m.context,
                 "tags": list(m.tags),
-                "confidence": m.confidence,
                 "source": m.source,
                 "project": m.project,
                 "created_at": m.created_at.isoformat(),

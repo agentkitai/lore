@@ -28,8 +28,7 @@ def _seed_data(store):
     m1 = Memory(
         id="m1", content="SQLite WAL mode fixes concurrency",
         type="code", tier="long", project="lore",
-        tags=["sqlite"], source="test", confidence=0.9,
-        importance_score=0.8,
+        tags=["sqlite"], source="test",
         created_at="2026-01-10T10:00:00Z",
         updated_at="2026-01-10T10:00:00Z",
     )

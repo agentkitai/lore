@@ -204,12 +204,12 @@ class ConsolidationEngine:
     ) -> str:
         """Summarize a group of memories into consolidated content."""
         if strategy == "deduplicate" or self._llm is None:
-            best = max(memories, key=lambda m: m.importance_score)
+            best = max(memories, key=lambda m: m.created_at)
             return best.content
 
         # LLM summarization
         memories_text = "\n---\n".join(
-            f"[{m.type}, importance: {m.importance_score:.2f}] {m.content}"
+            f"[{m.type}] {m.content}"
             for m in memories
         )
         prompt = CONSOLIDATION_PROMPT.format(memories=memories_text)
@@ -218,11 +218,11 @@ class ConsolidationEngine:
         except Exception:
             logger.warning(
                 "LLM summarization failed for group of %d memories, "
-                "falling back to highest-importance content",
+                "falling back to most recent content",
                 len(memories),
                 exc_info=True,
             )
-            best = max(memories, key=lambda m: m.importance_score)
+            best = max(memories, key=lambda m: m.created_at)
             return best.content
 
     # ------------------------------------------------------------------
@@ -265,8 +265,6 @@ class ConsolidationEngine:
             embedding=embedding_bytes,
             created_at=now,
             updated_at=now,
-            confidence=max(m.confidence for m in originals),
-            importance_score=max(m.importance_score for m in originals),
             access_count=sum(m.access_count for m in originals),
             upvotes=sum(m.upvotes for m in originals),
             downvotes=sum(m.downvotes for m in originals),

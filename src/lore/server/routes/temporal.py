@@ -164,7 +164,6 @@ async def list_at_time(
                 content=m.content,
                 context=m.context,
                 tags=list(m.tags),
-                confidence=m.confidence,
                 source=m.source,
                 project=m.project,
                 created_at=m.created_at,

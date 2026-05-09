@@ -36,7 +36,6 @@ class RecentMemoryItem(BaseModel):
     tier: str
     created_at: str
     tags: List[str] = []
-    importance_score: float = 1.0
 
 
 class RecentProjectGroup(BaseModel):
@@ -65,7 +64,6 @@ def _to_item(m: StoredMemory) -> RecentMemoryItem:
         tier=(m.meta or {}).get("tier", "long"),
         created_at=created_at,
         tags=list(m.tags),
-        importance_score=m.importance_score or 1.0,
     )
 
 
@@ -149,7 +147,7 @@ def _format_text(groups: List[RecentProjectGroup], hours: int, fmt: str) -> str:
         for m in group.memories:
             ts = m.created_at[11:16] if len(m.created_at) >= 16 else "??:??"
             if fmt == "detailed":
-                lines.append(f"**[{ts}] {m.type}** (tier: {m.tier}, importance: {m.importance_score:.2f})")
+                lines.append(f"**[{ts}] {m.type}** (tier: {m.tier})")
                 lines.append(m.content)
                 if m.tags:
                     lines.append(f"Tags: {', '.join(m.tags)}")

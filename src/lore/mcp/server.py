@@ -485,8 +485,7 @@ def recall(
                     f"{cls_data.get('emotion', '?')}]"
                 )
             lines.append(
-                f"Memory {i}  (importance: {mem.importance_score:.2f}, "
-                f"score: {r.score:.2f}, id: {mem.id}, "
+                f"Memory {i}  (score: {r.score:.2f}, id: {mem.id}, "
                 f"type: {mem.type}, tier: {mem.tier}){staleness_badge}{cls_badge}"
             )
             lines.append(f"Content: {mem.content}")
@@ -741,8 +740,7 @@ def list_memories(
         lines: List[str] = [f"Found {len(memories)} memory(ies):\n"]
         for mem in memories:
             lines.append(
-                f"[{mem.id}] ({mem.type}, importance: {mem.importance_score:.2f}) "
-                f"{mem.content[:100]}"
+                f"[{mem.id}] ({mem.type}) {mem.content[:100]}"
             )
             if mem.tags:
                 lines.append(f"  Tags: {', '.join(mem.tags)}")
@@ -1341,7 +1339,7 @@ def ingest(
         "Retrieve memories from this month+day across all years. "
         "USE THIS WHEN: you want to reflect on what happened on a specific date "
         "in past years, find anniversaries, or review historical context. "
-        "Returns memories grouped by year, sorted by importance. "
+        "Returns memories grouped by year. "
         "Defaults to today's date. Supports date window for fuzzy matching."
     ),
 )

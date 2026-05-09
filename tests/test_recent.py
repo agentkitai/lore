@@ -21,7 +21,6 @@ def _make_memory(
     project: str | None = "lore",
     created_at: str = "2026-03-14T14:30:00+00:00",
     tags: list | None = None,
-    importance_score: float = 1.0,
 ) -> Memory:
     return Memory(
         id=id,
@@ -32,7 +31,6 @@ def _make_memory(
         created_at=created_at,
         updated_at=created_at,
         tags=tags or [],
-        importance_score=importance_score,
     )
 
 
@@ -177,14 +175,12 @@ class TestFormatDetailed:
     def test_metadata_included(self):
         m = _make_memory(
             tier="short",
-            importance_score=0.85,
             tags=["architecture", "decision"],
         )
         g = ProjectGroup(project="lore", memories=[m], count=1)
         r = RecentActivityResult(groups=[g], total_count=1, hours=24)
         text = format_detailed(r)
         assert "tier: short" in text
-        assert "importance: 0.85" in text
         assert "Tags: architecture, decision" in text
 
     def test_no_memories(self):
@@ -214,7 +210,6 @@ class TestFormatStructured:
         mem = group["memories"][0]
         assert mem["id"] == "m1"
         assert mem["tags"] == ["tag1"]
-        assert "importance_score" in mem
 
 
 class TestFormatCli:

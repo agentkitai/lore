@@ -87,7 +87,6 @@ def test_stored_memory_round_trip():
         content="hello",
         context=None,
         tags=("a", "b"),
-        confidence=0.9,
         source=None,
         project="proj",
         created_at=now,
@@ -96,7 +95,6 @@ def test_stored_memory_round_trip():
         upvotes=0,
         downvotes=0,
         meta={"type": "lesson"},
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
     )
@@ -112,7 +110,6 @@ def test_scored_memory_extends_stored():
         content="ranked",
         context=None,
         tags=(),
-        confidence=1.0,
         source=None,
         project=None,
         created_at=now,
@@ -121,7 +118,6 @@ def test_scored_memory_extends_stored():
         upvotes=0,
         downvotes=0,
         meta={},
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
         score=0.87,
@@ -316,7 +312,6 @@ def test_graph_stats_construction():
             {"name": "Alice", "type": "person", "mention_count": 10},
             {"name": "Bob", "type": "person", "mention_count": 8},
         ],
-        avg_importance=0.65,
         recent_24h=5,
         recent_7d=15,
         oldest_memory=None,
@@ -326,7 +321,6 @@ def test_graph_stats_construction():
     assert gs.total_entities == 50
     assert gs.total_relationships == 75
     assert len(gs.top_entities) == 2
-    assert gs.avg_importance == 0.65
 
 
 def test_timeline_bucket_row_construction():
@@ -1395,7 +1389,6 @@ def test_exported_memory_defaults():
         content="exported content",
         context=None,
         tags=(),
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,
@@ -1411,7 +1404,6 @@ def test_exported_memory_defaults():
     assert em.content == "exported content"
     assert em.context is None
     assert em.tags == ()
-    assert em.confidence == 0.5
     assert em.source is None
     assert em.project is None
     assert em.embedding is None
@@ -1432,7 +1424,6 @@ def test_exported_memory_all_fields():
         content="full memory",
         context="some context",
         tags=("python", "backend"),
-        confidence=0.9,
         source="conversation",
         project="proj_alpha",
         embedding=[0.1, 0.2, 0.3],
@@ -1445,7 +1436,6 @@ def test_exported_memory_all_fields():
     )
     assert em.context == "some context"
     assert em.tags == ("python", "backend")
-    assert em.confidence == 0.9
     assert em.source == "conversation"
     assert em.project == "proj_alpha"
     assert list(em.embedding) == [0.1, 0.2, 0.3]
@@ -1463,7 +1453,6 @@ def test_exported_memory_frozen():
         content="frozen test",
         context=None,
         tags=(),
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,
@@ -1486,7 +1475,6 @@ def test_exported_memory_slots():
         content="slots test",
         context=None,
         tags=(),
-        confidence=0.5,
         source=None,
         project=None,
         embedding=None,

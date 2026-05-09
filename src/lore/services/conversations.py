@@ -128,7 +128,6 @@ async def process_job_async(
                         tags=list(mem.tags or []),
                         source=mem.source or "conversation",
                         meta=meta_dict,
-                        confidence=mem.confidence,
                     )
 
             elapsed_ms = int((time.monotonic() - start) * 1000)

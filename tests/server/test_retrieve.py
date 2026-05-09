@@ -63,7 +63,6 @@ def _scored_memory(
         content=content,
         context=None,
         tags=tags,
-        confidence=1.0,
         source="conversation",
         project=project,
         created_at=NOW,
@@ -72,7 +71,6 @@ def _scored_memory(
         upvotes=0,
         downvotes=0,
         meta={"type": mem_type, "tier": "long"},
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
         score=score,
@@ -173,7 +171,7 @@ async def test_retrieve_basic(client):
     # Phase 6C: per-signal breakdown lands on every hybrid result.
     for m in data["memories"]:
         assert isinstance(m["signals"], dict)
-        for key in ("vector", "fts", "graph", "recency", "importance"):
+        for key in ("vector", "fts", "graph", "recency"):
             assert key in m["signals"]
     assert data["query_time_ms"] >= 0
     assert "<memories" in data["formatted"]

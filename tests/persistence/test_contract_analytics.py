@@ -203,17 +203,6 @@ async def test_bump_access_counts_increments(store: Store):
 
 
 @pytest.mark.asyncio
-async def test_bump_access_counts_recomputes_importance_score(store: Store):
-    memory_id = await _insert_memory(store, org_id="org-bac2")
-
-    await store.bump_access_counts("org-bac2", [memory_id])
-
-    after = await store.get_memory("org-bac2", memory_id)
-    assert after is not None
-    assert after.importance_score > 0.0
-
-
-@pytest.mark.asyncio
 async def test_bump_access_counts_empty_list_is_noop(store: Store):
     # Should not raise, should not hit the DB (no table access errors)
     await store.bump_access_counts("org-bac3", [])

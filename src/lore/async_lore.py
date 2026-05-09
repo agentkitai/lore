@@ -398,7 +398,6 @@ class AsyncLore:
         source: Optional[str] = None,
         embedding: Optional[Sequence[float]] = None,
         context: Optional[str] = None,
-        confidence: float = 0.5,
         meta: Optional[dict[str, Any]] = None,
     ) -> StoredMemory:
         """Store a memory. Returns the persisted ``StoredMemory``.
@@ -415,7 +414,6 @@ class AsyncLore:
             embedding=vec,
             context=context,
             tags=tuple(tags or ()),
-            confidence=confidence,
             source=source,
             project=project,
             meta=meta or {},
@@ -852,30 +850,16 @@ class AsyncLore:
         )
 
     async def cleanup_expired(
-        self, importance_threshold: Optional[float] = None  # noqa: ARG002 - parity
+        self, decay_threshold: Optional[float] = None  # noqa: ARG002 - parity
     ) -> int:
         """Purge expired memories (TTL-based). Returns rowcount.
 
-        ``importance_threshold`` is accepted for parity with the sync
+        ``decay_threshold`` is accepted for parity with the sync
         ``Lore`` API but is currently ignored — the async layer doesn't
-        track importance_score outside of recall scoring. Phase 4C will
-        re-introduce importance-based pruning if it proves needed.
+        do decay-based pruning at this level.
         """
         store = self._require_store()
         return await store.expire_memories()
-
-    async def recalculate_importance(
-        self, project: Optional[str] = None  # noqa: ARG002 - parity
-    ) -> int:
-        """Recompute importance for every memory in scope.
-
-        The async Store recomputes importance on every read/recall/vote
-        already, so this is currently a no-op that returns 0. Kept for
-        symmetry with the sync class so callers can switch implementations
-        without code changes.
-        """
-        self._require_store()
-        return 0
 
     # ── Phase 4B: classify + as_prompt ──────────────────────────────────
 
@@ -947,7 +931,6 @@ class AsyncLore:
                 updated_at=h.updated_at.isoformat() if h.updated_at else "",
                 ttl=None,
                 expires_at=h.expires_at.isoformat() if h.expires_at else None,
-                confidence=h.confidence,
             )
             score = getattr(h, "score", 0.0)
             results.append(RecallResult(memory=mem, score=score, verbatim=verbatim))

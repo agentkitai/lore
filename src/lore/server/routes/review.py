@@ -39,7 +39,6 @@ class RiskScore(BaseModel):
     """Risk scoring breakdown for a pending connection."""
     total: float = 0.0
     confidence_risk: float = 0.0
-    source_reliability: float = 0.0
     entity_importance: float = 0.0
     staleness_risk: float = 0.0
 
@@ -103,7 +102,6 @@ def _to_review_item(p: PendingReview) -> ReviewItemResponse:
         risk_score=RiskScore(
             total=p.risk_score.total,
             confidence_risk=p.risk_score.confidence_risk,
-            source_reliability=p.risk_score.source_reliability,
             entity_importance=p.risk_score.entity_importance,
             staleness_risk=p.risk_score.staleness_risk,
         ),

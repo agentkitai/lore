@@ -46,7 +46,6 @@ def _to_lesson_response(m: StoredMemory) -> LessonResponse:
         resolution=m.context if m.context else "",
         context=None,  # legacy field; not stored
         tags=list(m.tags),
-        confidence=m.confidence,
         source=m.source,
         project=m.project,
         created_at=m.created_at,
@@ -65,7 +64,6 @@ def _to_export_item(em: ExportedMemory) -> LessonExportItem:
         resolution=em.context if em.context else "",
         context=None,
         tags=list(em.tags),
-        confidence=em.confidence,
         source=em.source,
         project=em.project,
         embedding=list(em.embedding) if em.embedding else None,
@@ -99,7 +97,6 @@ async def create_lesson(
         resolution=body.resolution,
         context=body.context,
         tags=body.tags,
-        confidence=body.confidence,
         source=body.source,
         project=project,
         embedding=body.embedding,
@@ -131,7 +128,7 @@ async def search_lessons(
         project=project,
         tags=body.tags,
         limit=body.limit,
-        min_confidence=body.min_confidence,
+        min_score=body.min_score,
         scope_mode=body.scope,
     )
 
@@ -142,7 +139,6 @@ async def search_lessons(
             resolution=r["context"] or "",
             context=None,
             tags=r["tags"],
-            confidence=r["confidence"],
             source=r["source"],
             project=r["project"],
             created_at=r["created_at"],
@@ -167,8 +163,7 @@ async def record_access(
     auth: AuthContext = Depends(get_auth_context),
     store: Store = Depends(get_store),
 ) -> dict:
-    """Record an access event: increment access_count, set last_accessed_at,
-    and recompute importance_score server-side."""
+    """Record an access event: increment access_count and set last_accessed_at."""
     try:
         result = await lessons_service.record_access(
             store,
@@ -184,7 +179,6 @@ async def record_access(
         "id": result["id"],
         "access_count": result["access_count"],
         "last_accessed_at": last_acc.isoformat() if last_acc else None,
-        "importance_score": float(result["importance_score"] or 0.0),
     }
 
 
@@ -227,7 +221,6 @@ async def update_lesson(
             org_id=auth.org_id,
             lesson_id=lesson_id,
             project=auth.project,
-            confidence=body.confidence,
             tags=body.tags,
             meta=body.meta,
             upvotes=body.upvotes,

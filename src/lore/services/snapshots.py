@@ -47,7 +47,6 @@ async def create_snapshot(
         content=content,
         embedding=[0.0] * 384,    # snapshots aren't recall targets; placeholder zero-vector
         tags=all_tags,
-        confidence=1.0,
         project=project,
         meta=meta,
     )

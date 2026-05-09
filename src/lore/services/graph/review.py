@@ -21,7 +21,6 @@ from lore.persistence import (
 class RiskScore:
     total: float
     confidence_risk: float
-    source_reliability: float
     entity_importance: float
     staleness_risk: float
 
@@ -72,7 +71,6 @@ VALID_ACTIONS = frozenset({"approve", "reject"})
 
 def _compute_risk_score(
     weight: float,
-    source_importance: Optional[float],
     source_mention_count: int,
     target_mention_count: int,
     age_hours: float,
@@ -82,18 +80,15 @@ def _compute_risk_score(
     Higher score = needs more careful review.
     """
     confidence_risk = round(max(0.0, (1.0 - min(weight, 1.0)) * 40.0), 2)
-    imp = source_importance if source_importance is not None else 0.5
-    source_reliability = round(max(0.0, (1.0 - min(imp, 1.0)) * 25.0), 2)
     max_mentions = max(source_mention_count, target_mention_count, 1)
     entity_importance = round(min(25.0, max_mentions * 2.5), 2)
     staleness_risk = round(min(10.0, age_hours / 168.0 * 10.0), 2)
     total = round(
-        confidence_risk + source_reliability + entity_importance + staleness_risk, 2
+        confidence_risk + entity_importance + staleness_risk, 2
     )
     return RiskScore(
         total=total,
         confidence_risk=confidence_risk,
-        source_reliability=source_reliability,
         entity_importance=entity_importance,
         staleness_risk=staleness_risk,
     )
@@ -126,17 +121,14 @@ async def list_pending_reviews(
     enriched: list[PendingReview] = []
     for row in rows:
         memory_content: Optional[str] = None
-        source_importance: Optional[float] = None
         if row.source_memory_id is not None:
             # TODO: replace hardcoded "solo" org_id with a proper org parameter
             # once multi-org support lands. Matches legacy route (no org filter).
             mem = await store.get_memory("solo", row.source_memory_id)
             if mem is not None:
                 memory_content = (mem.content or "")[:200]
-                source_importance = mem.importance_score
         risk = _compute_risk_score(
             weight=row.weight,
-            source_importance=source_importance,
             source_mention_count=row.source_mentions,
             target_mention_count=row.target_mentions,
             age_hours=_age_hours(row.created_at),

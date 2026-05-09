@@ -29,7 +29,6 @@ def cmd_remember(args: argparse.Namespace) -> None:
             source=args.source,
             project=args.project,
             ttl=args.ttl,
-            confidence=args.confidence,
         )
     except SecretBlockedError as exc:
         lore.close()

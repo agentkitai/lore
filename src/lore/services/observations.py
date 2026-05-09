@@ -89,10 +89,8 @@ async def create_observation(
         context=obs.title,
         embedding=embedding,
         tags=tuple(obs.tags),
-        confidence=0.5,
         source=obs.source or "observation",
         project=obs.project,
         meta=meta,
         scope=obs.scope,
-        importance_score=0.5,
     )

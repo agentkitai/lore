@@ -38,7 +38,6 @@ def _make_stored_memory(memory_id="mem-001", content="hello world", **kwargs):
         content=content,
         context=None,
         tags=("python",),
-        confidence=0.9,
         source=None,
         project="lore",
         created_at=now,
@@ -47,7 +46,6 @@ def _make_stored_memory(memory_id="mem-001", content="hello world", **kwargs):
         upvotes=0,
         downvotes=0,
         meta={"type": "lesson"},
-        importance_score=1.0,
         access_count=0,
         last_accessed_at=None,
     )
@@ -144,7 +142,6 @@ def _make_graph_stats(**kwargs):
         by_project={},
         by_entity_type={},
         top_entities=[],
-        avg_importance=0.0,
         recent_24h=0,
         recent_7d=0,
         oldest_memory=None,

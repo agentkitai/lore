@@ -70,7 +70,6 @@ def _row_to_response(row: dict) -> MemoryResponse:
         content=row["content"],
         context=row.get("context"),
         tags=tags,
-        confidence=row["confidence"],
         source=row.get("source"),
         project=row.get("project"),
         created_at=row["created_at"],
@@ -107,7 +106,6 @@ async def create_memory(
         context=body.context,
         embedding=embedding,
         tags=body.tags or [],
-        confidence=body.confidence if body.confidence is not None else 0.5,
         source=body.source,
         project=auth.project or body.project,
         expires_at=body.expires_at,
@@ -155,7 +153,7 @@ async def search_memories(
         org_id=auth.org_id,
         query_vec=body.embedding,
         limit=body.limit,
-        min_score=body.min_confidence,
+        min_score=body.min_score,
         project=auth.project or body.project,
         scope_mode=body.scope,
     )
@@ -166,7 +164,6 @@ async def search_memories(
                 content=r.content,
                 context=r.context,
                 tags=list(r.tags),
-                confidence=r.confidence,
                 source=r.source,
                 project=r.project,
                 created_at=r.created_at,
@@ -192,7 +189,7 @@ async def record_access(
     auth: AuthContext = Depends(get_auth_context),
     store: Store = Depends(get_store),
 ) -> dict:
-    """Record an access event and recompute importance_score."""
+    """Record an access event."""
     # Enforce project scoping: a project-scoped key must not access memories
     # outside its project.
     if auth.project:
@@ -209,7 +206,6 @@ async def record_access(
         "id": updated.id,
         "access_count": updated.access_count,
         "last_accessed_at": updated.last_accessed_at.isoformat() if updated.last_accessed_at else None,
-        "importance_score": updated.importance_score,
     }
 
 
@@ -313,7 +309,6 @@ async def get_memory(
         content=m.content,
         context=m.context,
         tags=list(m.tags),
-        confidence=m.confidence,
         source=m.source,
         project=m.project,
         created_at=m.created_at,
@@ -337,8 +332,7 @@ async def update_memory(
 ) -> MemoryResponse:
     """Update a memory."""
     if (
-        body.confidence is None
-        and body.tags is None
+        body.tags is None
         and body.meta is None
         and body.upvotes is None
         and body.downvotes is None
@@ -351,7 +345,6 @@ async def update_memory(
             store,
             org_id=auth.org_id,
             memory_id=memory_id,
-            confidence=body.confidence,
             tags=body.tags,
             meta=body.meta,
         )
@@ -411,7 +404,7 @@ async def list_memories(
 def _stored_to_memory_response(m) -> MemoryResponse:
     return MemoryResponse(
         id=m.id, content=m.content, context=m.context, tags=list(m.tags),
-        confidence=m.confidence, source=m.source, project=m.project,
+        source=m.source, project=m.project,
         created_at=m.created_at, updated_at=m.updated_at, expires_at=m.expires_at,
         upvotes=m.upvotes, downvotes=m.downvotes, meta=dict(m.meta),
         scope=getattr(m, "scope", "project") or "project",

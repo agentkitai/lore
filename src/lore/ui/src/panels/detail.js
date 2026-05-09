@@ -124,8 +124,6 @@ export class DetailPanel {
     const meta = document.createElement('div');
     meta.className = 'detail-meta';
     const fields = [
-      ['Importance', ((data.importance_score || 0) * 100).toFixed(0) + '%'],
-      ['Confidence', ((data.confidence || 0) * 100).toFixed(0) + '%'],
       ['Votes', '+' + data.upvotes + ' / -' + data.downvotes],
       ['Access Count', data.access_count],
       ['Created', formatDate(data.created_at)],

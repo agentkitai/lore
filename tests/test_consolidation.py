@@ -66,14 +66,12 @@ def _make_memory(
     tier: str = "short",
     project: str = "proj",
     created_at: str = "",
-    importance_score: float = 0.5,
     embedding: bytes | None = _UNSET,
     tags: list | None = None,
     type: str = "general",
     access_count: int = 0,
     upvotes: int = 0,
     downvotes: int = 0,
-    confidence: float = 1.0,
     archived: bool = False,
     consolidated_into: str | None = None,
 ) -> Memory:
@@ -91,11 +89,9 @@ def _make_memory(
         embedding=embedding,
         created_at=created_at,
         updated_at=created_at,
-        importance_score=importance_score,
         access_count=access_count,
         upvotes=upvotes,
         downvotes=downvotes,
-        confidence=confidence,
         archived=archived,
         consolidated_into=consolidated_into,
     )
@@ -504,12 +500,12 @@ class TestEntityGrouping:
 # ---------------------------------------------------------------------------
 
 class TestLLMSummarization:
-    def test_dedup_strategy_uses_highest_importance(self):
-        m1 = _make_memory("m1", importance_score=0.3, content="low")
-        m2 = _make_memory("m2", importance_score=0.8, content="high")
+    def test_dedup_strategy_uses_most_recent(self):
+        m1 = _make_memory("m1", created_at="2024-01-01T00:00:00+00:00", content="older")
+        m2 = _make_memory("m2", created_at="2024-06-01T00:00:00+00:00", content="newer")
         engine = _make_engine(llm=FakeLLM())
         content = engine._summarize_group([m1, m2], "deduplicate")
-        assert content == "high"
+        assert content == "newer"
 
     def test_summarize_with_llm(self):
         m1 = _make_memory("m1", content="first memory")
@@ -519,11 +515,11 @@ class TestLLMSummarization:
         assert content == "Consolidated summary of memories."
 
     def test_no_llm_falls_back(self):
-        m1 = _make_memory("m1", importance_score=0.5, content="best")
-        m2 = _make_memory("m2", importance_score=0.3, content="other")
+        m1 = _make_memory("m1", created_at="2024-06-01T00:00:00+00:00", content="latest")
+        m2 = _make_memory("m2", created_at="2024-01-01T00:00:00+00:00", content="older")
         engine = _make_engine(llm=None)
         content = engine._summarize_group([m1, m2], "summarize")
-        assert content == "best"
+        assert content == "latest"
 
     def test_llm_error_falls_back(self):
         class FailingLLM:
@@ -531,19 +527,19 @@ class TestLLMSummarization:
             def complete(self, prompt, *, max_tokens=200):
                 raise RuntimeError("LLM unavailable")
 
-        m1 = _make_memory("m1", importance_score=0.7, content="fallback content")
-        m2 = _make_memory("m2", importance_score=0.3, content="other")
+        m1 = _make_memory("m1", created_at="2024-06-01T00:00:00+00:00", content="fallback content")
+        m2 = _make_memory("m2", created_at="2024-01-01T00:00:00+00:00", content="other")
         engine = _make_engine(llm=FailingLLM())
         content = engine._summarize_group([m1, m2], "summarize")
         assert content == "fallback content"
 
     def test_create_consolidated_memory(self):
-        m1 = _make_memory("m1", type="fact", importance_score=0.3, tags=["python"],
-                          access_count=5, upvotes=1, downvotes=0, confidence=0.8)
-        m2 = _make_memory("m2", type="fact", importance_score=0.8, tags=["testing", "python"],
-                          access_count=3, upvotes=0, downvotes=2, confidence=0.9)
-        m3 = _make_memory("m3", type="lesson", importance_score=0.5, tags=["ci"],
-                          access_count=2, upvotes=2, downvotes=0, confidence=0.7)
+        m1 = _make_memory("m1", type="fact", tags=["python"],
+                          access_count=5, upvotes=1, downvotes=0)
+        m2 = _make_memory("m2", type="fact", tags=["testing", "python"],
+                          access_count=3, upvotes=0, downvotes=2)
+        m3 = _make_memory("m3", type="lesson", tags=["ci"],
+                          access_count=2, upvotes=2, downvotes=0)
 
         engine = _make_engine()
         consolidated = engine._create_consolidated_memory([m1, m2, m3], "merged content", "deduplicate")
@@ -552,11 +548,9 @@ class TestLLMSummarization:
         assert consolidated.type == "fact"  # most common
         assert consolidated.tier == "long"
         assert consolidated.source == "consolidation"
-        assert consolidated.importance_score == 0.8
         assert consolidated.access_count == 10
         assert consolidated.upvotes == 3
         assert consolidated.downvotes == 2
-        assert consolidated.confidence == 0.9
         assert set(consolidated.tags) == {"python", "testing", "ci"}
         assert consolidated.metadata["consolidation_strategy"] == "deduplicate"
         assert consolidated.metadata["original_count"] == 3
@@ -760,10 +754,12 @@ class TestFullPipeline:
     def test_full_execute_with_dedup(self):
         store = MemoryStore()
         vec = [0.5] * 384
-        m1 = _make_memory("m1", embedding=_embed(vec), created_at=_old_iso(700000),
-                          importance_score=0.8, content="primary content")
+        # Both eligible (older than short-tier 7-day threshold). Newer one
+        # wins the deduplication summary under the most-recent strategy.
+        m1 = _make_memory("m1", embedding=_embed(vec), created_at=_old_iso(900000),
+                          content="older duplicate")
         m2 = _make_memory("m2", embedding=_embed(vec), created_at=_old_iso(700000),
-                          importance_score=0.3, content="duplicate content")
+                          content="primary content")
         store.save(m1)
         store.save(m2)
 
@@ -778,7 +774,7 @@ class TestFullPipeline:
         active = store.list()
         assert len(active) == 1
         assert active[0].source == "consolidation"
-        assert active[0].content == "primary content"  # highest importance
+        assert active[0].content == "primary content"  # most recent
 
         # Verify log
         log = store.get_consolidation_log()
