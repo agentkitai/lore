@@ -1652,7 +1652,6 @@ class SqliteStore:
         content: str,
         context: Optional[str],
         tags: Sequence[str],
-        confidence: float,
         source: Optional[str],
         project: Optional[str],
         embedding: Optional[Sequence[float]],
@@ -1697,10 +1696,10 @@ class SqliteStore:
                 cursor = await tx.execute(
                     """
                     INSERT INTO memories
-                        (id, org_id, content, context, tags, confidence,
+                        (id, org_id, content, context, tags,
                          source, project, created_at, updated_at, expires_at,
                          upvotes, downvotes, meta)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'),
+                    VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'),
                             datetime('now'), ?, ?, ?, ?)
                     """,
                     (
@@ -1709,7 +1708,6 @@ class SqliteStore:
                         content,
                         safe_context,
                         encoded_tags,
-                        confidence,
                         source,
                         project,
                         expires_iso,
@@ -1737,7 +1735,6 @@ class SqliteStore:
                     content = ?,
                     context = ?,
                     tags = ?,
-                    confidence = ?,
                     source = ?,
                     project = ?,
                     updated_at = datetime('now'),
@@ -1751,7 +1748,6 @@ class SqliteStore:
                     content,
                     safe_context,
                     encoded_tags,
-                    confidence,
                     source,
                     project,
                     expires_iso,
@@ -1787,7 +1783,6 @@ class SqliteStore:
         tags: "Sequence[str]",
         source: str,
         meta: "Mapping[str, Any]",
-        confidence: float,
     ) -> bool:
         """INSERT … ON CONFLICT (id) DO NOTHING; returns True if inserted.
 
@@ -1804,8 +1799,8 @@ class SqliteStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, source, meta,
-                     confidence, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
                 ON CONFLICT (id) DO NOTHING
                 """,
                 (
@@ -1816,7 +1811,6 @@ class SqliteStore:
                     encoded_tags,
                     source,
                     encoded_meta,
-                    confidence,
                 ),
             )
             inserted = cursor.rowcount == 1

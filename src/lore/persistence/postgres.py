@@ -124,7 +124,6 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         content=row["content"],
         context=raw_context if raw_context else None,
         tags=tuple(tags or ()),
-        confidence=float(row["confidence"]) if row["confidence"] is not None else 0.5,
         source=row["source"],
         project=row["project"],
         created_at=row["created_at"],
@@ -133,7 +132,6 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         upvotes=row["upvotes"] or 0,
         downvotes=row["downvotes"] or 0,
         meta=dict(meta or {}),
-        importance_score=float(row["importance_score"]) if row["importance_score"] is not None else 1.0,
         access_count=row["access_count"] or 0,
         last_accessed_at=row["last_accessed_at"],
         scope=scope_val if scope_val else "project",
@@ -381,7 +379,6 @@ def _row_to_exported_memory(row: "asyncpg.Record") -> ExportedMemory:
         content=row["content"],
         context=row["context"] if row["context"] else None,
         tags=tuple(tags or ()),
-        confidence=float(row["confidence"]),
         source=row["source"],
         project=row["project"],
         embedding=embedding if embedding is not None else None,
@@ -552,12 +549,12 @@ class PostgresStore:
             row = await conn.fetchrow(
                 """
                 INSERT INTO memories
-                    (id, org_id, content, context, tags, confidence, source,
-                     project, embedding, expires_at, meta, scope, importance_score)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, $10, $11::jsonb, $12, $13)
-                RETURNING id, org_id, content, context, tags, confidence, source,
+                    (id, org_id, content, context, tags, source,
+                     project, embedding, expires_at, meta, scope)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::vector, $9, $10::jsonb, $11)
+                RETURNING id, org_id, content, context, tags, source,
                           project, created_at, updated_at, expires_at, upvotes,
-                          downvotes, meta, importance_score, access_count,
+                          downvotes, meta, access_count,
                           last_accessed_at, scope
                 """,
                 memory_id,
@@ -565,14 +562,12 @@ class PostgresStore:
                 memory.content,
                 memory.context or "",  # context is NOT NULL in the schema; coerce None to ""
                 json.dumps(list(memory.tags)),
-                memory.confidence,
                 memory.source,
                 memory.project,
                 json.dumps(list(memory.embedding)),
                 memory.expires_at,
                 json.dumps(dict(memory.meta)),
                 memory.scope,
-                memory.importance_score if memory.importance_score is not None else memory.confidence,
             )
         return _row_to_stored(row)
 
@@ -580,9 +575,9 @@ class PostgresStore:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, org_id, content, context, tags, confidence, source,
+                SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
-                       downvotes, meta, importance_score, access_count,
+                       downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories
                 WHERE id = $1
@@ -643,9 +638,9 @@ class PostgresStore:
             f"SET {', '.join(sets)} "
             "WHERE id = $1 AND org_id = $2 "
             "AND (expires_at IS NULL OR expires_at > now()) "
-            "RETURNING id, org_id, content, context, tags, confidence, source, "
+            "RETURNING id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at, scope"
+            "meta, access_count, last_accessed_at, scope"
         )
         async with self._acquire() as conn:
             row = await conn.fetchrow(sql, *params)
@@ -690,9 +685,9 @@ class PostgresStore:
             where.append("(expires_at IS NULL OR expires_at > now())")
 
         sql = (
-            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "SELECT id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at, scope "
+            "meta, access_count, last_accessed_at, scope "
             "FROM memories "
             f"WHERE {' AND '.join(where)} "
             "ORDER BY created_at DESC"
@@ -753,9 +748,9 @@ class PostgresStore:
 
         count_sql = f"SELECT COUNT(*) FROM memories WHERE {where_sql}"
         select_sql = (
-            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "SELECT id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at, scope "
+            "meta, access_count, last_accessed_at, scope "
             f"FROM memories WHERE {where_sql} "
             f"ORDER BY created_at DESC "
             f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
@@ -824,7 +819,6 @@ class PostgresStore:
         content: str,
         context: Optional[str],
         tags: Sequence[str],
-        confidence: float,
         source: Optional[str],
         project: Optional[str],
         embedding: Optional[Sequence[float]],
@@ -847,16 +841,15 @@ class PostgresStore:
 
         query = """
             INSERT INTO memories
-                (id, org_id, content, context, tags, confidence, source, project,
+                (id, org_id, content, context, tags, source, project,
                  embedding, created_at, updated_at, expires_at,
                  upvotes, downvotes, meta)
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9::vector, now(), now(),
-                    $10, $11, $12, $13::jsonb)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::vector, now(), now(),
+                    $9, $10, $11, $12::jsonb)
             ON CONFLICT (id) DO UPDATE SET
                 content = EXCLUDED.content,
                 context = EXCLUDED.context,
                 tags = EXCLUDED.tags,
-                confidence = EXCLUDED.confidence,
                 source = EXCLUDED.source,
                 project = EXCLUDED.project,
                 embedding = EXCLUDED.embedding,
@@ -877,7 +870,6 @@ class PostgresStore:
                 content,
                 safe_context,
                 encoded_tags,
-                confidence,
                 source,
                 project,
                 encoded_embedding,
@@ -922,11 +914,10 @@ class PostgresStore:
         limit_idx = len(sql_params)
 
         sql = f"""
-            SELECT id, org_id, content, context, tags, confidence, source, project,
+            SELECT id, org_id, content, context, tags, source, project,
                    created_at, updated_at, expires_at, upvotes, downvotes, meta,
-                   importance_score, access_count, last_accessed_at, scope,
+                   access_count, last_accessed_at, scope,
                    (1 - (embedding <=> ${emb_idx}::vector)) *
-                   COALESCE(importance_score, 1.0) *
                    power(0.5,
                        LEAST(
                            EXTRACT(EPOCH FROM (now() - created_at)) / 86400.0,
@@ -955,7 +946,6 @@ class PostgresStore:
                     content=sm.content,
                     context=sm.context,
                     tags=sm.tags,
-                    confidence=sm.confidence,
                     source=sm.source,
                     project=sm.project,
                     created_at=sm.created_at,
@@ -964,7 +954,6 @@ class PostgresStore:
                     upvotes=sm.upvotes,
                     downvotes=sm.downvotes,
                     meta=sm.meta,
-                    importance_score=sm.importance_score,
                     access_count=sm.access_count,
                     last_accessed_at=sm.last_accessed_at,
                     scope=sm.scope,
@@ -992,10 +981,7 @@ class PostgresStore:
                 """
                 UPDATE memories
                 SET access_count = COALESCE(access_count, 0) + 1,
-                    last_accessed_at = now(),
-                    importance_score = COALESCE(confidence, 1.0)
-                        * GREATEST(0.1, 1.0 + (COALESCE(upvotes, 0) - COALESCE(downvotes, 0)) * 0.1)
-                        * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
+                    last_accessed_at = now()
                 WHERE id = ANY($1) AND org_id = $2
                 """,
                 list(memory_ids),
@@ -1040,9 +1026,9 @@ class PostgresStore:
                 SET {column} = COALESCE({column}, 0) + 1,
                     updated_at = now()
                 WHERE id = $1 AND org_id = $2
-                RETURNING id, org_id, content, context, tags, confidence, source,
+                RETURNING id, org_id, content, context, tags, source,
                           project, created_at, updated_at, expires_at, upvotes,
-                          downvotes, meta, importance_score, access_count,
+                          downvotes, meta, access_count,
                           last_accessed_at, scope
                 """,
                 memory_id,
@@ -1062,15 +1048,14 @@ class PostgresStore:
         tags: "Sequence[str]",
         source: str,
         meta: "Mapping[str, Any]",
-        confidence: float,
     ) -> bool:
         async with self._acquire() as conn:
             result = await conn.execute(
                 """
                 INSERT INTO memories
-                    (id, org_id, content, context, tags, source, meta, confidence,
+                    (id, org_id, content, context, tags, source, meta,
                      created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, now(), now())
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, now(), now())
                 ON CONFLICT (id) DO NOTHING
                 """,
                 memory_id,
@@ -1080,7 +1065,6 @@ class PostgresStore:
                 json.dumps(list(tags)),
                 source,
                 json.dumps(dict(meta)),
-                confidence,
             )
         return result.endswith(" 1")
 
@@ -1358,10 +1342,10 @@ class PostgresStore:
         params.append(limit)
         sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags,
-                   m.confidence, m.source, m.project,
+                   m.source, m.project,
                    m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta,
-                   m.importance_score, m.access_count, m.last_accessed_at
+                   m.access_count, m.last_accessed_at
             FROM memories m
             LEFT JOIN entity_mentions em ON em.memory_id = m.id
             WHERE {' AND '.join(where)}
@@ -1718,10 +1702,6 @@ class PostgresStore:
                     "SELECT COUNT(*) FROM memories WHERE project = $1 AND created_at >= $2",
                     project, cutoff_7d,
                 )
-                avg_imp = await conn.fetchval(
-                    "SELECT AVG(COALESCE(importance_score, 1.0)) FROM memories WHERE project = $1",
-                    project,
-                )
                 oldest = await conn.fetchval(
                     "SELECT MIN(created_at) FROM memories WHERE project = $1", project,
                 )
@@ -1744,9 +1724,6 @@ class PostgresStore:
                 )
                 recent_7d = await conn.fetchval(
                     "SELECT COUNT(*) FROM memories WHERE created_at >= $1", cutoff_7d,
-                )
-                avg_imp = await conn.fetchval(
-                    "SELECT AVG(COALESCE(importance_score, 1.0)) FROM memories"
                 )
                 oldest = await conn.fetchval("SELECT MIN(created_at) FROM memories")
                 newest = await conn.fetchval("SELECT MAX(created_at) FROM memories")
@@ -1792,7 +1769,6 @@ class PostgresStore:
             by_project=by_project,
             by_entity_type=by_entity_type,
             top_entities=top_entities,
-            avg_importance=round(float(avg_imp or 0), 3),
             recent_24h=recent_24h or 0,
             recent_7d=recent_7d or 0,
             oldest_memory=oldest,
@@ -1848,10 +1824,10 @@ class PostgresStore:
         params.append(limit)
         sql = f"""
             SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,
-                            m.confidence, m.source, m.project,
+                            m.source, m.project,
                             m.created_at, m.updated_at, m.expires_at,
                             m.upvotes, m.downvotes, m.meta,
-                            m.importance_score, m.access_count, m.last_accessed_at
+                            m.access_count, m.last_accessed_at
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
             WHERE {' AND '.join(where)}
@@ -1872,13 +1848,13 @@ class PostgresStore:
         async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, org_id, content, context, tags, confidence, source,
+                SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
-                       downvotes, meta, importance_score, access_count,
+                       downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories
                 WHERE content ILIKE $1
-                ORDER BY importance_score DESC NULLS LAST, created_at DESC
+                ORDER BY created_at DESC
                 LIMIT $2
                 """,
                 pattern,
@@ -1932,9 +1908,9 @@ class PostgresStore:
         limit_idx = len(sql_params)
 
         sql = f"""
-            SELECT id, org_id, content, context, tags, confidence, source, project,
+            SELECT id, org_id, content, context, tags, source, project,
                    created_at, updated_at, expires_at, upvotes, downvotes, meta,
-                   importance_score, access_count, last_accessed_at, scope,
+                   access_count, last_accessed_at, scope,
                    ts_rank(
                        to_tsvector('english', content || ' ' || COALESCE(context, '')),
                        plainto_tsquery('english', ${q_idx})
@@ -1987,17 +1963,17 @@ class PostgresStore:
         sql_params.append(limit)
         limit_idx = len(sql_params)
         sql = f"""
-            SELECT m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+            SELECT m.id, m.org_id, m.content, m.context, m.tags,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
-                   m.upvotes, m.downvotes, m.meta, m.importance_score,
+                   m.upvotes, m.downvotes, m.meta,
                    m.access_count, m.last_accessed_at, m.scope,
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
             WHERE {' AND '.join(where)}
-            GROUP BY m.id, m.org_id, m.content, m.context, m.tags, m.confidence,
+            GROUP BY m.id, m.org_id, m.content, m.context, m.tags,
                      m.source, m.project, m.created_at, m.updated_at, m.expires_at,
-                     m.upvotes, m.downvotes, m.meta, m.importance_score,
+                     m.upvotes, m.downvotes, m.meta,
                      m.access_count, m.last_accessed_at, m.scope
             ORDER BY overlap_count DESC, m.created_at DESC
             LIMIT ${limit_idx}
@@ -2484,16 +2460,11 @@ class PostgresStore:
                 UPDATE memories
                 SET access_count = COALESCE(access_count, 0) + 1,
                     last_accessed_at = now(),
-                    importance_score = (
-                        confidence
-                        * GREATEST(0.1, 1.0 + (upvotes - downvotes) * 0.1)
-                        * (1.0 + ln(COALESCE(access_count, 0) + 2) / ln(2) * 0.1)
-                    ),
                     updated_at = now()
                 WHERE id = $1 AND org_id = $2
-                RETURNING id, org_id, content, context, tags, confidence, source,
+                RETURNING id, org_id, content, context, tags, source,
                           project, created_at, updated_at, expires_at, upvotes,
-                          downvotes, meta, importance_score, access_count,
+                          downvotes, meta, access_count,
                           last_accessed_at, scope
                 """,
                 memory_id,
@@ -2528,9 +2499,9 @@ class PostgresStore:
         limit_idx = len(params)
 
         sql = (
-            "SELECT id, org_id, content, context, tags, confidence, source, "
+            "SELECT id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, importance_score, access_count, last_accessed_at, scope "
+            "meta, access_count, last_accessed_at, scope "
             "FROM memories "
             f"WHERE {' AND '.join(where)} "
             f"ORDER BY created_at DESC LIMIT ${limit_idx}"
@@ -2638,7 +2609,7 @@ class PostgresStore:
                 SELECT id, content, embedding, meta, created_at, access_count, last_accessed_at
                 FROM memories
                 WHERE org_id = $1 AND embedding IS NOT NULL
-                ORDER BY importance_score DESC NULLS LAST
+                ORDER BY created_at DESC
                 LIMIT $2
                 """,
                 org_id,
@@ -3989,10 +3960,10 @@ class PostgresStore:
         params.append(limit)
         sql = f"""
             SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,
-                            m.confidence, m.source, m.project,
+                            m.source, m.project,
                             m.created_at, m.updated_at, m.expires_at,
                             m.upvotes, m.downvotes, m.meta,
-                            m.importance_score, m.access_count, m.last_accessed_at
+                            m.access_count, m.last_accessed_at
             FROM memories m
             {joins}
             WHERE {' AND '.join(where)}
@@ -4030,9 +4001,9 @@ class PostgresStore:
         async with self._acquire() as conn:
             anchor_row = await conn.fetchrow(
                 """
-                SELECT id, org_id, content, context, tags, confidence, source,
+                SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
-                       downvotes, meta, importance_score, access_count,
+                       downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories
                 WHERE id = $1 AND org_id = $2
@@ -4052,9 +4023,9 @@ class PostgresStore:
 
         async def _fetch(predicate_sql: str, order_sql: str, n: int) -> list[StoredMemory]:
             sql = f"""
-                SELECT id, org_id, content, context, tags, confidence, source,
+                SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
-                       downvotes, meta, importance_score, access_count,
+                       downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories
                 WHERE org_id = $1
