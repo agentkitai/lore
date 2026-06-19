@@ -4,12 +4,21 @@ from __future__ import annotations
 
 import json
 import struct
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from lore.store.memory import MemoryStore
 from lore.types import Memory
+
+# Use a "now" timestamp for fixture memories. recall() triggers a decay-based
+# cleanup (Lore.cleanup_expired) that prunes memories whose recency-decay
+# multiplier falls below the default 0.05 threshold. A hardcoded calendar date
+# would make these fixtures time-bombs: once wall-clock time advanced past
+# ~130 days (30-day half-life), the memories would be pruned on the first
+# recall and every filter assertion would see an empty result set.
+_NOW_ISO = datetime.now(timezone.utc).isoformat()
 
 MOCK_ENRICHMENT_RESPONSE = json.dumps({
     "topics": ["deployment", "kubernetes"],
@@ -46,8 +55,8 @@ def _make_enriched_memory(
         id=id,
         content=content,
         embedding=struct.pack("384f", *([0.1] * 384)),
-        created_at="2026-01-01T00:00:00+00:00",
-        updated_at="2026-01-01T00:00:00+00:00",
+        created_at=_NOW_ISO,
+        updated_at=_NOW_ISO,
         metadata={
             "enrichment": {
                 "topics": topics or [],
@@ -67,8 +76,8 @@ def _make_unenriched_memory(id, content):
         id=id,
         content=content,
         embedding=struct.pack("384f", *([0.1] * 384)),
-        created_at="2026-01-01T00:00:00+00:00",
-        updated_at="2026-01-01T00:00:00+00:00",
+        created_at=_NOW_ISO,
+        updated_at=_NOW_ISO,
     )
 
 
