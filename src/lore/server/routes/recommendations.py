@@ -71,10 +71,16 @@ async def get_recommendations(
     context: str = Query("", description="Session context text"),
     max_results: int = Query(3, ge=1, le=10),
     auth: AuthContext = Depends(get_auth_context),
+    store: Store = Depends(get_store),
 ) -> List[RecommendationResponse]:
     """Get proactive memory suggestions."""
-    # Placeholder — in production would use RecommendationEngine
-    return []
+    results = await recommendations_service.recommend(
+        store,
+        org_id=auth.org_id,
+        context=context,
+        max_results=max_results,
+    )
+    return [_to_response(r) for r in results]
 
 
 @router.post("", response_model=List[RecommendationResponse])

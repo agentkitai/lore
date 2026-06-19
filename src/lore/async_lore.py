@@ -52,6 +52,9 @@ from lore._workers import (
 )
 from lore.persistence import (
     ConfigError,
+    MemoryFilter,
+    NewMemory,
+    NewMention,
     Store,
     StoredConversationJob,
     StoredMemory,
@@ -770,38 +773,211 @@ class AsyncLore:
 
     # ── Phase 4B: consolidation / enrichment / maintenance ──────────────
 
+    # Dedup-only consolidation on the async path. The sync
+    # ``ConsolidationEngine`` also has an LLM-summarization strategy
+    # (entity-grouped memories condensed by an LLM); that needs an LLM
+    # client which the embedded path doesn't wire in. We port the
+    # deduplicate strategy faithfully (cosine-similarity Union-Find over
+    # embeddings, keep the most-recent, supersede + delete the rest) since
+    # that is the part that genuinely removes duplicates without any LLM.
+    # ponytail: LLM "summarize" strategy is deferred — needs an async LLM
+    # client on the embedded path (same gap noted on enrich/topic_detail).
+    _DEDUP_THRESHOLD = 0.95
+
     async def consolidate(
         self,
         *,
         project: Optional[str] = None,
         dry_run: bool = True,
     ) -> "ConsolidationReport":
-        """Embedded consolidation is a no-op until Phase 4C.
+        """Deduplicate near-identical memories on the embedded path.
 
-        Returns a report with zero counts so callers can use the same
-        ``await lore.consolidate(...)`` shape as the sync class. Phase 4C
-        will plumb in :class:`lore.consolidation.ConsolidationEngine`
-        once that engine is ported to the new ``Store`` protocol.
+        Groups memories whose embeddings are within ``_DEDUP_THRESHOLD``
+        cosine similarity (transitive closure via Union-Find), keeps the
+        most-recent member of each group as the canonical memory, and
+        supersedes + deletes the rest. The canonical memory's ``meta``
+        records ``consolidated_from`` / ``original_count`` so
+        :meth:`get_consolidation_log` can reconstruct the history.
+
+        ``dry_run=True`` (default) computes the groups and previews them
+        in the report without mutating anything.
         """
-        # Touch the store to ensure we're inside an open context.
-        self._require_store()
-        return ConsolidationReport(
+        store = self._require_store()
+        report = ConsolidationReport(
             project=project,
             dry_run=dry_run,
             groups_found=0,
             memories_consolidated=0,
-            note="consolidate() is a no-op in Phase 4B; wired in 4C.",
         )
+
+        exported = await store.list_memories_with_embeddings(
+            MemoryFilter(org_id=self.org_id, project=project, limit=100000)
+        )
+        # Only originals: skip rows that are themselves consolidation
+        # outputs (avoid re-folding a just-created summary).
+        rows = [
+            m for m in exported
+            if not (m.meta or {}).get("consolidated_from")
+            and m.embedding is not None
+        ]
+        if not rows:
+            return report
+
+        groups = self._find_duplicate_groups(rows)
+        report.groups_found = len(groups)
+        if not groups:
+            return report
+
+        if dry_run:
+            for group in groups:
+                report.memories_consolidated += len(group)
+            return report
+
+        for group in groups:
+            try:
+                await self._consolidate_group(store, group)
+                report.memories_consolidated += len(group)
+            except Exception:  # pragma: no cover - defensive
+                logger.error(
+                    "AsyncLore.consolidate: failed to consolidate a group of %d",
+                    len(group), exc_info=True,
+                )
+        return report
+
+    def _find_duplicate_groups(self, rows: Sequence[Any]) -> List[List[Any]]:
+        """Union-Find cosine-similarity grouping (port of the sync engine).
+
+        ``rows`` are ``ExportedMemory`` with float-sequence embeddings.
+        Returns groups of size >= 2.
+        """
+        import math
+        from collections import defaultdict
+
+        vecs: Dict[str, List[float]] = {}
+        norms: Dict[str, float] = {}
+        for m in rows:
+            vec = list(m.embedding or ())
+            norm = math.sqrt(sum(v * v for v in vec))
+            if norm > 0:
+                vecs[m.id] = vec
+                norms[m.id] = norm
+
+        parent: Dict[str, str] = {mid: mid for mid in vecs}
+
+        def find(x: str) -> str:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        ids = list(vecs)
+        for i in range(len(ids)):
+            a = ids[i]
+            va, na = vecs[a], norms[a]
+            for j in range(i + 1, len(ids)):
+                b = ids[j]
+                vb, nb = vecs[b], norms[b]
+                dot = sum(x * y for x, y in zip(va, vb))
+                if dot / (na * nb) > self._DEDUP_THRESHOLD:
+                    union(a, b)
+
+        by_id = {m.id: m for m in rows}
+        clusters: Dict[str, List[Any]] = defaultdict(list)
+        for mid in vecs:
+            clusters[find(mid)].append(by_id[mid])
+        return [g for g in clusters.values() if len(g) > 1]
+
+    async def _consolidate_group(self, store: Store, group: Sequence[Any]) -> None:
+        """Keep the most-recent member; supersede + delete the duplicates."""
+        canonical = max(group, key=lambda m: m.created_at)
+        originals = [m for m in group if m.id != canonical.id]
+
+        merged_tags = sorted({t for m in group for t in (m.tags or ())})
+        meta = dict(canonical.meta or {})
+        meta["consolidated_from"] = [m.id for m in originals]
+        meta["consolidation_strategy"] = "deduplicate"
+        meta["original_count"] = len(group)
+
+        consolidated = await store.insert_memory(
+            NewMemory(
+                org_id=self.org_id,
+                content=canonical.content,
+                embedding=list(canonical.embedding or ()),
+                context=canonical.context,
+                tags=tuple(merged_tags),
+                source="consolidation",
+                project=canonical.project,
+                meta=meta,
+                scope=getattr(canonical, "scope", "project"),
+            )
+        )
+
+        # Relink each original's entity mentions onto the consolidated row
+        # (idempotent replace), then supersede + delete the original.
+        for orig in group:
+            existing = await store.get_mentions_for_memory(orig.id)
+            if existing:
+                await store.replace_memory_mentions(
+                    consolidated.id,
+                    [
+                        NewMention(
+                            entity_id=mm.entity_id,
+                            memory_id=consolidated.id,
+                            mention_type=mm.mention_type,
+                            confidence=mm.confidence,
+                        )
+                        for mm in existing
+                    ],
+                )
+            await store.record_supersession(
+                orig.id,
+                superseded_by=consolidated.id,
+                reason="consolidated (duplicate)",
+                agent="consolidation",
+            )
+            await store.delete_memory(self.org_id, orig.id)
 
     async def get_consolidation_log(
         self,
         *,
         project: Optional[str] = None,
         limit: int = 50,
-    ) -> Sequence[Any]:
-        """Return an empty log — the async Store doesn't track consolidations yet."""
-        self._require_store()
-        return ()
+    ) -> Sequence["ConsolidationLogEntry"]:
+        """Return real consolidation history, newest first.
+
+        Reconstructed from the consolidated memories themselves (rows with
+        ``source='consolidation'`` carrying ``consolidated_from`` in meta) —
+        the async persistence layer has no dedicated ``consolidation_log``
+        table, so the consolidated memory's meta IS the log.
+        """
+        store = self._require_store()
+        # MemoryFilter has no ``source`` field, so over-fetch and filter
+        # for source='consolidation' in-process (solo-scale corpus).
+        rows = await store.list_memories(
+            MemoryFilter(org_id=self.org_id, project=project, limit=100000)
+        )
+        entries: List[ConsolidationLogEntry] = []
+        for m in rows:
+            meta = m.meta or {}
+            originals = meta.get("consolidated_from")
+            if m.source != "consolidation" or not originals:
+                continue
+            entries.append(
+                ConsolidationLogEntry(
+                    consolidated_memory_id=m.id,
+                    original_memory_ids=list(originals),
+                    strategy=meta.get("consolidation_strategy", "deduplicate"),
+                    original_count=int(meta.get("original_count", len(originals) + 1)),
+                    created_at=m.created_at,
+                )
+            )
+        # list_memories is created_at DESC already; trim to limit.
+        return entries[:limit]
 
     async def enrich_memories(
         self,
@@ -990,12 +1166,30 @@ class EnrichmentReport:
     errors: Sequence[str] = ()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ConsolidationReport:
-    """Placeholder result for :meth:`AsyncLore.consolidate` (no-op until 4C)."""
+    """Result of :meth:`AsyncLore.consolidate`.
+
+    ``groups_found`` is the number of duplicate clusters; on a real
+    (``dry_run=False``) run ``memories_consolidated`` counts every member
+    folded into a canonical memory. Mutable so the running tally can be
+    accumulated as groups are processed.
+    """
 
     project: Optional[str]
     dry_run: bool
     groups_found: int
     memories_consolidated: int
     note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ConsolidationLogEntry:
+    """One historical consolidation, reconstructed from a consolidated
+    memory's ``meta``. Returned by :meth:`AsyncLore.get_consolidation_log`."""
+
+    consolidated_memory_id: str
+    original_memory_ids: Sequence[str]
+    strategy: str
+    original_count: int
+    created_at: datetime

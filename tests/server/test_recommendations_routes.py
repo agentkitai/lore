@@ -95,12 +95,33 @@ def client(monkeypatch, mock_auth):
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 
-def test_get_returns_empty_list(client):
-    """Placeholder GET /v1/recommendations always returns []."""
+def test_get_blank_context_returns_empty_list(client):
+    """GET /v1/recommendations with no context short-circuits to []."""
     test_client, _svc, _auth = client
     resp = test_client.get("/v1/recommendations")
     assert resp.status_code == 200
     assert resp.json() == []
+
+
+def test_get_wires_to_recommend_service(client, monkeypatch):
+    """GET with context calls the real recommend service and maps results."""
+    test_client, recommendations_service, _auth = client
+    fake_rec = _make_fake_rec()
+    mock_recommend = AsyncMock(return_value=[fake_rec])
+    monkeypatch.setattr(recommendations_service, "recommend", mock_recommend)
+
+    resp = test_client.get(
+        "/v1/recommendations",
+        params={"context": "debugging memory leak", "max_results": 2},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert len(body) == 1
+    assert body[0]["memory_id"] == "mem-1"
+    mock_recommend.assert_called_once()
+    call_kwargs = mock_recommend.call_args.kwargs
+    assert call_kwargs["context"] == "debugging memory leak"
+    assert call_kwargs["max_results"] == 2
 
 
 def test_post_returns_engine_results(client, monkeypatch):
