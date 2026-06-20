@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/lore-sdk)](https://pypi.org/project/lore-sdk/)
 [![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
-[![Docker](https://img.shields.io/docker/v/agentkitai/lore?label=docker)](https://hub.docker.com/r/agentkitai/lore)
+[![Docker](https://img.shields.io/docker/v/pazgaz/lore?label=docker)](https://hub.docker.com/r/pazgaz/lore)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/github/license/agentkitai/lore)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
@@ -29,7 +29,7 @@ Agent sees memories + prompt → responds with full context
 ### Universal Memory
 `remember` · `recall` · `forget` · `list_memories` · `stats`
 
-Store and retrieve memories across any AI agent via MCP tools, REST API, or Python/TypeScript SDK. Semantic search with tier-based TTL, importance scoring, temporal decay, and automatic PII redaction.
+Store and retrieve memories across any AI agent via MCP tools, REST API, or Python/TypeScript SDK. Semantic search with tier-based TTL, temporal decay, and automatic PII redaction.
 
 ### Knowledge Graph
 `graph_query` · `entity_map` · `related` · `extract_facts` · `list_facts` · `conflicts`
@@ -238,7 +238,7 @@ curl -s "http://localhost:8765/v1/retrieve?query=your+prompt&limit=5&min_score=0
 | `recall` | Semantic search with temporal/graph-enhanced retrieval |
 | `forget` | Delete a memory by ID |
 | `list_memories` | List memories with filtering |
-| `stats` | Memory statistics (total, by type/tier, importance) |
+| `stats` | Memory statistics (total, by type/tier) |
 | `upvote_memory` | Boost memory ranking |
 | `downvote_memory` | Lower memory ranking |
 | `graph_query` | Hop-by-hop knowledge graph traversal |

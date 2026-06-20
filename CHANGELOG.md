@@ -200,6 +200,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   * **LOC delta.** New file `src/lore/cli/commands/migrate.py` (+910 LOC). `src/lore/cli/__init__.py` +38 LOC for the subparser + dispatch wire-up. New tests: `tests/migrate/test_migrate_round_trip.py` (~330 LOC, +6 passing tests). Test count: **3474 → 3480 passed / 80 skipped (+6 / 0 delta)**.
   * **SQLite solo-mode design status.** With Phase 5 done, the SQLite solo-mode design (Phases 3 + 4 + 5) is functionally complete. A consumer can `pip install lore-sdk[solo]`, run `lore serve` against a local SQLite file, embed `AsyncLore` directly into another Python process, and migrate to/from a shared Postgres deployment with one command — every component called out in `docs/superpowers/specs/2026-05-05-sqlite-solo-mode-design.md` is in place.
 
+### Removed
+- **Importance scoring.** Migration `025_drop_quality_score_columns.sql` drops the `importance_score` and `confidence` columns from `memories`. Both carried mechanical defaults no caller overrode (importance was a flat `1.0`, making the recall-side multiplier a no-op), so they added UI noise without affecting ranking. Recall now relies on the cosine-similarity + FTS hybrid scoring already in place. Sorting/filtering "by importance" is no longer available. (Graph-table per-relationship `confidence`/`weight` columns are unaffected.)
+
 ## [1.1.0] — 2026-03-21 — "Enterprise Platform"
 
 ### Added

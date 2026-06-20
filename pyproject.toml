@@ -77,11 +77,11 @@ dev = [
 lore = "lore.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/amitpaz1/lore"
-Repository = "https://github.com/amitpaz1/lore"
-Documentation = "https://github.com/amitpaz1/lore/tree/main/docs"
-Issues = "https://github.com/amitpaz1/lore/issues"
-Changelog = "https://github.com/amitpaz1/lore/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/agentkitai/lore"
+Repository = "https://github.com/agentkitai/lore"
+Documentation = "https://github.com/agentkitai/lore/tree/main/docs"
+Issues = "https://github.com/agentkitai/lore/issues"
+Changelog = "https://github.com/agentkitai/lore/blob/main/CHANGELOG.md"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lore"]

@@ -1,10 +1,10 @@
-<![CDATA[# Lore (TypeScript)
+# Lore (TypeScript)
 
 [![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
-[![Tests](https://img.shields.io/github/actions/workflow/status/amitpaz/lore/ci.yml?label=tests)](https://github.com/amitpaz/lore/actions)
-[![License](https://img.shields.io/github/license/amitpaz/lore)](../LICENSE)
+[![Tests](https://img.shields.io/github/actions/workflow/status/agentkitai/lore/ci.yml?label=tests)](https://github.com/agentkitai/lore/actions)
+[![License](https://img.shields.io/github/license/agentkitai/lore)](../LICENSE)
 
-**Cross-agent memory for TypeScript.** Agents publish what they learn, other agents query it. PII redacted automatically.
+**Cross-agent memory for TypeScript.** Agents remember what they learn, other agents recall it. PII redacted automatically.
 
 > This is the TypeScript SDK. For the Python SDK and project overview, see the [main README](../README.md).
 
@@ -26,15 +26,14 @@ const lore = new Lore({
   embeddingFn: (text) => yourModel.embed(text),
 });
 
-await lore.publish({
-  problem: 'Stripe API returns 429 after 100 req/min',
-  resolution: 'Exponential backoff starting at 1s, cap at 32s',
+await lore.remember('Stripe API returns 429 after 100 req/min', {
+  type: 'lesson',
+  context: 'Exponential backoff starting at 1s, cap at 32s',
   tags: ['stripe', 'rate-limit'],
-  confidence: 0.9,
 });
 
-const lessons = await lore.query('stripe rate limiting');
-const prompt = lore.asPrompt(lessons);
+const results = await lore.recall('stripe rate limiting');
+const prompt = lore.asPrompt(results);
 // Inject `prompt` into your agent's system message
 ```
 
@@ -44,59 +43,61 @@ const prompt = lore.asPrompt(lessons);
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `project` | `string` | — | Scope lessons to a project |
+| `project` | `string` | — | Scope memories to a project |
 | `dbPath` | `string` | `~/.lore/default.db` | SQLite database path |
 | `store` | `Store` | — | Custom storage backend |
-| `embeddingFn` | `(text: string) => number[] \| Promise<number[]>` | — | Embedding function (**required for `query()`**) |
+| `embeddingFn` | `(text: string) => number[] \| Promise<number[]>` | — | Embedding function (**required for `recall()`**) |
 | `redact` | `boolean` | `true` | Enable automatic PII redaction |
 | `redactPatterns` | `[RegExp \| string, string][]` | — | Custom redaction patterns |
 | `decayHalfLifeDays` | `number` | `30` | Score decay half-life |
 
-### `lore.publish(options): Promise<string>`
+### `lore.remember(content, options?): Promise<string>`
 
-Publish a lesson. Returns the lesson ID.
+Store a memory. Returns the memory ID (ULID).
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `problem` | `string` | *required* | What went wrong |
-| `resolution` | `string` | *required* | How to fix it |
+| `type` | `string` | `'general'` | Memory type (e.g. `lesson`, `note`, `fact`) |
 | `context` | `string` | — | Additional context |
 | `tags` | `string[]` | `[]` | Filterable tags |
-| `confidence` | `number` | `0.5` | Confidence (0–1) |
+| `metadata` | `Record<string, unknown>` | — | Arbitrary metadata |
 | `source` | `string` | — | Source identifier |
 | `project` | `string` | instance default | Override project scope |
+| `ttl` | `number` | — | Time-to-live in seconds |
 
-### `lore.query(text, options?): Promise<QueryResult[]>`
+> **Secret blocking:** if redaction is enabled and `remember()` detects a secret, it throws `SecretBlockedError` and the memory is not stored. PII is masked automatically.
 
-Semantic search over lessons. Requires `embeddingFn`.
+### `lore.recall(query, options?): Promise<RecallResult[]>`
+
+Semantic search over memories. Requires `embeddingFn`.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `tags` | `string[]` | — | Filter: must have ALL tags |
+| `type` | `string` | — | Filter by memory type |
 | `limit` | `number` | `5` | Max results |
-| `minConfidence` | `number` | `0.0` | Min confidence threshold |
 
-### `lore.asPrompt(lessons, maxTokens?): string`
+### `lore.asPrompt(results, maxTokens?): string`
 
-Format results as markdown for system prompt injection. Default `maxTokens` is 1000.
+Format recall results as markdown for system prompt injection. Default `maxTokens` is 1000.
 
-### `lore.get(lessonId): Promise<Lesson | null>`
+### `lore.get(memoryId): Promise<Memory | null>`
 
-Get a lesson by ID.
+Get a memory by ID.
 
-### `lore.list(options?): Promise<Lesson[]>`
+### `lore.listMemories(options?): Promise<Memory[]>`
 
-List lessons. Options: `{ project?, limit? }`.
+List memories. Options: `{ project?, type?, limit? }`. Excludes expired memories.
 
-### `lore.delete(lessonId): Promise<boolean>`
+### `lore.forget(memoryId): Promise<boolean>`
 
-Delete a lesson by ID.
+Delete a memory by ID. Returns `true` if it existed.
 
-### `lore.upvote(lessonId): Promise<void>`
+### `lore.upvote(memoryId): Promise<void>`
 
 Increment upvotes. Throws if not found.
 
-### `lore.downvote(lessonId): Promise<void>`
+### `lore.downvote(memoryId): Promise<void>`
 
 Increment downvotes. Throws if not found.
 
@@ -104,9 +105,11 @@ Increment downvotes. Throws if not found.
 
 Close the underlying store.
 
+> **Deprecated aliases:** `publish()`, `query()`, `list()`, and `delete()` remain as thin backward-compat wrappers around `remember()`, `recall()`, `listMemories()`, and `forget()`. Prefer the current names in new code.
+
 ## Key Difference from Python SDK
 
-The TypeScript SDK **does not ship a built-in embedding model**. You must provide an `embeddingFn` to use `query()`. Publishing works without one (lessons are stored without embeddings), but semantic search requires it.
+The TypeScript SDK **does not ship a built-in embedding model**. You must provide an `embeddingFn` to use `recall()`. Storing works without one (memories are saved without embeddings), but semantic search requires it.
 
 Example with OpenAI:
 
@@ -163,10 +166,9 @@ const lore = new Lore({
 ## Examples
 
 See [`examples/`](examples/) for runnable scripts:
-- [`basic-usage.ts`](examples/basic-usage.ts) — publish, query, format
+- [`basic-usage.ts`](examples/basic-usage.ts) — remember, recall, format
 - [`custom-embeddings.ts`](examples/custom-embeddings.ts) — using OpenAI embeddings
 
 ## License
 
 MIT
-]]>
