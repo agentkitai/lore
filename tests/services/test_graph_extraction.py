@@ -432,7 +432,7 @@ async def test_extract_no_claude_on_path(store: Store, monkeypatch):
         content="x", context=None,
         # No spawn_fn → falls through to claude PATH check
     )
-    assert result.error == "claude not on PATH"
+    assert result.error == "claude CLI not on PATH"
 
 
 @pytest.mark.asyncio

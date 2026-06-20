@@ -440,6 +440,9 @@ DELETE /v1/keys/{id}                  # Revoke API key
 | `LORE_LLM_BASE_URL` | — | LLM base URL |
 | `LORE_GRAPH_DEPTH` | `2` | Default graph traversal depth |
 | `LORE_GRAPH_CONFIDENCE_THRESHOLD` | `0.5` | Entity confidence threshold |
+| `LORE_GRAPH_EXTRACTION_ENABLED` | auto | Entity/fact extraction from new memories. Auto-on when the local `claude` CLI (Claude Code) is on `PATH`; set `false` to disable. Note: graph extraction uses the `claude` CLI, *not* `OPENAI_API_KEY`/`LORE_ENRICHMENT_MODEL` (those drive the separate enrichment pipeline). |
+| `LORE_GRAPH_EXTRACTION_CONCURRENCY` | `2` | Max concurrent `claude` extraction subprocesses |
+| `LORE_GRAPH_EXTRACTION_TIMEOUT` | `30` | Per-extraction subprocess timeout (seconds) |
 | `LORE_HTTP_TIMEOUT` | `30` | HTTP timeout (seconds) |
 | `OPENAI_API_KEY` | — | Auto-enables enrichment when set |
 | `SLO_CHECK_INTERVAL` | `60` | SLO evaluation interval (seconds) |

@@ -19,10 +19,19 @@ The trade-off is ~500ms-1s of subprocess-spawn overhead per memory. The
 ``LORE_GRAPH_EXTRACTION_CONCURRENCY`` semaphore caps parallelism so a
 50-memory dream-finalize burst doesn't spawn 50 subprocesses at once.
 
-Failure modes (timeout / parse error / claude not on PATH / non-2xx
-exit) all log and return an ``ExtractionResult`` with ``error`` set —
-no exception bubbles to the caller. Failed extractions can be retried
-via ``POST /v1/graph/backfill``.
+Failure modes (timeout / parse error / claude CLI not on PATH / non-2xx
+exit) all log at WARNING and return an ``ExtractionResult`` with ``error``
+set — no exception bubbles to the caller. Logging matters because the
+common caller path launches this as a fire-and-forget ``asyncio.create_task``
+(see ``routes/memories.py``) and discards the returned result, so without
+the log a missing ``claude`` CLI would silently produce an empty graph.
+Failed extractions can be retried via ``POST /v1/graph/backfill``.
+
+Dependency note: fact/graph extraction shells out to the local ``claude``
+CLI (Claude Code). This is distinct from the OpenAI-based *enrichment*
+pipeline (``OPENAI_API_KEY`` / ``LORE_ENRICHMENT_MODEL``); graph extraction
+does NOT use those env vars. Set ``LORE_GRAPH_EXTRACTION_ENABLED=false`` to
+disable it when the CLI is absent.
 """
 
 from __future__ import annotations
@@ -302,7 +311,19 @@ async def extract_and_persist(
     deadline = timeout if timeout is not None else _timeout_s()
 
     if spawn_fn is None and shutil.which("claude") is None:
-        result.error = "claude not on PATH"
+        # Loud, not silent: graph/fact extraction depends on the local
+        # ``claude`` CLI (see module docstring). A missing CLI used to
+        # vanish into a discarded ExtractionResult.error on the
+        # fire-and-forget task path, leaving an empty knowledge graph
+        # with no signal. Log at WARNING so operators can see why
+        # extraction never produced edges.
+        result.error = "claude CLI not on PATH"
+        logger.warning(
+            "Graph extraction skipped for memory %s: the 'claude' CLI is not "
+            "on PATH. Install Claude Code, or set "
+            "LORE_GRAPH_EXTRACTION_ENABLED=false to silence this.",
+            memory_id,
+        )
         return result
 
     prompt = _build_extraction_prompt(content=content, context=context)
@@ -313,6 +334,7 @@ async def extract_and_persist(
             proc = spawn(prompt)
         except OSError as e:
             result.error = f"spawn failed: {e}"
+            logger.warning("Graph extraction spawn failed for memory %s: %s", memory_id, e)
             return result
 
         # Wait + read in a thread so we don't block the event loop.
@@ -325,19 +347,31 @@ async def extract_and_persist(
             with contextlib.suppress(Exception):
                 proc.kill()
             result.error = f"subprocess timeout after {deadline}s"
+            logger.warning(
+                "Graph extraction timed out after %ss for memory %s", deadline, memory_id
+            )
             return result
         except Exception as e:  # pragma: no cover — defensive
             result.error = f"subprocess error: {e}"
+            logger.warning("Graph extraction subprocess error for memory %s: %s", memory_id, e)
             return result
 
         if proc.returncode and proc.returncode != 0:
             tail = (stdout_bytes or b"").decode("utf-8", errors="replace")[-500:]
             result.error = f"subprocess exit {proc.returncode}: {tail}"
+            logger.warning(
+                "Graph extraction subprocess exited %s for memory %s: %s",
+                proc.returncode, memory_id, tail,
+            )
             return result
 
     payload = _parse_extraction_response((stdout_bytes or b"").decode("utf-8", errors="replace"))
     if payload is None:
         result.error = "parse failed (no JSON in assistant output)"
+        logger.warning(
+            "Graph extraction parse failed for memory %s (no JSON in assistant output)",
+            memory_id,
+        )
         return result
 
     result.extracted = payload

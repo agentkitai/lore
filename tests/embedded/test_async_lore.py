@@ -528,23 +528,72 @@ class TestAsyncLoreVoting:
 
 
 class TestAsyncLoreConsolidationAndMaintenance:
-    """Phase 4B parity stubs and maintenance helpers."""
+    """Real dedup consolidation on the embedded path + maintenance helpers."""
 
     @pytest.mark.asyncio
-    async def test_consolidate_returns_noop_report(self):
+    async def test_consolidate_no_duplicates_is_noop(self):
+        """Distinct memories → no groups, nothing consolidated."""
         from lore import AsyncLore
 
         async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
-            report = await lore.consolidate(project="x", dry_run=True)
-            assert report.dry_run is True
+            await lore.remember("totally distinct alpha")
+            await lore.remember("totally distinct beta")
+            report = await lore.consolidate(dry_run=True)
             assert report.groups_found == 0
-            assert "no-op" in report.note
+            assert report.memories_consolidated == 0
 
     @pytest.mark.asyncio
-    async def test_get_consolidation_log_empty_in_4b(self):
+    async def test_consolidate_dry_run_finds_duplicates(self):
+        """Two identical-embedding memories form a group; dry-run mutates nothing."""
         from lore import AsyncLore
 
         async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            # Force identical embeddings so cosine sim = 1.0 > 0.95.
+            vec = _stub_embed("dup")
+            m1 = await lore.remember("duplicate content one", embedding=vec)
+            m2 = await lore.remember("duplicate content two", embedding=vec)
+
+            report = await lore.consolidate(dry_run=True)
+            assert report.dry_run is True
+            assert report.groups_found == 1
+            assert report.memories_consolidated == 2
+
+            # Dry-run mutated nothing: both originals still present.
+            ids = {m.id for m in await lore.list_memories(limit=100)}
+            assert {m1.id, m2.id}.issubset(ids)
+
+    @pytest.mark.asyncio
+    async def test_consolidate_real_run_merges_and_logs(self):
+        """A real run folds duplicates into one canonical memory and logs it."""
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            vec = _stub_embed("dup")
+            m1 = await lore.remember("dup A", embedding=vec, project="p")
+            m2 = await lore.remember("dup B", embedding=vec, project="p")
+
+            report = await lore.consolidate(project="p", dry_run=False)
+            assert report.groups_found == 1
+            assert report.memories_consolidated == 2
+
+            remaining = await lore.list_memories(project="p", limit=100)
+            # Exactly one consolidated memory remains (the older dup was
+            # superseded + deleted; canonical kept + a new consolidation row).
+            consolidated = [m for m in remaining if m.source == "consolidation"]
+            assert len(consolidated) == 1
+            assert set(consolidated[0].meta["consolidated_from"]) <= {m1.id, m2.id}
+
+            log = list(await lore.get_consolidation_log())
+            assert len(log) == 1
+            assert log[0].strategy == "deduplicate"
+            assert log[0].consolidated_memory_id == consolidated[0].id
+
+    @pytest.mark.asyncio
+    async def test_get_consolidation_log_empty_when_nothing_consolidated(self):
+        from lore import AsyncLore
+
+        async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
+            await lore.remember("just a normal memory")
             log = await lore.get_consolidation_log()
             assert list(log) == []
 
