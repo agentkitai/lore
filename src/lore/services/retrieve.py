@@ -115,6 +115,7 @@ async def retrieve(
     format: str = "xml",
     half_life_days: int = 30,
     scope_mode: str = "default",
+    requesting_user_id: Optional[str] = None,
 ) -> RetrieveOutput:
     """Vector recall + formatting. Returns a typed RetrieveOutput.
 
@@ -138,6 +139,7 @@ async def retrieve(
             project=project,
             half_life_days=half_life_days,
             scope_mode=scope_mode,
+            requesting_user_id=requesting_user_id,
         )
     )
     formatted = _FORMATTERS[format](results, query_text)
@@ -215,11 +217,16 @@ async def recent_session_snapshots(
     project: Optional[str] = None,
     exclude_ids: Sequence[str] = (),
     limit: int = 3,
+    requesting_user_id: Optional[str] = None,
 ) -> Sequence[StoredMemory]:
     """Recent (last-24h) session-snapshot memories for the org. Returns empty on error."""
     try:
         return await store.list_recent_session_snapshots(
-            org_id, project=project, exclude_ids=exclude_ids, limit=limit
+            org_id,
+            project=project,
+            exclude_ids=exclude_ids,
+            limit=limit,
+            requesting_user_id=requesting_user_id,
         )
     except Exception:
         logger.warning("Failed to fetch session snapshots", exc_info=True)
@@ -264,6 +271,9 @@ class HybridParams:
     # ``(scope='global') OR (scope='project' AND project=:current)``;
     # ``'all'`` skips the predicate (rare cross-project recall).
     scope_mode: str = "default"
+    # Migration 026: per-user visibility filter, applied across all three
+    # recall branches (vector/FTS/graph). None = solo/no-identity = unfiltered.
+    requesting_user_id: Optional[str] = None
 
 
 def _recency_signal(created_at: Optional[datetime], recency_bias: float) -> float:
@@ -338,6 +348,7 @@ async def _safe_text_recall(
     limit: int,
     project: Optional[str],
     scope_mode: str = "default",
+    requesting_user_id: Optional[str] = None,
 ) -> Sequence[Tuple[StoredMemory, float]]:
     """Wrap ``store.recall_by_text`` so a missing migration returns ``[]``
     (a typed signal that this branch had nothing to contribute) while
@@ -348,7 +359,12 @@ async def _safe_text_recall(
     if not hasattr(store, "recall_by_text"):
         return []
     return await store.recall_by_text(
-        org_id, query, limit=limit, project=project, scope_mode=scope_mode
+        org_id,
+        query,
+        limit=limit,
+        project=project,
+        scope_mode=scope_mode,
+        requesting_user_id=requesting_user_id,
     )
 
 
@@ -360,6 +376,7 @@ async def _safe_graph_recall(
     limit: int,
     project: Optional[str] = None,
     scope_mode: str = "default",
+    requesting_user_id: Optional[str] = None,
 ) -> Sequence[Tuple[StoredMemory, int]]:
     """Extract entity ids from ``query`` (best-effort) and call ``recall_by_entities``.
 
@@ -407,7 +424,12 @@ async def _safe_graph_recall(
     if not entity_ids:
         return []
     return await store.recall_by_entities(
-        org_id, entity_ids, limit=limit, project=project, scope_mode=scope_mode
+        org_id,
+        entity_ids,
+        limit=limit,
+        project=project,
+        scope_mode=scope_mode,
+        requesting_user_id=requesting_user_id,
     )
 
 
@@ -434,6 +456,7 @@ async def _hybrid_recall(
             project=params.project,
             half_life_days=params.half_life_days,
             scope_mode=params.scope_mode,
+            requesting_user_id=params.requesting_user_id,
         )
     )
     fts_task = _safe_text_recall(
@@ -443,6 +466,7 @@ async def _hybrid_recall(
         limit=fan_out,
         project=params.project,
         scope_mode=params.scope_mode,
+        requesting_user_id=params.requesting_user_id,
     )
     graph_task = _safe_graph_recall(
         store,
@@ -451,6 +475,7 @@ async def _hybrid_recall(
         limit=graph_fan_out,
         project=params.project,
         scope_mode=params.scope_mode,
+        requesting_user_id=params.requesting_user_id,
     )
 
     vec_raw, fts_raw, graph_raw = await asyncio.gather(
@@ -564,6 +589,7 @@ async def hybrid_retrieve_with_report(
     half_life_days: int = 30,
     min_score_override: Optional[float] = None,
     scope_mode: str = "default",
+    requesting_user_id: Optional[str] = None,
 ) -> HybridRetrieveReport:
     """Hybrid recall returning the full diagnostic report.
 
@@ -599,6 +625,7 @@ async def hybrid_retrieve_with_report(
             project=project,
             half_life_days=half_life_days,
             scope_mode=scope_mode,
+            requesting_user_id=requesting_user_id,
         ),
     )
 
@@ -615,6 +642,7 @@ async def hybrid_retrieve(
     half_life_days: int = 30,
     min_score_override: Optional[float] = None,
     scope_mode: str = "default",
+    requesting_user_id: Optional[str] = None,
 ) -> Sequence[HybridResult]:
     """Backward-compatible entry point — returns just the filtered results.
 
@@ -637,5 +665,6 @@ async def hybrid_retrieve(
         half_life_days=half_life_days,
         min_score_override=min_score_override,
         scope_mode=scope_mode,
+        requesting_user_id=requesting_user_id,
     )
     return report.results

@@ -155,6 +155,7 @@ async def list_at_time(
         entity_name=entity,
         type_filter=type,
         limit=limit,
+        requesting_user_id=auth.principal_id,
     )
     return AtTimeResponse(
         at=at,

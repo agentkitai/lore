@@ -131,6 +131,7 @@ async def search(
         profile=resolved_profile,
         min_score_override=min_score,
         scope_mode=scope,
+        requesting_user_id=auth.principal_id,
     )
 
     hits = [

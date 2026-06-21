@@ -337,6 +337,17 @@ def _row_to_memory(row) -> StoredMemory:
         scope_val = row["scope"]
     except (IndexError, KeyError):
         scope_val = None
+    # Migration 026: visibility/user_id, tolerated defensively like scope so
+    # SELECTs/fixtures that omit the columns don't crash. The recall WHERE uses
+    # the real columns, so a mapper default never affects the filter.
+    try:
+        visibility_val = row["visibility"]
+    except (IndexError, KeyError):
+        visibility_val = None
+    try:
+        user_id_val = row["user_id"]
+    except (IndexError, KeyError):
+        user_id_val = None
     return StoredMemory(
         id=row["id"],
         org_id=row["org_id"],
@@ -354,7 +365,29 @@ def _row_to_memory(row) -> StoredMemory:
         access_count=row["access_count"] or 0,
         last_accessed_at=_parse_iso(row["last_accessed_at"]),
         scope=scope_val if scope_val else "project",
+        visibility=visibility_val if visibility_val else "private",
+        user_id=user_id_val,
     )
+
+
+def _append_visibility(where: list, sql_params: list, requesting_user_id, *, col_prefix: str = "") -> None:
+    """Migration 026: restrict recall to the requester's own private rows plus
+    the team's shared rows. SQLite (``?``-placeholder) twin of
+    ``postgres._append_visibility``; no-op when ``requesting_user_id`` is None.
+    Appends clause and bind value in lockstep to keep positional binding order.
+
+    Unowned rows (``user_id IS NULL``) stay visible to everyone — see the
+    Postgres twin for the rationale (legacy / solo / org-level background
+    memories; a write that sets no owner fails open, not into a black hole).
+    """
+    if requesting_user_id is None:
+        return
+    where.append(
+        f"({col_prefix}visibility = 'shared' "
+        f"OR {col_prefix}user_id = ? "
+        f"OR {col_prefix}user_id IS NULL)"
+    )
+    sql_params.append(requesting_user_id)
 
 
 def _row_to_member(row) -> StoredMember:
@@ -1080,8 +1113,8 @@ class SqliteStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, source,
-                     project, expires_at, meta, scope)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     project, expires_at, meta, scope, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     memory_id,
@@ -1094,6 +1127,7 @@ class SqliteStore:
                     memory.expires_at.isoformat() if memory.expires_at else None,
                     json.dumps(dict(memory.meta)),
                     memory.scope,
+                    memory.user_id,
                 ),
             )
             rowid = cursor.lastrowid
@@ -1109,7 +1143,7 @@ class SqliteStore:
                 SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, access_count,
-                       last_accessed_at, scope
+                       last_accessed_at, scope, visibility, user_id
                 FROM memories WHERE rowid = ?
                 """,
                 (rowid,),
@@ -1120,30 +1154,84 @@ class SqliteStore:
             raise StoreError(f"insert_memory: row {rowid} disappeared after insert")
         return _row_to_memory(row)
 
-    async def get_memory(self, org_id: str, memory_id: str) -> Optional["StoredMemory"]:
+    async def get_memory(
+        self, org_id: str, memory_id: str, *, requesting_user_id: Optional[str] = None
+    ) -> Optional["StoredMemory"]:
         """Fetch a memory by ``(id, org_id)``; excludes already-expired rows.
 
         Mirrors PostgresStore: an expired row is invisible to ``get_memory``
         even though it physically still lives in the table until the next
-        ``expire_memories`` sweep.
+        ``expire_memories`` sweep. ``requesting_user_id`` (migration 026)
+        additionally hides another user's private rows when set.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
+        where = ["id = ?", "org_id = ?", "(expires_at IS NULL OR expires_at > ?)"]
+        bind: list = [memory_id, org_id, now_iso]
+        _append_visibility(where, bind, requesting_user_id)
         async with self._acquire() as conn:
             async with conn.execute(
-                """
+                f"""
                 SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, access_count,
-                       last_accessed_at, scope
+                       last_accessed_at, scope, visibility, user_id
                 FROM memories
-                WHERE id = ?
-                  AND org_id = ?
-                  AND (expires_at IS NULL OR expires_at > ?)
+                WHERE {' AND '.join(where)}
                 """,
-                (memory_id, org_id, now_iso),
+                tuple(bind),
             ) as cur:
                 row = await cur.fetchone()
         return _row_to_memory(row) if row else None
+
+    async def promote_memory(
+        self, org_id: str, memory_id: str, *, promoted_by: Optional[str]
+    ) -> Optional["StoredMemory"]:
+        """Migration 026: flip a PRIVATE memory to SHARED, recording who/when.
+        Owner-gated when ``promoted_by`` is set; unconstrained in solo mode.
+        Returns the updated row, or None if nothing matched. Mirrors
+        ``PostgresStore.promote_memory``.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        set_bind: list = [promoted_by, now_iso]
+        where = ["id = ?", "org_id = ?", "visibility = 'private'"]
+        where_bind: list = [memory_id, org_id]
+        if promoted_by is not None:
+            where.append("user_id = ?")  # owner gate
+            where_bind.append(promoted_by)
+        sql = (
+            "UPDATE memories SET visibility = 'shared', promoted_by = ?, "
+            f"promoted_at = ? WHERE {' AND '.join(where)}"
+        )
+        async with self.transaction() as tx:
+            cursor = await tx.execute(sql, tuple(set_bind + where_bind))
+            updated = cursor.rowcount
+            await cursor.close()
+        if updated < 1:
+            return None
+        return await self.get_memory(org_id, memory_id)
+
+    async def demote_memory(
+        self, org_id: str, memory_id: str, *, demoted_by: Optional[str]
+    ) -> Optional["StoredMemory"]:
+        """Migration 026: flip a SHARED memory back to PRIVATE (clear promote
+        provenance). Owner-gated symmetrically with ``promote_memory``.
+        """
+        where = ["id = ?", "org_id = ?", "visibility = 'shared'"]
+        bind: list = [memory_id, org_id]
+        if demoted_by is not None:
+            where.append("user_id = ?")
+            bind.append(demoted_by)
+        sql = (
+            "UPDATE memories SET visibility = 'private', promoted_by = NULL, "
+            f"promoted_at = NULL WHERE {' AND '.join(where)}"
+        )
+        async with self.transaction() as tx:
+            cursor = await tx.execute(sql, tuple(bind))
+            updated = cursor.rowcount
+            await cursor.close()
+        if updated < 1:
+            return None
+        return await self.get_memory(org_id, memory_id)
 
     async def delete_memory(self, org_id: str, memory_id: str) -> bool:
         """Delete a memory and its companion vector inside one transaction.
@@ -1179,7 +1267,7 @@ class SqliteStore:
         "id, org_id, content, context, tags, source, "
         "project, created_at, updated_at, expires_at, upvotes, "
         "downvotes, meta, access_count, last_accessed_at, "
-        "scope"
+        "scope, visibility, user_id"
     )
 
     async def update_memory(
@@ -1320,6 +1408,7 @@ class SqliteStore:
             now_iso = datetime.now(timezone.utc).isoformat()
             where.append(f"({prefix}expires_at IS NULL OR {prefix}expires_at > ?)")
             params.append(now_iso)
+        _append_visibility(where, params, filter.requesting_user_id, col_prefix=prefix)
         return where, params
 
     async def list_memories(
@@ -1570,6 +1659,7 @@ class SqliteStore:
             # project — the override is on scope, not project.
             where.append("m.project = ?")
             sql_params.append(params.project)
+        _append_visibility(where, sql_params, params.requesting_user_id, col_prefix="m.")
         if params.exclude_expired:
             now_iso = datetime.now(timezone.utc).isoformat()
             where.append("(m.expires_at IS NULL OR m.expires_at > ?)")
@@ -1583,7 +1673,7 @@ class SqliteStore:
                 m.id, m.org_id, m.content, m.context, m.tags,
                 m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                 m.upvotes, m.downvotes, m.meta,
-                m.access_count, m.last_accessed_at, m.scope,
+                m.access_count, m.last_accessed_at, m.scope, m.visibility, m.user_id,
                 v.distance AS distance,
                 (
                     (1.0 - v.distance)
@@ -1639,6 +1729,8 @@ class SqliteStore:
                     access_count=sm.access_count,
                     last_accessed_at=sm.last_accessed_at,
                     scope=sm.scope,
+                    visibility=sm.visibility,
+                    user_id=sm.user_id,
                     score=float(r["score"]),
                 )
             )
@@ -1937,6 +2029,7 @@ class SqliteStore:
         project: Optional[str] = None,
         exclude_ids: Sequence[str] = (),
         limit: int = 3,
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence["StoredMemory"]:
         """List the most recent session-snapshot memories for an org.
 
@@ -1965,6 +2058,7 @@ class SqliteStore:
             placeholders = ",".join(["?"] * len(exclude_ids))
             where.append(f"id NOT IN ({placeholders})")
             params.extend(exclude_ids)
+        _append_visibility(where, params, requesting_user_id)
         params.append(limit)
         sql = (
             f"SELECT {self._MEMORY_COLS} FROM memories "
@@ -3075,7 +3169,7 @@ class SqliteStore:
             await conn.commit()
 
     async def list_candidate_memories_for_recommendation(
-        self, org_id: str, *, limit: int = 500,
+        self, org_id: str, *, limit: int = 500, requesting_user_id: Optional[str] = None,
     ) -> Sequence[RecommendationCandidate]:
         """List candidate memories (memories with embeddings) for the
         recommendation engine, ordered by ``created_at`` DESC.
@@ -3090,18 +3184,22 @@ class SqliteStore:
         025_drop_quality_score_columns.sql. ``RecommendationEngine``
         re-scores candidates anyway via signal weighting.
         """
+        where: list[str] = ["m.org_id = ?"]
+        params: list[Any] = [org_id]
+        _append_visibility(where, params, requesting_user_id, col_prefix="m.")
+        params.append(limit)
         sql = (
             "SELECT m.id, m.content, m.meta, m.created_at, "
             "m.access_count, m.last_accessed_at, "
             "vec_to_json(v.embedding) AS embedding_json "
             "FROM memories m "
             "INNER JOIN memory_vectors v ON v.memory_rowid = m.rowid "
-            "WHERE m.org_id = ? "
+            f"WHERE {' AND '.join(where)} "
             "ORDER BY m.created_at DESC "
             "LIMIT ?"
         )
         async with self._acquire() as conn:
-            async with conn.execute(sql, (org_id, limit)) as cur:
+            async with conn.execute(sql, tuple(params)) as cur:
                 rows = await cur.fetchall()
         return tuple(_row_to_recommendation_candidate(r) for r in rows)
 
@@ -5401,6 +5499,7 @@ class SqliteStore:
         limit: int = 20,
         project: Optional[str] = None,
         scope_mode: str = "default",
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[tuple[StoredMemory, float]]:
         """Phase 6C FTS branch on SQLite.
 
@@ -5441,13 +5540,14 @@ class SqliteStore:
         elif project is not None:
             where.append("m.project = ?")
             sql_params.append(project)
+        _append_visibility(where, sql_params, requesting_user_id, col_prefix="m.")
         sql_params.append(limit)
 
         sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta,
-                   m.access_count, m.last_accessed_at, m.scope,
+                   m.access_count, m.last_accessed_at, m.scope, m.visibility, m.user_id,
                    -bm25(memories_fts) AS fts_rank
             FROM memories_fts
             JOIN memories m ON m.rowid = memories_fts.rowid
@@ -5469,6 +5569,7 @@ class SqliteStore:
         limit: int = 20,
         project: Optional[str] = None,
         scope_mode: str = "default",
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[tuple[StoredMemory, int]]:
         """Phase 6C graph branch on SQLite.
 
@@ -5500,11 +5601,12 @@ class SqliteStore:
         elif project is not None:
             where.append("m.project = ?")
             params_tail.append(project)
+        _append_visibility(where, params_tail, requesting_user_id, col_prefix="m.")
         sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta,
-                   m.access_count, m.last_accessed_at, m.scope,
+                   m.access_count, m.last_accessed_at, m.scope, m.visibility, m.user_id,
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
@@ -5851,6 +5953,7 @@ class SqliteStore:
         entity_name: Optional[str] = None,
         type_filter: Optional[str] = None,
         limit: int = 20,
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[StoredMemory]:
         at_iso = self._to_iso(at)
         params: list[Any] = [org_id, at_iso]
@@ -5866,6 +5969,9 @@ class SqliteStore:
         if type_filter is not None:
             params.append(type_filter)
             where.append("json_extract(m.meta, '$.type') = ?")
+        # Visibility predicate sits in the main WHERE, so its bind value must
+        # precede the subquery's `ts <= ?` and the trailing LIMIT.
+        _append_visibility(where, params, requesting_user_id, col_prefix="m.")
         # The "not currently superseded as of `at`" subquery: latest row per
         # memory_id (≤ at) with non-null superseded_by.
         params.append(at_iso)

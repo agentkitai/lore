@@ -22,6 +22,10 @@ class NewMemory:
     # default; recall applies (scope='global') OR (scope='project' AND
     # project = current_project).
     scope: str = "project"
+    # Migration 026: owner of this memory. When ``None`` (solo/embedded mode),
+    # the row is unowned and the per-user recall predicate never filters it.
+    # New captures are 'private' by the column default; ``promote`` shares them.
+    user_id: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +50,8 @@ class NewObservation:
     session_id: Optional[str] = None
     # Phase 6G: see NewMemory.scope.
     scope: str = "project"
+    # Migration 026: owner of this observation (the capturing principal).
+    user_id: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +75,10 @@ class StoredMemory:
     # so the default here is purely for ergonomics on hand-built fixtures.
     # Production rows always have a real scope from the row.
     scope: str = "project"
+    # Migration 026: per-user visibility + owner. Defaults are for hand-built
+    # fixtures only; production rows always carry real values from the column.
+    visibility: str = "private"
+    user_id: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +103,9 @@ class MemoryFilter:
     include_expired: bool = False
     text_query: Optional[str] = None       # ILIKE search across content + context
     min_reputation: Optional[int] = None   # reputation_score >= N
+    # Migration 026: when set, hide other users' private rows
+    # ((visibility='shared' OR user_id=:requesting_user_id)). None = unfiltered.
+    requesting_user_id: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +133,12 @@ class RecallParams:
     # when ``project`` is None, restrict to ``scope='global'`` only. Pass
     # ``'all'`` to skip the predicate entirely (rare; cross-project recall).
     scope_mode: str = "default"
+    # Per-user visibility predicate (migration 026). When set, recall returns
+    # ``(visibility='shared' OR user_id=:requesting_user_id)`` — the requester's
+    # own private rows plus the team's shared rows. When ``None`` (solo/embedded
+    # mode, no identity), the predicate is omitted entirely so behavior is
+    # identical to before per-user scoping existed.
+    requesting_user_id: Optional[str] = None
 
 
 # Graph slice dataclasses

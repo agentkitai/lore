@@ -819,6 +819,50 @@ def downvote_memory(memory_id: str) -> str:
 
 @mcp.tool(
     description=(
+        "Share a private memory with the whole team (PRIVATE → SHARED). "
+        "USE THIS WHEN: a memory you captured is useful to teammates and you "
+        "want everyone in the org to be able to recall it. By default captures "
+        "are private to you; this opts a specific one into the shared pool. "
+        "Pass the memory ID from recall output."
+    ),
+)
+def promote_memory(memory_id: str) -> str:
+    """Share a private memory with the team."""
+    try:
+        lore = _get_lore()
+        ok = lore.promote(memory_id)
+        return (
+            f"Shared memory {memory_id} with the team"
+            if ok
+            else f"Memory {memory_id} not found"
+        )
+    except Exception as e:
+        return f"Failed to promote: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Unshare a memory, making it private to you again (SHARED → PRIVATE). "
+        "USE THIS WHEN: a memory was shared with the team but should no longer "
+        "be visible to others. Pass the memory ID from recall output."
+    ),
+)
+def demote_memory(memory_id: str) -> str:
+    """Unshare a memory (make it private again)."""
+    try:
+        lore = _get_lore()
+        ok = lore.demote(memory_id)
+        return (
+            f"Unshared memory {memory_id} (now private)"
+            if ok
+            else f"Memory {memory_id} not found"
+        )
+    except Exception as e:
+        return f"Failed to demote: {e}"
+
+
+@mcp.tool(
+    description=(
         "Export memories formatted for LLM context injection. "
         "USE THIS WHEN: you need to inject relevant memories directly into a prompt "
         "or system message. Returns a formatted block of memories optimized for your "

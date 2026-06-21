@@ -33,6 +33,19 @@ class AuthContext:
     key_id: str
     role: str = "admin"  # default for backward compat with existing API keys
 
+    @property
+    def principal_id(self) -> str:
+        """Stable id of the authenticated principal — used as a memory's owner
+        and as the per-user recall filter (migration 026). For OIDC this is
+        ``oidc:{sub}`` (one identity per user); for API keys it is the key id
+        (one identity per key, so per-user keys get per-user isolation while a
+        shared key is correctly one identity). Always present in server mode;
+        solo/embedded mode has no AuthContext, so the filter is simply never
+        applied. The SAME value is written on capture and used on recall, so it
+        must never be transformed (e.g. don't strip the ``oidc:`` prefix) or a
+        user could not see their own private memories."""
+        return self.key_id
+
 
 class AuthError(HTTPException):
     """Auth error that returns {"error": "code"} directly."""

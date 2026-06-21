@@ -111,6 +111,7 @@ async def create_memory(
         expires_at=body.expires_at,
         meta=body.meta or {},
         scope=body.scope,
+        user_id=auth.principal_id,  # migration 026: owner = the writing principal
     )
 
     # Fire-and-forget enrichment unchanged from before
@@ -156,6 +157,7 @@ async def search_memories(
         min_score=body.min_score,
         project=auth.project or body.project,
         scope_mode=body.scope,
+        requesting_user_id=auth.principal_id,
     )
     return MemorySearchResponse(
         memories=[
@@ -190,12 +192,14 @@ async def record_access(
     store: Store = Depends(get_store),
 ) -> dict:
     """Record an access event."""
-    # Enforce project scoping: a project-scoped key must not access memories
-    # outside its project.
-    if auth.project:
-        existing = await store.get_memory(auth.org_id, memory_id)
-        if existing is None or existing.project != auth.project:
-            raise HTTPException(status_code=404, detail="Memory not found")
+    # Visibility (migration 026) + project scoping: a user must not record
+    # access on another user's private memory, and a project-scoped key must
+    # not reach outside its project. The visibility-filtered get hides both.
+    existing = await store.get_memory(
+        auth.org_id, memory_id, requesting_user_id=auth.principal_id
+    )
+    if existing is None or (auth.project and existing.project != auth.project):
+        raise HTTPException(status_code=404, detail="Memory not found")
 
     try:
         updated = await memories_service.record_memory_access(store, auth.org_id, memory_id)
@@ -269,7 +273,9 @@ async def get_memory_details(
     resolved: list = []
     errors: List[str] = []
     for mid in unique_ids:
-        m = await _get_memory(store, auth.org_id, mid)
+        m = await _get_memory(
+            store, auth.org_id, mid, requesting_user_id=auth.principal_id
+        )
         if m is None:
             errors.append(mid)
             continue
@@ -301,7 +307,9 @@ async def get_memory(
 ) -> MemoryResponse:
     """Get a single memory by ID."""
     store = await get_store()
-    m = await _get_memory(store, auth.org_id, memory_id)
+    m = await _get_memory(
+        store, auth.org_id, memory_id, requesting_user_id=auth.principal_id
+    )
     if m is None:
         raise HTTPException(status_code=404, detail="Memory not found")
     return MemoryResponse(
@@ -392,6 +400,7 @@ async def list_memories(
         limit=limit,
         offset=offset,
         include_expired=include_expired,
+        requesting_user_id=auth.principal_id,
     )
     return MemoryListResponse(
         memories=[_stored_to_memory_response(m) for m in rows],
@@ -444,3 +453,61 @@ async def downvote_memory(
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")
     return {"id": updated.id, "upvotes": updated.upvotes, "downvotes": updated.downvotes}
+
+
+# ── Visibility: promote / demote (migration 026) ───────────────────
+
+
+@router.post("/{memory_id}/promote")
+async def promote_memory(
+    memory_id: str,
+    auth: AuthContext = Depends(require_role("writer", "admin")),
+):
+    """Share a private memory with the team (PRIVATE → SHARED).
+
+    Owner-gated: only the principal that captured the memory may share it.
+    Idempotent — promoting an already-shared memory is a no-op success.
+    A non-existent id, or another user's private memory, both return 404
+    (so the endpoint never reveals that someone else's private memory exists).
+    """
+    store = await get_store()
+    stored = await store.promote_memory(
+        auth.org_id, memory_id, promoted_by=auth.principal_id
+    )
+    if stored is not None:
+        return {
+            "id": stored.id,
+            "visibility": stored.visibility,
+            "promoted_by": auth.principal_id,
+        }
+    existing = await store.get_memory(
+        auth.org_id, memory_id, requesting_user_id=auth.principal_id
+    )
+    if existing is not None and existing.visibility == "shared":
+        return {"id": existing.id, "visibility": "shared"}  # idempotent no-op
+    raise HTTPException(status_code=404, detail="Memory not found")
+
+
+@router.post("/{memory_id}/demote")
+async def demote_memory(
+    memory_id: str,
+    auth: AuthContext = Depends(require_role("writer", "admin")),
+):
+    """Unshare a memory (SHARED → PRIVATE), clearing promote provenance.
+    Owner-gated and idempotent, mirroring ``promote``."""
+    store = await get_store()
+    stored = await store.demote_memory(
+        auth.org_id, memory_id, demoted_by=auth.principal_id
+    )
+    if stored is not None:
+        return {
+            "id": stored.id,
+            "visibility": stored.visibility,
+            "demoted_by": auth.principal_id,
+        }
+    existing = await store.get_memory(
+        auth.org_id, memory_id, requesting_user_id=auth.principal_id
+    )
+    if existing is not None and existing.visibility == "private":
+        return {"id": existing.id, "visibility": "private"}  # idempotent no-op
+    raise HTTPException(status_code=404, detail="Memory not found")

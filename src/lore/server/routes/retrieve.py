@@ -251,6 +251,7 @@ async def retrieve(
         profile=resolved_profile,
         min_score_override=min_score,
         scope_mode=scope,
+        requesting_user_id=auth.principal_id,
     )
     hybrid_results = report.results
 
@@ -278,6 +279,7 @@ async def retrieve(
         session_stored = await retrieve_service.recent_session_snapshots(
             store, org_id=auth.org_id, project=effective_project,
             exclude_ids=tuple(existing_ids), limit=3,
+            requesting_user_id=auth.principal_id,
         )
         session_memories = [_stored_to_retrieve_memory(sm) for sm in session_stored]
         memories.extend(session_memories)

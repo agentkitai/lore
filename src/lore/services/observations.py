@@ -93,4 +93,5 @@ async def create_observation(
         project=obs.project,
         meta=meta,
         scope=obs.scope,
+        user_id=obs.user_id,
     )

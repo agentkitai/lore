@@ -329,6 +329,26 @@ class HttpStore(Store):
             raise MemoryNotFoundError(memory_id)
 
     # ------------------------------------------------------------------
+    # Visibility: promote / demote (migration 026)
+    # ------------------------------------------------------------------
+
+    def promote(self, memory_id: str) -> bool:
+        """Share a private memory with the team (PRIVATE → SHARED) via REST."""
+        resp = self._request("POST", f"/v1/memories/{memory_id}/promote")
+        if resp.status_code == 404:
+            from lore.exceptions import MemoryNotFoundError
+            raise MemoryNotFoundError(memory_id)
+        return resp.status_code == 200
+
+    def demote(self, memory_id: str) -> bool:
+        """Unshare a memory (SHARED → PRIVATE) via REST."""
+        resp = self._request("POST", f"/v1/memories/{memory_id}/demote")
+        if resp.status_code == 404:
+            from lore.exceptions import MemoryNotFoundError
+            raise MemoryNotFoundError(memory_id)
+        return resp.status_code == 200
+
+    # ------------------------------------------------------------------
     # Search (not part of Store ABC — used by Lore.recall())
     # ------------------------------------------------------------------
 

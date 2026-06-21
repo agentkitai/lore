@@ -120,6 +120,7 @@ async def recommend(
     context: str,
     session_entities: Optional[Sequence[str]] = None,
     max_results: int = 3,
+    requesting_user_id: Optional[str] = None,
 ) -> list:
     """Run the recommendation engine. Returns engine `Recommendation` objects.
 
@@ -133,7 +134,9 @@ async def recommend(
     aggressiveness = cfg_row.aggressiveness if cfg_row else DEFAULT_AGGRESSIVENESS
     max_suggestions = cfg_row.max_suggestions if cfg_row else DEFAULT_MAX_SUGGESTIONS
 
-    candidates = await store.list_candidate_memories_for_recommendation(org_id)
+    candidates = await store.list_candidate_memories_for_recommendation(
+        org_id, requesting_user_id=requesting_user_id
+    )
     if not candidates:
         return []
 

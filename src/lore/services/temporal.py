@@ -118,6 +118,7 @@ async def memories_at_time(
     entity_name: Optional[str] = None,
     type_filter: Optional[str] = None,
     limit: int = 20,
+    requesting_user_id: Optional[str] = None,
 ) -> Sequence[StoredMemory]:
     """Memories that existed and were not superseded at the given timestamp.
 
@@ -133,4 +134,5 @@ async def memories_at_time(
         entity_name=entity_name,
         type_filter=type_filter,
         limit=limit,
+        requesting_user_id=requesting_user_id,
     )
