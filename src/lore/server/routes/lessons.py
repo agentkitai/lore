@@ -11,6 +11,7 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
+from lore.exceptions import SecretBlockedError
 from lore.persistence import ExportedMemory, Store, StoredMemory
 from lore.persistence.exceptions import StoreNotFoundError
 from lore.server.auth import AuthContext, get_auth_context, require_role
@@ -90,20 +91,23 @@ async def create_lesson(
     if auth.project is not None:
         project = auth.project
 
-    lesson_id = await lessons_service.create(
-        store,
-        org_id=auth.org_id,
-        problem=body.problem,
-        resolution=body.resolution,
-        context=body.context,
-        tags=body.tags,
-        source=body.source,
-        project=project,
-        embedding=body.embedding,
-        expires_at=body.expires_at,
-        meta=body.meta,
-        scope=body.scope,
-    )
+    try:
+        lesson_id = await lessons_service.create(
+            store,
+            org_id=auth.org_id,
+            problem=body.problem,
+            resolution=body.resolution,
+            context=body.context,
+            tags=body.tags,
+            source=body.source,
+            project=project,
+            embedding=body.embedding,
+            expires_at=body.expires_at,
+            meta=body.meta,
+            scope=body.scope,
+        )
+    except SecretBlockedError as e:
+        raise HTTPException(status_code=422, detail=f"Write blocked: contains a {e}")
     return LessonCreateResponse(id=lesson_id)
 
 

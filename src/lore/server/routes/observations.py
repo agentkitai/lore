@@ -16,6 +16,7 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
+from lore.exceptions import SecretBlockedError
 from lore.persistence import NewObservation, StoredMemory
 from lore.persistence.protocol import Store
 from lore.server.auth import AuthContext, get_auth_context, require_role
@@ -92,7 +93,10 @@ async def create_observation(
         scope=body.scope,
         user_id=auth.principal_id,  # migration 026: owner = capturing principal
     )
-    stored = await _create_observation(store, obs, _embed)
+    try:
+        stored = await _create_observation(store, obs, _embed)
+    except SecretBlockedError as e:
+        raise HTTPException(status_code=422, detail=f"Write blocked: contains a {e}")
 
     # Fire-and-forget graph extraction. Observations are the bulk-write
     # tier the dream/capture subagents save through; without this the

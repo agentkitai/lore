@@ -20,9 +20,10 @@ from lore.decay import decay_factor, resolve_half_life
 from lore.embed.base import Embedder
 from lore.embed.local import LocalEmbedder, make_code_embedder
 from lore.embed.router import EmbeddingRouter
-from lore.exceptions import MemoryNotFoundError, SecretBlockedError
+from lore.exceptions import MemoryNotFoundError
 from lore.recent import group_memories_by_project
 from lore.redact.pipeline import RedactionPipeline
+from lore.redact.write import redact_for_write
 from lore.store.base import Store
 from lore.store.http import HttpStore
 from lore.types import (
@@ -405,17 +406,16 @@ class Lore:
                 f"must be one of: {', '.join(sorted(VALID_MEMORY_TYPES))}"
             )
 
-        # Security scan and redact before storage
+        # Security scan and redact before storage (shared with the server-side
+        # write path via redact_for_write). This Lore SDK keeps its own
+        # redactor, which blocks secrets by default; the helper just applies it
+        # and surfaces the redaction tag.
         if self._redactor is not None:
-            scan = self._redactor.scan(content)
-            if scan.action == "block":
-                raise SecretBlockedError(scan.blocked_types[0])
-            content = scan.masked_text()
-            if context:
-                ctx_scan = self._redactor.scan(context)
-                if ctx_scan.action == "block":
-                    raise SecretBlockedError(ctx_scan.blocked_types[0])
-                context = ctx_scan.masked_text()
+            content, context, _redaction_meta = redact_for_write(
+                self._redactor, content, context
+            )
+            if _redaction_meta:
+                metadata = {**(metadata or {}), **_redaction_meta}
 
         # Compute embedding
         embed_text = f"{content} {context}" if context else content

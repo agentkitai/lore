@@ -21,6 +21,7 @@ from lore.persistence import (
     StoredMemory,
 )
 from lore.persistence.exceptions import StoreNotFoundError
+from lore.redact.write import get_write_redactor, redact_for_write
 
 logger = logging.getLogger(__name__)
 
@@ -62,11 +63,22 @@ async def create_memory(
     stays 'project'. Pass ``scope='project'`` or ``scope='global'`` to
     override the type-based default.
     """
+    # Write-side redaction (LORE_REDACT_* config): the single chokepoint every
+    # server/AsyncLore/internal write funnels through. Masks secrets/PII/
+    # denylisted terms + tags meta.redacted; raises SecretBlockedError only in
+    # block mode. ponytail: the caller-supplied embedding may reflect
+    # pre-redaction text — the secret value itself is never stored; re-embed in
+    # the caller if exact vector/text parity matters.
+    content, context, redaction_meta = redact_for_write(
+        get_write_redactor(), content, context
+    )
+    meta_dict = dict(meta or {})
+    meta_dict.update(redaction_meta)
     normalized_tags = tuple(t.strip() for t in tags if t and t.strip())
     effective_scope = (
         scope
         if scope is not None
-        else default_scope_for_type(meta.get("type") if meta else None)
+        else default_scope_for_type(meta_dict.get("type"))
     )
     return await store.insert_memory(
         NewMemory(
@@ -78,7 +90,7 @@ async def create_memory(
             source=source,
             project=project,
             expires_at=expires_at,
-            meta=dict(meta or {}),
+            meta=meta_dict,
             scope=effective_scope,
             user_id=user_id,
         )
@@ -110,6 +122,10 @@ async def update_memory(
     expires_at: Optional[datetime] = None,
     meta: Optional[Mapping[str, Any]] = None,
 ) -> StoredMemory:
+    # Redact updated content/context too (no-op when neither is being patched).
+    content, context, _redaction_meta = redact_for_write(
+        get_write_redactor(), content, context
+    )
     patch = MemoryPatch(
         content=content,
         context=context,

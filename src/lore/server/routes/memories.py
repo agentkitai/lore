@@ -15,6 +15,7 @@ try:
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
 
+from lore.exceptions import SecretBlockedError
 from lore.persistence.exceptions import StoreNotFoundError
 from lore.persistence.protocol import Store
 from lore.server.auth import AuthContext, get_auth_context, require_role
@@ -99,20 +100,24 @@ async def create_memory(
     embedder = _get_embedder()
     embedding = body.embedding if body.embedding else await asyncio.to_thread(embedder.embed, body.content)
 
-    stored = await _create_memory(
-        store,
-        org_id=auth.org_id,
-        content=body.content,
-        context=body.context,
-        embedding=embedding,
-        tags=body.tags or [],
-        source=body.source,
-        project=auth.project or body.project,
-        expires_at=body.expires_at,
-        meta=body.meta or {},
-        scope=body.scope,
-        user_id=auth.principal_id,  # migration 026: owner = the writing principal
-    )
+    try:
+        stored = await _create_memory(
+            store,
+            org_id=auth.org_id,
+            content=body.content,
+            context=body.context,
+            embedding=embedding,
+            tags=body.tags or [],
+            source=body.source,
+            project=auth.project or body.project,
+            expires_at=body.expires_at,
+            meta=body.meta or {},
+            scope=body.scope,
+            user_id=auth.principal_id,  # migration 026: owner = the writing principal
+        )
+    except SecretBlockedError as e:
+        # Write-side redaction in block mode (LORE_REDACT_BLOCK).
+        raise HTTPException(status_code=422, detail=f"Write blocked: contains a {e}")
 
     # Fire-and-forget enrichment unchanged from before
     enrich = body.enrich
