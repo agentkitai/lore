@@ -75,6 +75,10 @@ dev = [
 
 [project.scripts]
 lore = "lore.cli:main"
+# Dedicated stdio MCP-server entrypoint (needs the [mcp] extra). Lets clients
+# launch the server via `uvx --from lore-sdk[mcp] lore-memory` — the name the
+# integration templates and docs use — instead of the longer `lore mcp`.
+lore-memory = "lore.mcp.server:run_server"
 
 [project.urls]
 Homepage = "https://github.com/agentkitai/lore"

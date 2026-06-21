@@ -8,6 +8,8 @@
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)
 [![Tests](https://img.shields.io/github/actions/workflow/status/agentkitai/lore/ci.yml?label=tests)](https://github.com/agentkitai/lore/actions)
 
+<!-- mcp-name: io.github.agentkitai/lore -->
+
 **Your AI agents remember everything. Automatically.**
 
 Lore is a cross-agent memory system that stores, connects, and retrieves knowledge across any AI agent — without code changes. Install a hook, and relevant memories appear in every prompt. No agent cooperation needed.
@@ -135,6 +137,21 @@ lore serve  # starts on port 8765
 ```bash
 curl http://localhost:8765/v1/memories
 ```
+
+## Add Lore as an MCP server
+
+One line — no install — drops Lore into any MCP client (Claude Code, Cursor, VS Code, Codex, Claude Desktop):
+
+```jsonc
+// Claude Code: .mcp.json  ·  Claude Desktop: claude_desktop_config.json
+{
+  "mcpServers": {
+    "lore": { "command": "uvx", "args": ["--from", "lore-sdk[mcp]", "lore-memory"] }
+  }
+}
+```
+
+Already installed (`pip install lore-sdk[mcp]`)? Use `"command": "lore-memory"` (or `lore mcp`). Per-client guides are in [Multi-Agent Setup](#multi-agent-setup) below; `lore integrate --platform <client>` writes the config for you.
 
 ## Multi-Agent Setup
 

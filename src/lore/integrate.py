@@ -83,7 +83,7 @@ def _claude_mcp_settings(server_url: str, api_key: Optional[str]) -> dict:
         "mcpServers": {
             "lore": {
                 "command": "uvx",
-                "args": ["lore-memory"],
+                "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
                 "env": env,
             }
         }
@@ -142,7 +142,7 @@ def _cursor_mcp_config(server_url: str, api_key: Optional[str]) -> dict:
         "mcpServers": {
             "lore": {
                 "command": "uvx",
-                "args": ["lore-memory"],
+                "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
                 "env": env,
             }
         }
@@ -157,6 +157,8 @@ mcpServers:
   lore:
     command: uvx
     args:
+      - --from
+      - lore-sdk[mcp]
       - lore-memory
     env:
       LORE_PROJECT: {project}
@@ -168,7 +170,7 @@ OPENCLAW_CONFIG_TEMPLATE = """\
   "mcpServers": {{
     "lore": {{
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {{
         "LORE_PROJECT": "{project}"{remote_env}
       }}
@@ -341,7 +343,7 @@ def _generate_openclaw(server_url: str, api_key: Optional[str]) -> None:
             env["LORE_API_KEY"] = api_key
         mcp["lore"] = {
             "command": "uvx",
-            "args": ["lore-memory"],
+            "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
             "env": env,
         }
         config_path.write_text(json.dumps(existing, indent=2) + "\n")
