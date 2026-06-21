@@ -32,6 +32,12 @@ async def create_snapshot(
     project: Optional[str] = None,
 ) -> StoredMemory:
     """Create a session snapshot stored as a tagged memory."""
+    # Write-side redaction: snapshots capture raw session state, so scrub
+    # secrets/PII before persistence (and derive the title from the scrubbed
+    # content so it can't leak either).
+    from lore.redact.write import get_write_redactor, redact_for_write
+
+    content, title, redaction_meta = redact_for_write(get_write_redactor(), content, title)
     sid = session_id or _make_session_id()
     snap_title = title or content[:80].strip()
     all_tags = ("session_snapshot", sid, *(tags or ()))
@@ -41,6 +47,7 @@ async def create_snapshot(
         "extraction_method": "raw",
         "type": "session_snapshot",
         "tier": "long",
+        **redaction_meta,
     }
     nm = NewMemory(
         org_id=org_id,

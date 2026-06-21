@@ -87,12 +87,21 @@ async def create(
     """
     # Local import to avoid a circular import between services.lessons and
     # services.memories at module-load time.
+    from lore.redact.write import get_write_redactor, redact_for_write
     from lore.services.memories import default_scope_for_type
 
+    # Write-side redaction (this path builds NewMemory directly rather than
+    # going through services.memories.create_memory, so it applies the pass
+    # itself). ``problem`` -> content, ``resolution`` -> context.
+    problem, resolution, redaction_meta = redact_for_write(
+        get_write_redactor(), problem, resolution
+    )
+    meta_dict = dict(meta or {})
+    meta_dict.update(redaction_meta)
     effective_scope = (
         scope
         if scope is not None
-        else default_scope_for_type((meta or {}).get("type") if meta else None)
+        else default_scope_for_type(meta_dict.get("type"))
     )
     nm = NewMemory(
         org_id=org_id,
@@ -103,7 +112,7 @@ async def create(
         project=project,
         embedding=embedding if embedding else [0.0] * 384,
         expires_at=expires_at,
-        meta=dict(meta or {}),
+        meta=meta_dict,
         scope=effective_scope,
     )
     stored = await store.insert_memory(nm)
@@ -387,6 +396,10 @@ async def import_lessons(
 
     Returns the count of items processed.
     """
+    # Note: import is a restore op (dominant case: re-importing this system's
+    # own already-redacted export), not a capture — so the write-side redaction
+    # pass is intentionally NOT applied here. Blocking a restore mid-batch would
+    # be destructive. Untrusted external imports are the admin's responsibility.
     count = 0
     for lesson in lessons:
         memory_id = lesson.id or str(ULID())
