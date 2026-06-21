@@ -79,6 +79,7 @@ async def get_recommendations(
         org_id=auth.org_id,
         context=context,
         max_results=max_results,
+        requesting_user_id=auth.principal_id,
     )
     return [_to_response(r) for r in results]
 
@@ -96,6 +97,7 @@ async def post_recommendations(
         context=body.context,
         session_entities=body.session_entities or None,
         max_results=body.max_results,
+        requesting_user_id=auth.principal_id,
     )
     return [_to_response(r) for r in results]
 
@@ -124,6 +126,7 @@ async def proactive_recommendations(
         context=context,
         session_entities=session_entities or None,
         max_results=max_results,
+        requesting_user_id=auth.principal_id,
     )
     return [_to_response(r) for r in results]
 

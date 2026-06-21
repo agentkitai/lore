@@ -103,6 +103,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("forget", help="Delete a memory")
     p.add_argument("id", help="Memory ID to delete")
 
+    # promote / demote (visibility — migration 026)
+    p = sub.add_parser("promote", help="Share a private memory with the team")
+    p.add_argument("id", help="Memory ID to share (PRIVATE → SHARED)")
+    p = sub.add_parser("demote", help="Unshare a memory (make it private again)")
+    p.add_argument("id", help="Memory ID to unshare (SHARED → PRIVATE)")
+
     # memories (list)
     p = sub.add_parser("memories", help="List memories")
     p.add_argument("--type", default=None, help="Filter by memory type")
@@ -779,10 +785,12 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     from lore.cli.commands.keys import cmd_keys_create, cmd_keys_list, cmd_keys_revoke
     from lore.cli.commands.manage import (
         cmd_backup,
+        cmd_demote,
         cmd_export,
         cmd_forget,
         cmd_import,
         cmd_memories,
+        cmd_promote,
         cmd_recent,
         cmd_restore,
         cmd_retention,
@@ -848,6 +856,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "remember": cmd_remember,
         "recall": cmd_recall,
         "forget": cmd_forget,
+        "promote": cmd_promote,
+        "demote": cmd_demote,
         "memories": cmd_memories,
         "stats": cmd_stats,
         "recent": cmd_recent,

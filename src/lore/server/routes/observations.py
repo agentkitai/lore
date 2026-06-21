@@ -90,6 +90,7 @@ async def create_observation(
         captured_by=body.captured_by,
         session_id=body.session_id,
         scope=body.scope,
+        user_id=auth.principal_id,  # migration 026: owner = capturing principal
     )
     stored = await _create_observation(store, obs, _embed)
 
@@ -127,6 +128,7 @@ async def list_observations(
         type="observation",
         limit=limit,
         offset=offset,
+        requesting_user_id=auth.principal_id,
     )
     return ObservationListResponse(
         observations=[_stored_to_observation_response(m) for m in rows],
@@ -146,7 +148,9 @@ async def get_observation(
     store: Store = Depends(get_store),
 ) -> ObservationResponse:
     """Fetch a single observation by ID."""
-    m = await _get_memory(store, auth.org_id, observation_id)
+    m = await _get_memory(
+        store, auth.org_id, observation_id, requesting_user_id=auth.principal_id
+    )
     if m is None:
         raise HTTPException(status_code=404, detail="Observation not found")
     meta = dict(m.meta) if m.meta else {}

@@ -130,6 +130,7 @@ async def search_lessons(
         limit=body.limit,
         min_score=body.min_score,
         scope_mode=body.scope,
+        requesting_user_id=auth.principal_id,
     )
 
     lessons = [
@@ -170,6 +171,7 @@ async def record_access(
             org_id=auth.org_id,
             lesson_id=lesson_id,
             project=auth.project,
+            requesting_user_id=auth.principal_id,
         )
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Lesson not found")
@@ -198,6 +200,7 @@ async def get_lesson(
             org_id=auth.org_id,
             lesson_id=lesson_id,
             project=auth.project,
+            requesting_user_id=auth.principal_id,
         )
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Lesson not found")
@@ -225,6 +228,7 @@ async def update_lesson(
             meta=body.meta,
             upvotes=body.upvotes,
             downvotes=body.downvotes,
+            requesting_user_id=auth.principal_id,
         )
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Lesson not found")
@@ -249,6 +253,7 @@ async def delete_lesson(
             org_id=auth.org_id,
             lesson_id=lesson_id,
             project=auth.project,
+            requesting_user_id=auth.principal_id,
         )
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Lesson not found")
@@ -288,6 +293,7 @@ async def list_lessons(
         min_reputation=min_reputation,
         limit=limit,
         offset=offset,
+        requesting_user_id=auth.principal_id,
     )
     return LessonListResponse(
         lessons=[_to_lesson_response(m) for m in memories],
@@ -310,6 +316,7 @@ async def export_lessons(
         store,
         org_id=auth.org_id,
         project=auth.project,
+        requesting_user_id=auth.principal_id,
     )
     return LessonExportResponse(lessons=[_to_export_item(em) for em in items])
 

@@ -51,6 +51,7 @@ async def create_memory(
     expires_at: Optional[datetime] = None,
     meta: Optional[Mapping[str, Any]] = None,
     scope: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> StoredMemory:
     """Insert a memory. Tag normalization and meta defaulting happen here.
 
@@ -79,14 +80,21 @@ async def create_memory(
             expires_at=expires_at,
             meta=dict(meta or {}),
             scope=effective_scope,
+            user_id=user_id,
         )
     )
 
 
 async def get_memory(
-    store: Store, org_id: str, memory_id: str
+    store: Store,
+    org_id: str,
+    memory_id: str,
+    *,
+    requesting_user_id: Optional[str] = None,
 ) -> Optional[StoredMemory]:
-    return await store.get_memory(org_id, memory_id)
+    return await store.get_memory(
+        org_id, memory_id, requesting_user_id=requesting_user_id
+    )
 
 
 async def update_memory(
@@ -133,6 +141,7 @@ async def list_memories(
     limit: Optional[int] = None,
     offset: int = 0,
     include_expired: bool = False,
+    requesting_user_id: Optional[str] = None,
 ) -> Sequence[StoredMemory]:
     return await store.list_memories(
         MemoryFilter(
@@ -146,6 +155,7 @@ async def list_memories(
             limit=limit,
             offset=offset,
             include_expired=include_expired,
+            requesting_user_id=requesting_user_id,
         )
     )
 
@@ -160,6 +170,7 @@ async def search_memories(
     project: Optional[str] = None,
     half_life_days: int = 30,
     scope_mode: str = "default",
+    requesting_user_id: Optional[str] = None,
 ) -> Sequence[ScoredMemory]:
     return await store.recall_by_embedding(
         RecallParams(
@@ -170,6 +181,7 @@ async def search_memories(
             project=project,
             half_life_days=half_life_days,
             scope_mode=scope_mode,
+            requesting_user_id=requesting_user_id,
         )
     )
 

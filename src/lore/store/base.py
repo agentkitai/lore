@@ -68,6 +68,22 @@ class Store(ABC):
         """Delete memories where expires_at < now. Returns count deleted."""
 
     # ------------------------------------------------------------------
+    # Visibility: promote / demote (migration 026)
+    # ------------------------------------------------------------------
+
+    def promote(self, memory_id: str) -> bool:
+        """Share a private memory with the team (PRIVATE → SHARED).
+
+        Returns True on success. Default raises so only stores that support
+        per-user visibility (e.g. ``HttpStore`` → REST) need to implement it.
+        """
+        raise NotImplementedError("This store does not support promote/demote")
+
+    def demote(self, memory_id: str) -> bool:
+        """Unshare a memory (SHARED → PRIVATE). Returns True on success."""
+        raise NotImplementedError("This store does not support promote/demote")
+
+    # ------------------------------------------------------------------
     # Fact + conflict storage (default no-op implementations)
     # ------------------------------------------------------------------
 

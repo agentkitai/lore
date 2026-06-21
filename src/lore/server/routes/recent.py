@@ -97,6 +97,7 @@ async def recent_activity(
         project=effective_project,
         hours=hours,
         max_memories=max_memories,
+        requesting_user_id=auth.principal_id,
     )
 
     # Group by project

@@ -120,6 +120,7 @@ async def search(
     limit: int,
     min_score: float,
     scope_mode: str = "default",
+    requesting_user_id: Optional[str] = None,
 ) -> list[dict]:
     """Vector recall with time-decay re-ranking.
 
@@ -140,6 +141,7 @@ async def search(
         limit=wider_limit,
         project=project,
         scope_mode=scope_mode,
+        requesting_user_id=requesting_user_id,
     )
     candidates = await store.recall_by_embedding(params)
 
@@ -194,12 +196,15 @@ async def record_access(
     org_id: str,
     lesson_id: str,
     project: Optional[str],
+    requesting_user_id: Optional[str] = None,
 ) -> dict:
     """Record an access event on a lesson. Returns a summary dict.
 
     Raises StoreNotFoundError on missing lesson or project mismatch.
     """
-    existing = await store.get_memory(org_id, lesson_id)
+    existing = await store.get_memory(
+        org_id, lesson_id, requesting_user_id=requesting_user_id
+    )
     if existing is None or not _project_match(existing, project):
         raise StoreNotFoundError("memories", lesson_id)
 
@@ -220,12 +225,15 @@ async def get(
     org_id: str,
     lesson_id: str,
     project: Optional[str],
+    requesting_user_id: Optional[str] = None,
 ) -> StoredMemory:
     """Fetch a lesson by id with project-scope check.
 
     Raises StoreNotFoundError on missing or project mismatch.
     """
-    existing = await store.get_memory(org_id, lesson_id)
+    existing = await store.get_memory(
+        org_id, lesson_id, requesting_user_id=requesting_user_id
+    )
     if existing is None or not _project_match(existing, project):
         raise StoreNotFoundError("memories", lesson_id)
     return existing
@@ -241,6 +249,7 @@ async def update(
     meta: Optional[Mapping[str, Any]],
     upvotes: Optional[Union[str, int]],
     downvotes: Optional[Union[str, int]],
+    requesting_user_id: Optional[str] = None,
 ) -> StoredMemory:
     """Patch a lesson's fields and/or record vote increments.
 
@@ -251,7 +260,9 @@ async def update(
 
     Returns the final StoredMemory (last operation's result).
     """
-    existing = await store.get_memory(org_id, lesson_id)
+    existing = await store.get_memory(
+        org_id, lesson_id, requesting_user_id=requesting_user_id
+    )
     if existing is None or not _project_match(existing, project):
         raise StoreNotFoundError("memories", lesson_id)
 
@@ -304,12 +315,15 @@ async def delete(
     org_id: str,
     lesson_id: str,
     project: Optional[str],
+    requesting_user_id: Optional[str] = None,
 ) -> None:
     """Delete a lesson by id with project-scope check.
 
     Raises StoreNotFoundError on missing or project mismatch.
     """
-    existing = await store.get_memory(org_id, lesson_id)
+    existing = await store.get_memory(
+        org_id, lesson_id, requesting_user_id=requesting_user_id
+    )
     if existing is None or not _project_match(existing, project):
         raise StoreNotFoundError("memories", lesson_id)
     await store.delete_memory(org_id, lesson_id)
@@ -326,6 +340,7 @@ async def list_lessons(
     min_reputation: Optional[int],
     limit: int,
     offset: int,
+    requesting_user_id: Optional[str] = None,
 ) -> Tuple[int, Sequence[StoredMemory]]:
     """List lessons with pagination.
 
@@ -339,6 +354,7 @@ async def list_lessons(
         text_query=query,
         min_reputation=min_reputation,
         tags=tuple([category]) if category else None,
+        requesting_user_id=requesting_user_id,
     )
     return await store.list_memories_paginated(f, limit=limit, offset=offset)
 
@@ -348,9 +364,12 @@ async def export(
     *,
     org_id: str,
     project: Optional[str],
+    requesting_user_id: Optional[str] = None,
 ) -> Sequence[ExportedMemory]:
     """Export all lessons (including embeddings) for the given org/project scope."""
-    f = MemoryFilter(org_id=org_id, project=project)
+    f = MemoryFilter(
+        org_id=org_id, project=project, requesting_user_id=requesting_user_id
+    )
     return await store.list_memories_with_embeddings(f)
 
 

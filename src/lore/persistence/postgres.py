@@ -112,12 +112,22 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         meta = json.loads(meta)
     # Schema stores context as NOT NULL TEXT; surface "" as None at the API
     raw_context = row["context"]
-    # ``scope`` is Phase 6G; tolerate rows that pre-date the column for
-    # back-compat with hand-built test fixtures.
+    # ``scope`` is Phase 6G; ``visibility``/``user_id`` are migration 026.
+    # Tolerate SELECTs/fixtures that pre-date these columns for back-compat —
+    # the recall WHERE clause uses the real columns, so a mapper default only
+    # affects the surfaced object, never the filter.
     try:
         scope_val = row["scope"]
     except (KeyError, IndexError):
         scope_val = None
+    try:
+        visibility_val = row["visibility"]
+    except (KeyError, IndexError):
+        visibility_val = None
+    try:
+        user_id_val = row["user_id"]
+    except (KeyError, IndexError):
+        user_id_val = None
     return StoredMemory(
         id=row["id"],
         org_id=row["org_id"],
@@ -135,6 +145,35 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
         access_count=row["access_count"] or 0,
         last_accessed_at=row["last_accessed_at"],
         scope=scope_val if scope_val else "project",
+        visibility=visibility_val if visibility_val else "private",
+        user_id=user_id_val,
+    )
+
+
+def _append_visibility(
+    where: list, sql_params: list, requesting_user_id: "Optional[str]", *, col_prefix: str = ""
+) -> None:
+    """Migration 026: restrict recall to the requester's own private rows plus
+    the team's shared rows — ``(visibility='shared' OR user_id=:requesting_user)``.
+
+    No-op when ``requesting_user_id`` is None (solo/embedded mode, or any auth
+    flow with no per-user identity), so single-user behavior is byte-identical
+    to before per-user scoping existed. ``col_prefix`` lets joined queries pass
+    an alias like ``"m."``.
+
+    Unowned rows (``user_id IS NULL``) stay visible to everyone: they are
+    legacy data, solo-mode captures, or org-level background memories
+    (consolidation/dreams/auto-extraction) that were never tied to a user.
+    Only rows with an explicit owner are isolated — so a write that doesn't
+    set an owner fails *open* (shared), never into an invisible black hole.
+    """
+    if requesting_user_id is None:
+        return
+    sql_params.append(requesting_user_id)
+    where.append(
+        f"({col_prefix}visibility = 'shared' "
+        f"OR {col_prefix}user_id = ${len(sql_params)} "
+        f"OR {col_prefix}user_id IS NULL)"
     )
 
 
@@ -550,12 +589,12 @@ class PostgresStore:
                 """
                 INSERT INTO memories
                     (id, org_id, content, context, tags, source,
-                     project, embedding, expires_at, meta, scope)
-                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::vector, $9, $10::jsonb, $11)
+                     project, embedding, expires_at, meta, scope, user_id)
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::vector, $9, $10::jsonb, $11, $12)
                 RETURNING id, org_id, content, context, tags, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, access_count,
-                          last_accessed_at, scope
+                          last_accessed_at, scope, visibility, user_id
                 """,
                 memory_id,
                 memory.org_id,
@@ -568,25 +607,84 @@ class PostgresStore:
                 memory.expires_at,
                 json.dumps(dict(memory.meta)),
                 memory.scope,
+                memory.user_id,
             )
         return _row_to_stored(row)
 
-    async def get_memory(self, org_id: str, memory_id: str) -> Optional[StoredMemory]:
+    async def get_memory(
+        self, org_id: str, memory_id: str, *, requesting_user_id: Optional[str] = None
+    ) -> Optional[StoredMemory]:
+        where = [
+            "id = $1",
+            "org_id = $2",
+            "(expires_at IS NULL OR expires_at > now())",
+        ]
+        sql_params: list = [memory_id, org_id]
+        _append_visibility(where, sql_params, requesting_user_id)
         async with self._acquire() as conn:
             row = await conn.fetchrow(
-                """
+                f"""
                 SELECT id, org_id, content, context, tags, source,
                        project, created_at, updated_at, expires_at, upvotes,
                        downvotes, meta, access_count,
-                       last_accessed_at, scope
+                       last_accessed_at, scope, visibility, user_id
                 FROM memories
-                WHERE id = $1
-                  AND org_id = $2
-                  AND (expires_at IS NULL OR expires_at > now())
+                WHERE {' AND '.join(where)}
                 """,
-                memory_id,
-                org_id,
+                *sql_params,
             )
+        return _row_to_stored(row) if row else None
+
+    async def promote_memory(
+        self, org_id: str, memory_id: str, *, promoted_by: Optional[str]
+    ) -> Optional[StoredMemory]:
+        """Migration 026: flip a PRIVATE memory to SHARED, recording who/when.
+
+        Owner-gated when ``promoted_by`` is set — only the owner may share
+        their own private memory. In solo/embedded mode (``promoted_by`` is
+        None) there is no owner constraint. Returns the updated row, or None
+        when no row matched (not found / already shared / not owned by the
+        promoter).
+        """
+        params: list = [memory_id, org_id, promoted_by]
+        where = ["id = $1", "org_id = $2", "visibility = 'private'"]
+        if promoted_by is not None:
+            where.append("user_id = $3")  # owner gate reuses the $3 value
+        sql = f"""
+            UPDATE memories
+               SET visibility = 'shared', promoted_by = $3, promoted_at = now()
+             WHERE {' AND '.join(where)}
+            RETURNING id, org_id, content, context, tags, source,
+                      project, created_at, updated_at, expires_at, upvotes,
+                      downvotes, meta, access_count, last_accessed_at, scope,
+                      visibility, user_id
+        """
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
+        return _row_to_stored(row) if row else None
+
+    async def demote_memory(
+        self, org_id: str, memory_id: str, *, demoted_by: Optional[str]
+    ) -> Optional[StoredMemory]:
+        """Migration 026: flip a SHARED memory back to PRIVATE (clear promote
+        provenance). Owner-gated symmetrically with ``promote_memory``.
+        """
+        params: list = [memory_id, org_id]
+        where = ["id = $1", "org_id = $2", "visibility = 'shared'"]
+        if demoted_by is not None:
+            params.append(demoted_by)
+            where.append(f"user_id = ${len(params)}")
+        sql = f"""
+            UPDATE memories
+               SET visibility = 'private', promoted_by = NULL, promoted_at = NULL
+             WHERE {' AND '.join(where)}
+            RETURNING id, org_id, content, context, tags, source,
+                      project, created_at, updated_at, expires_at, upvotes,
+                      downvotes, meta, access_count, last_accessed_at, scope,
+                      visibility, user_id
+        """
+        async with self._acquire() as conn:
+            row = await conn.fetchrow(sql, *params)
         return _row_to_stored(row) if row else None
 
     # ── MemoryOps stubs — implemented in subsequent Phase 1A tasks ──
@@ -640,7 +738,7 @@ class PostgresStore:
             "AND (expires_at IS NULL OR expires_at > now()) "
             "RETURNING id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, access_count, last_accessed_at, scope"
+            "meta, access_count, last_accessed_at, scope, visibility, user_id"
         )
         async with self._acquire() as conn:
             row = await conn.fetchrow(sql, *params)
@@ -683,11 +781,12 @@ class PostgresStore:
             where.append(f"created_at < ${len(params)}")
         if not filter.include_expired:
             where.append("(expires_at IS NULL OR expires_at > now())")
+        _append_visibility(where, params, filter.requesting_user_id)
 
         sql = (
             "SELECT id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, access_count, last_accessed_at, scope "
+            "meta, access_count, last_accessed_at, scope, visibility, user_id "
             "FROM memories "
             f"WHERE {' AND '.join(where)} "
             "ORDER BY created_at DESC"
@@ -738,6 +837,7 @@ class PostgresStore:
             where.append(f"reputation_score >= ${len(params)}")
         if not filter.include_expired:
             where.append("(expires_at IS NULL OR expires_at > now())")
+        _append_visibility(where, params, filter.requesting_user_id)
 
         where_sql = " AND ".join(where)
 
@@ -750,7 +850,7 @@ class PostgresStore:
         select_sql = (
             "SELECT id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, access_count, last_accessed_at, scope "
+            "meta, access_count, last_accessed_at, scope, visibility, user_id "
             f"FROM memories WHERE {where_sql} "
             f"ORDER BY created_at DESC "
             f"LIMIT ${limit_idx} OFFSET ${offset_idx}"
@@ -797,6 +897,7 @@ class PostgresStore:
             where.append(f"reputation_score >= ${len(params)}")
         if not filter.include_expired:
             where.append("(expires_at IS NULL OR expires_at > now())")
+        _append_visibility(where, params, filter.requesting_user_id)
 
         where_sql = " AND ".join(where)
         select_sql = (
@@ -902,6 +1003,7 @@ class PostgresStore:
         elif params.project is not None:
             sql_params.append(params.project)
             where.append(f"project = ${len(sql_params)}")
+        _append_visibility(where, sql_params, params.requesting_user_id)
         if params.exclude_expired:
             where.append("(expires_at IS NULL OR expires_at > now())")
         where.append("embedding IS NOT NULL")
@@ -916,7 +1018,7 @@ class PostgresStore:
         sql = f"""
             SELECT id, org_id, content, context, tags, source, project,
                    created_at, updated_at, expires_at, upvotes, downvotes, meta,
-                   access_count, last_accessed_at, scope,
+                   access_count, last_accessed_at, scope, visibility, user_id,
                    (1 - (embedding <=> ${emb_idx}::vector)) *
                    power(0.5,
                        LEAST(
@@ -957,6 +1059,8 @@ class PostgresStore:
                     access_count=sm.access_count,
                     last_accessed_at=sm.last_accessed_at,
                     scope=sm.scope,
+                    visibility=sm.visibility,
+                    user_id=sm.user_id,
                     score=float(r["score"]),
                 )
             )
@@ -1870,6 +1974,7 @@ class PostgresStore:
         limit: int = 20,
         project: Optional[str] = None,
         scope_mode: str = "default",
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[tuple[StoredMemory, float]]:
         """Phase 6C FTS branch: ``ts_rank`` against the GIN index from 020_fts_index.sql.
 
@@ -1904,13 +2009,14 @@ class PostgresStore:
         elif project is not None:
             sql_params.append(project)
             where.append(f"project = ${len(sql_params)}")
+        _append_visibility(where, sql_params, requesting_user_id)
         sql_params.append(limit)
         limit_idx = len(sql_params)
 
         sql = f"""
             SELECT id, org_id, content, context, tags, source, project,
                    created_at, updated_at, expires_at, upvotes, downvotes, meta,
-                   access_count, last_accessed_at, scope,
+                   access_count, last_accessed_at, scope, visibility, user_id,
                    ts_rank(
                        to_tsvector('english', content || ' ' || COALESCE(context, '')),
                        plainto_tsquery('english', ${q_idx})
@@ -1934,6 +2040,7 @@ class PostgresStore:
         limit: int = 20,
         project: Optional[str] = None,
         scope_mode: str = "default",
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[tuple[StoredMemory, int]]:
         """Phase 6C graph branch: rank memories by entity-overlap count.
 
@@ -1960,13 +2067,14 @@ class PostgresStore:
         elif project is not None:
             sql_params.append(project)
             where.append(f"m.project = ${len(sql_params)}")
+        _append_visibility(where, sql_params, requesting_user_id, col_prefix="m.")
         sql_params.append(limit)
         limit_idx = len(sql_params)
         sql = f"""
             SELECT m.id, m.org_id, m.content, m.context, m.tags,
                    m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                    m.upvotes, m.downvotes, m.meta,
-                   m.access_count, m.last_accessed_at, m.scope,
+                   m.access_count, m.last_accessed_at, m.scope, m.visibility, m.user_id,
                    COUNT(DISTINCT em.entity_id) AS overlap_count
             FROM entity_mentions em
             JOIN memories m ON m.id = em.memory_id
@@ -1974,7 +2082,7 @@ class PostgresStore:
             GROUP BY m.id, m.org_id, m.content, m.context, m.tags,
                      m.source, m.project, m.created_at, m.updated_at, m.expires_at,
                      m.upvotes, m.downvotes, m.meta,
-                     m.access_count, m.last_accessed_at, m.scope
+                     m.access_count, m.last_accessed_at, m.scope, m.visibility, m.user_id
             ORDER BY overlap_count DESC, m.created_at DESC
             LIMIT ${limit_idx}
         """
@@ -2479,6 +2587,7 @@ class PostgresStore:
         project: Optional[str] = None,
         exclude_ids: Sequence[str] = (),
         limit: int = 3,
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[StoredMemory]:
         where: list[str] = [
             "org_id = $1",
@@ -2494,6 +2603,7 @@ class PostgresStore:
         if exclude_ids:
             params.append(list(exclude_ids))
             where.append(f"id != ALL(${len(params)})")
+        _append_visibility(where, params, requesting_user_id)
 
         params.append(limit)
         limit_idx = len(params)
@@ -2501,7 +2611,7 @@ class PostgresStore:
         sql = (
             "SELECT id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
-            "meta, access_count, last_accessed_at, scope "
+            "meta, access_count, last_accessed_at, scope, visibility, user_id "
             "FROM memories "
             f"WHERE {' AND '.join(where)} "
             f"ORDER BY created_at DESC LIMIT ${limit_idx}"
@@ -2602,19 +2712,20 @@ class PostgresStore:
         org_id: str,
         *,
         limit: int = 500,
+        requesting_user_id: Optional[str] = None,
     ) -> "Sequence[RecommendationCandidate]":
+        where: list[str] = ["org_id = $1", "embedding IS NOT NULL"]
+        params: list[Any] = [org_id]
+        _append_visibility(where, params, requesting_user_id)
+        params.append(limit)
+        sql = (
+            "SELECT id, content, embedding, meta, created_at, access_count, last_accessed_at "
+            "FROM memories "
+            f"WHERE {' AND '.join(where)} "
+            f"ORDER BY created_at DESC LIMIT ${len(params)}"
+        )
         async with self._acquire() as conn:
-            rows = await conn.fetch(
-                """
-                SELECT id, content, embedding, meta, created_at, access_count, last_accessed_at
-                FROM memories
-                WHERE org_id = $1 AND embedding IS NOT NULL
-                ORDER BY created_at DESC
-                LIMIT $2
-                """,
-                org_id,
-                limit,
-            )
+            rows = await conn.fetch(sql, *params)
         return tuple(_row_to_recommendation_candidate(r) for r in rows)
 
     # ── ConversationOps ────────────────────────────────────────────────
@@ -3941,6 +4052,7 @@ class PostgresStore:
         entity_name: Optional[str] = None,
         type_filter: Optional[str] = None,
         limit: int = 20,
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[StoredMemory]:
         # Filter (a) memories created on or before `at`, (b) excluding any
         # whose latest supersession event ≤ `at` has superseded_by IS NOT NULL.
@@ -3957,6 +4069,7 @@ class PostgresStore:
         if type_filter is not None:
             params.append(type_filter)
             where.append(f"m.meta->>'type' = ${len(params)}")
+        _append_visibility(where, params, requesting_user_id, col_prefix="m.")
         params.append(limit)
         sql = f"""
             SELECT DISTINCT m.id, m.org_id, m.content, m.context, m.tags,

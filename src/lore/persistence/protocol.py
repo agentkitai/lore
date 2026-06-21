@@ -92,8 +92,15 @@ class Store(Protocol):
         """Insert a memory; returns the stored row with server-generated id/timestamps."""
         ...
 
-    async def get_memory(self, org_id: str, memory_id: str) -> Optional[StoredMemory]:
-        """Return a memory by id within an org, or None if absent or expired."""
+    async def get_memory(
+        self, org_id: str, memory_id: str, *, requesting_user_id: Optional[str] = None
+    ) -> Optional[StoredMemory]:
+        """Return a memory by id within an org, or None if absent or expired.
+
+        Migration 026: when ``requesting_user_id`` is set, another user's
+        private row is treated as absent (returns None). None = unfiltered
+        (internal callers / solo mode), preserving prior behavior.
+        """
         ...
 
     async def update_memory(
@@ -104,6 +111,25 @@ class Store(Protocol):
 
     async def delete_memory(self, org_id: str, memory_id: str) -> bool:
         """Delete a memory; returns True if a row was deleted."""
+        ...
+
+    async def promote_memory(
+        self, org_id: str, memory_id: str, *, promoted_by: Optional[str]
+    ) -> Optional[StoredMemory]:
+        """Migration 026: flip a PRIVATE memory to SHARED, recording who/when.
+
+        Owner-gated when ``promoted_by`` is set (only the owner may share
+        their own private row); unconstrained in solo mode (``promoted_by``
+        None). Returns the updated row, or None if nothing matched (not found
+        / already shared / not owned by the promoter).
+        """
+        ...
+
+    async def demote_memory(
+        self, org_id: str, memory_id: str, *, demoted_by: Optional[str]
+    ) -> Optional[StoredMemory]:
+        """Migration 026: flip a SHARED memory back to PRIVATE (clears promote
+        provenance). Owner-gated symmetrically with ``promote_memory``."""
         ...
 
     async def list_memories(self, filter: MemoryFilter) -> Sequence[StoredMemory]:
@@ -246,6 +272,7 @@ class Store(Protocol):
         entity_name: Optional[str] = None,
         type_filter: Optional[str] = None,
         limit: int = 20,
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[StoredMemory]:
         """Memories created on or before ``at`` and not superseded as of ``at``.
 
@@ -525,6 +552,7 @@ class Store(Protocol):
         limit: int = 20,
         project: Optional[str] = None,
         scope_mode: str = "default",
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[tuple[StoredMemory, float]]:
         """Full-text search with backend-native ranking.
 
@@ -551,6 +579,7 @@ class Store(Protocol):
         limit: int = 20,
         project: Optional[str] = None,
         scope_mode: str = "default",
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[tuple[StoredMemory, int]]:
         """Memories tied to any of the given entities, ranked by mention count.
 
@@ -682,6 +711,7 @@ class Store(Protocol):
         project: Optional[str] = None,
         exclude_ids: Sequence[str] = (),
         limit: int = 3,
+        requesting_user_id: Optional[str] = None,
     ) -> Sequence[StoredMemory]:
         """List the most recent session-snapshot memories for an org, optionally scoped to a project."""
         ...
@@ -735,7 +765,7 @@ class Store(Protocol):
         ...
 
     async def list_candidate_memories_for_recommendation(
-        self, org_id: str, *, limit: int = 500,
+        self, org_id: str, *, limit: int = 500, requesting_user_id: Optional[str] = None,
     ) -> Sequence[RecommendationCandidate]:
         """List memory candidates for the recommendation engine, ordered by recency."""
         ...

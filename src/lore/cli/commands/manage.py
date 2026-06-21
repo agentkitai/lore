@@ -17,6 +17,24 @@ def cmd_forget(args: argparse.Namespace) -> None:
     lore.close()
 
 
+def cmd_promote(args: argparse.Namespace) -> None:
+    lore = _helpers._get_lore(args.db)
+    try:
+        ok = lore.promote(args.id)
+    finally:
+        lore.close()
+    print(f"Shared with team: {args.id}" if ok else f"Not found: {args.id}")
+
+
+def cmd_demote(args: argparse.Namespace) -> None:
+    lore = _helpers._get_lore(args.db)
+    try:
+        ok = lore.demote(args.id)
+    finally:
+        lore.close()
+    print(f"Unshared (now private): {args.id}" if ok else f"Not found: {args.id}")
+
+
 def cmd_memories(args: argparse.Namespace) -> None:
     lore = _helpers._get_lore(args.db)
     tier = getattr(args, "tier", None)

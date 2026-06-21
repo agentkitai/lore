@@ -1179,6 +1179,18 @@ class Lore:
         """Get a memory by ID."""
         return self._store.get(memory_id)
 
+    def promote(self, memory_id: str) -> bool:
+        """Share a private memory with the team (PRIVATE → SHARED).
+
+        Migration 026: makes a memory visible to the whole org/team instead of
+        only its owner. Returns True on success. Requires a store that supports
+        visibility (the default server-backed ``HttpStore`` does)."""
+        return self._store.promote(memory_id)
+
+    def demote(self, memory_id: str) -> bool:
+        """Unshare a memory (SHARED → PRIVATE). Returns True on success."""
+        return self._store.demote(memory_id)
+
     def list_memories(
         self,
         *,
