@@ -284,7 +284,7 @@ def _fake_store_with_memories(mems_by_id: dict):
     """Build a store mock keyed by memory id (returns None for misses)."""
     s = MagicMock()
 
-    async def _get_memory(org_id, memory_id):
+    async def _get_memory(org_id, memory_id, *, requesting_user_id=None):
         return mems_by_id.get(memory_id)
 
     s.get_memory = AsyncMock(side_effect=_get_memory)

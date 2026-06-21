@@ -439,7 +439,7 @@ def http_client(monkeypatch):
             self.events: list = []
             self._next_id = 0
 
-        async def get_memory(self, org_id, mid):
+        async def get_memory(self, org_id, mid, *, requesting_user_id=None):
             m = self.memories.get(mid)
             if m and m.org_id == org_id:
                 return m
@@ -449,7 +449,8 @@ def http_client(monkeypatch):
             self.events.append((mid, superseded_by, reason, agent))
 
         async def list_memories_at_time(self, org_id, *, at, entity_name=None,
-                                        type_filter=None, limit=20):
+                                        type_filter=None, limit=20,
+                                        requesting_user_id=None):
             return list(self.memories.values())[:limit]
 
         async def get_supersession_chain(self, mid):
