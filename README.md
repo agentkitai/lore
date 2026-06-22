@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/lore-sdk)](https://pypi.org/project/lore-sdk/)
 [![npm](https://img.shields.io/npm/v/lore-sdk)](https://www.npmjs.com/package/lore-sdk)
-[![Docker](https://img.shields.io/docker/v/pazgaz/lore?label=docker)](https://hub.docker.com/r/pazgaz/lore)
+[![Container](https://img.shields.io/badge/ghcr.io-agentkitai%2Flore-2496ED?logo=docker&logoColor=white)](https://github.com/agentkitai/lore/pkgs/container/lore)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/github/license/agentkitai/lore)](LICENSE)
 [![MCP Compatible](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io)

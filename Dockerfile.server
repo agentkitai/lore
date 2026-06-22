@@ -8,6 +8,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev \
 
 COPY pyproject.toml README.md ./
 COPY src/ src/
+# pyproject force-includes these into the wheel, so the build needs them present.
+COPY migrations/ migrations/
+COPY migrations_sqlite/ migrations_sqlite/
 
 RUN pip install --no-cache-dir --prefix=/install ".[server,enrichment]"
 
