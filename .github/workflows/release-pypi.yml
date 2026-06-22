@@ -1,0 +1,55 @@
+name: Publish to PyPI + MCP Registry
+
+# A `v*` tag publishes lore-sdk to PyPI via OIDC Trusted Publishing (no token)
+# and lists/updates the server in the official MCP Registry via GitHub Actions
+# OIDC (no token). Runs alongside docker.yml, which also fires on `v*` — so one
+# `vX.Y.Z` tag ships the image, the PyPI package, and the registry entry.
+#
+# One-time setup (owner, in a browser — no secrets ever stored):
+#   * PyPI Trusted Publisher for project `lore-sdk`: repo agentkitai/lore,
+#     workflow `release-pypi.yml`.
+#   * MCP Registry namespace `io.github.agentkitai/*` is proven automatically by
+#     this repo's GitHub OIDC token — nothing to configure.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+jobs:
+  pypi-and-registry:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # PyPI Trusted Publishing + MCP Registry OIDC — no secrets
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+
+      - name: Publish to PyPI (Trusted Publishing / OIDC)
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true   # let re-runs / dispatch be idempotent
+
+      - name: Publish to the MCP Registry (GitHub Actions OIDC)
+        run: |
+          set -euo pipefail
+          url=$(curl -fsSL https://api.github.com/repos/modelcontextprotocol/registry/releases/latest \
+            | jq -r '.assets[] | select((.name|test("linux";"i")) and (.name|test("amd64|x86_64";"i"))) | .browser_download_url' \
+            | head -1)
+          echo "Downloading mcp-publisher: $url"
+          curl -fsSL "$url" | tar xz
+          chmod +x mcp-publisher
+          ./mcp-publisher --version
+          # Give PyPI a moment to index the fresh release before the registry validates it.
+          sleep 30
+          ./mcp-publisher login github-oidc   # authenticates via this workflow's OIDC token
+          ./mcp-publisher publish             # reads ./server.json
