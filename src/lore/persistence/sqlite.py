@@ -370,23 +370,31 @@ def _row_to_memory(row) -> StoredMemory:
     )
 
 
-def _append_visibility(where: list, sql_params: list, requesting_user_id, *, col_prefix: str = "") -> None:
+def _append_visibility(
+    where: list, sql_params: list, requesting_user_id, *, col_prefix: str = "", include_shared: bool = True
+) -> None:
     """Migration 026: restrict recall to the requester's own private rows plus
     the team's shared rows. SQLite (``?``-placeholder) twin of
     ``postgres._append_visibility``; no-op when ``requesting_user_id`` is None.
     Appends clause and bind value in lockstep to keep positional binding order.
 
-    Unowned rows (``user_id IS NULL``) stay visible to everyone — see the
-    Postgres twin for the rationale (legacy / solo / org-level background
-    memories; a write that sets no owner fails open, not into a black hole).
+    ``include_shared=False`` (write paths: update/delete) drops the ``shared``
+    disjunct so a row is only owner-mutable — others may READ a shared memory
+    but not edit/delete it (#69). Unowned rows (``user_id IS NULL``) stay
+    visible/mutable to everyone — see the Postgres twin for the rationale
+    (legacy / solo / org-level background memories; a write that sets no owner
+    fails open, not into a black hole).
     """
     if requesting_user_id is None:
         return
-    where.append(
-        f"({col_prefix}visibility = 'shared' "
-        f"OR {col_prefix}user_id = ? "
-        f"OR {col_prefix}user_id IS NULL)"
-    )
+    if include_shared:
+        where.append(
+            f"({col_prefix}visibility = 'shared' "
+            f"OR {col_prefix}user_id = ? "
+            f"OR {col_prefix}user_id IS NULL)"
+        )
+    else:
+        where.append(f"({col_prefix}user_id = ? OR {col_prefix}user_id IS NULL)")
     sql_params.append(requesting_user_id)
 
 
@@ -1233,18 +1241,28 @@ class SqliteStore:
             return None
         return await self.get_memory(org_id, memory_id)
 
-    async def delete_memory(self, org_id: str, memory_id: str) -> bool:
+    async def delete_memory(
+        self, org_id: str, memory_id: str, *, requesting_user_id: Optional[str] = None
+    ) -> bool:
         """Delete a memory and its companion vector inside one transaction.
 
         The vec0 row is keyed by ``memory_vectors.memory_rowid`` which equals
         the base table's rowid. We resolve the rowid up-front, then delete
         the vector first followed by the base row (vec0 has no FK so order
         is informational only — both succeed or both roll back).
+
+        Migration 026: the visibility predicate is applied to both the lookup
+        and the delete, so a row owned by a different user is treated as absent
+        (returns False) rather than deleted. No-op when requesting_user_id is None.
         """
+        vis_where: list[str] = []
+        vis_params: list[Any] = []
+        _append_visibility(vis_where, vis_params, requesting_user_id, include_shared=False)
+        vis_clause = (" AND " + " AND ".join(vis_where)) if vis_where else ""
         async with self.transaction() as tx:
             async with tx.execute(
-                "SELECT rowid FROM memories WHERE id = ? AND org_id = ?",
-                (memory_id, org_id),
+                f"SELECT rowid FROM memories WHERE id = ? AND org_id = ?{vis_clause}",
+                (memory_id, org_id, *vis_params),
             ) as cur:
                 row = await cur.fetchone()
             if row is None:
@@ -1254,8 +1272,8 @@ class SqliteStore:
                 "DELETE FROM memory_vectors WHERE memory_rowid = ?", (rowid,)
             )
             cursor = await tx.execute(
-                "DELETE FROM memories WHERE id = ? AND org_id = ?",
-                (memory_id, org_id),
+                f"DELETE FROM memories WHERE id = ? AND org_id = ?{vis_clause}",
+                (memory_id, org_id, *vis_params),
             )
             deleted = cursor.rowcount
             await cursor.close()
@@ -1275,6 +1293,8 @@ class SqliteStore:
         org_id: str,
         memory_id: str,
         patch: "MemoryPatch",
+        *,
+        requesting_user_id: Optional[str] = None,
     ) -> "StoredMemory":
         """Apply a ``MemoryPatch`` and return the updated row.
 
@@ -1311,20 +1331,29 @@ class SqliteStore:
             params.append(json.dumps(dict(patch.meta)))
 
         if not sets:
-            existing = await self.get_memory(org_id, memory_id)
+            existing = await self.get_memory(
+                org_id, memory_id, requesting_user_id=requesting_user_id
+            )
             if existing is None:
                 raise StoreNotFoundError("memories", memory_id)
             return existing
 
         sets.append("updated_at = datetime('now')")
         now_iso = datetime.now(timezone.utc).isoformat()
+        # Migration 026: a non-owner's private row is not updated (0 rows →
+        # StoreNotFoundError), so a caller can't patch another principal's memory.
+        vis_where: list[str] = []
+        vis_params: list[Any] = []
+        _append_visibility(vis_where, vis_params, requesting_user_id, include_shared=False)
+        vis_clause = (" AND " + " AND ".join(vis_where)) if vis_where else ""
         sql = (
             "UPDATE memories "
             f"SET {', '.join(sets)} "
             "WHERE id = ? AND org_id = ? "
             "  AND (expires_at IS NULL OR expires_at > ?)"
+            f"{vis_clause}"
         )
-        params.extend([memory_id, org_id, now_iso])
+        params.extend([memory_id, org_id, now_iso, *vis_params])
 
         async with self._acquire() as conn:
             cursor = await conn.execute(sql, tuple(params))

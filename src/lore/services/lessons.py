@@ -307,7 +307,9 @@ async def update(
     result: StoredMemory = existing
 
     if has_non_vote_patch:
-        result = await store.update_memory(org_id, lesson_id, patch)
+        result = await store.update_memory(
+            org_id, lesson_id, patch, requesting_user_id=requesting_user_id
+        )
 
     if has_upvote:
         result = await store.vote_memory(org_id, lesson_id, direction="up")
@@ -335,7 +337,7 @@ async def delete(
     )
     if existing is None or not _project_match(existing, project):
         raise StoreNotFoundError("memories", lesson_id)
-    await store.delete_memory(org_id, lesson_id)
+    await store.delete_memory(org_id, lesson_id, requesting_user_id=requesting_user_id)
 
 
 async def list_lessons(

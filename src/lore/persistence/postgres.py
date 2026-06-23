@@ -151,7 +151,12 @@ def _row_to_stored(row: "asyncpg.Record") -> StoredMemory:
 
 
 def _append_visibility(
-    where: list, sql_params: list, requesting_user_id: "Optional[str]", *, col_prefix: str = ""
+    where: list,
+    sql_params: list,
+    requesting_user_id: "Optional[str]",
+    *,
+    col_prefix: str = "",
+    include_shared: bool = True,
 ) -> None:
     """Migration 026: restrict recall to the requester's own private rows plus
     the team's shared rows — ``(visibility='shared' OR user_id=:requesting_user)``.
@@ -170,11 +175,19 @@ def _append_visibility(
     if requesting_user_id is None:
         return
     sql_params.append(requesting_user_id)
-    where.append(
-        f"({col_prefix}visibility = 'shared' "
-        f"OR {col_prefix}user_id = ${len(sql_params)} "
-        f"OR {col_prefix}user_id IS NULL)"
-    )
+    if include_shared:
+        where.append(
+            f"({col_prefix}visibility = 'shared' "
+            f"OR {col_prefix}user_id = ${len(sql_params)} "
+            f"OR {col_prefix}user_id IS NULL)"
+        )
+    else:
+        # Write paths (#69): owner-only — a shared row is readable by the team
+        # but only its owner (or an unowned row) may be mutated/deleted.
+        where.append(
+            f"({col_prefix}user_id = ${len(sql_params)} "
+            f"OR {col_prefix}user_id IS NULL)"
+        )
 
 
 def _row_to_mention(row: "asyncpg.Record") -> StoredMention:
@@ -694,6 +707,8 @@ class PostgresStore:
         org_id: str,
         memory_id: str,
         patch: "MemoryPatch",
+        *,
+        requesting_user_id: Optional[str] = None,
     ) -> StoredMemory:
         # Build SET clause from non-None patch fields
         sets: list[str] = []
@@ -722,17 +737,27 @@ class PostgresStore:
 
         if not sets:
             # No-op patch: just return the current row
-            existing = await self.get_memory(org_id, memory_id)
+            existing = await self.get_memory(
+                org_id, memory_id, requesting_user_id=requesting_user_id
+            )
             if existing is None:
                 raise StoreNotFoundError("memories", memory_id)
             return existing
 
         sets.append("updated_at = now()")
+        # Migration 026: a non-owner's private row is not updated (RETURNING
+        # yields no row → StoreNotFoundError), so a caller can't patch another
+        # principal's memory. No-op when requesting_user_id is None.
+        vis_where: list[str] = []
+        _append_visibility(vis_where, params, requesting_user_id, include_shared=False)
+        # trailing space: this clause is immediately followed by RETURNING
+        vis_clause = (" AND " + " AND ".join(vis_where) + " ") if vis_where else ""
         sql = (
             "UPDATE memories "
             f"SET {', '.join(sets)} "
             "WHERE id = $1 AND org_id = $2 "
             "AND (expires_at IS NULL OR expires_at > now()) "
+            f"{vis_clause}"
             "RETURNING id, org_id, content, context, tags, source, "
             "project, created_at, updated_at, expires_at, upvotes, downvotes, "
             "meta, access_count, last_accessed_at, scope, visibility, user_id"
@@ -743,12 +768,18 @@ class PostgresStore:
             raise StoreNotFoundError("memories", memory_id)
         return _row_to_stored(row)
 
-    async def delete_memory(self, org_id: str, memory_id: str) -> bool:
+    async def delete_memory(
+        self, org_id: str, memory_id: str, *, requesting_user_id: Optional[str] = None
+    ) -> bool:
+        # Migration 026: a non-owner's private row is not deleted (returns False).
+        params: list = [memory_id, org_id]
+        vis_where: list[str] = []
+        _append_visibility(vis_where, params, requesting_user_id, include_shared=False)
+        vis_clause = (" AND " + " AND ".join(vis_where)) if vis_where else ""
         async with self._acquire() as conn:
             result = await conn.execute(
-                "DELETE FROM memories WHERE id = $1 AND org_id = $2",
-                memory_id,
-                org_id,
+                f"DELETE FROM memories WHERE id = $1 AND org_id = $2{vis_clause}",
+                *params,
             )
         # asyncpg returns "DELETE n"
         return result.endswith(" 1")

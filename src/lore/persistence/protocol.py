@@ -104,13 +104,30 @@ class Store(Protocol):
         ...
 
     async def update_memory(
-        self, org_id: str, memory_id: str, patch: MemoryPatch
+        self,
+        org_id: str,
+        memory_id: str,
+        patch: MemoryPatch,
+        *,
+        requesting_user_id: Optional[str] = None,
     ) -> StoredMemory:
-        """Apply a patch and return the updated row. Raises StoreNotFoundError if missing."""
+        """Apply a patch and return the updated row. Raises StoreNotFoundError if missing.
+
+        Migration 026: when ``requesting_user_id`` is set, a row owned by a
+        different user is treated as absent (raises StoreNotFoundError) — so a
+        caller cannot patch another principal's private memory. None = unfiltered
+        (internal callers / solo mode), preserving prior behavior.
+        """
         ...
 
-    async def delete_memory(self, org_id: str, memory_id: str) -> bool:
-        """Delete a memory; returns True if a row was deleted."""
+    async def delete_memory(
+        self, org_id: str, memory_id: str, *, requesting_user_id: Optional[str] = None
+    ) -> bool:
+        """Delete a memory; returns True if a row was deleted.
+
+        Migration 026: when ``requesting_user_id`` is set, a row owned by a
+        different user is not deleted (returns False). None = unfiltered.
+        """
         ...
 
     async def promote_memory(

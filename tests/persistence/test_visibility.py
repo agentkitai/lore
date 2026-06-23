@@ -260,3 +260,91 @@ async def test_at_time_filters_private(store):
     assert m.id in await _ids("alice")
     assert m.id not in await _ids("bob")
     assert m.id in await _ids(None)
+
+
+# ── Write-path visibility (#69) ─────────────────────────────────────
+# update_memory / delete_memory must enforce the same predicate as reads, so a
+# caller cannot mutate another principal's PRIVATE memory by id.
+
+
+@pytest.mark.asyncio
+async def test_update_isolates_other_users_private(store):
+    from lore.persistence.exceptions import StoreNotFoundError
+    from lore.persistence.types import MemoryPatch
+
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="alice private", embedding=_vec(1), user_id="alice")
+    )
+
+    # A different user cannot patch it — the row is invisible, so 0 rows update.
+    with pytest.raises(StoreNotFoundError):
+        await store.update_memory(
+            "solo", m.id, MemoryPatch(tags=("hacked",)), requesting_user_id="bob"
+        )
+    # ...and it is genuinely unchanged.
+    assert (await store.get_memory("solo", m.id)).tags != ("hacked",)
+
+    # The owner can; so can the unfiltered (solo/internal) path.
+    upd = await store.update_memory(
+        "solo", m.id, MemoryPatch(tags=("owned",)), requesting_user_id="alice"
+    )
+    assert tuple(upd.tags) == ("owned",)
+    upd2 = await store.update_memory("solo", m.id, MemoryPatch(tags=("internal",)))
+    assert tuple(upd2.tags) == ("internal",)
+
+
+@pytest.mark.asyncio
+async def test_delete_isolates_other_users_private(store):
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="alice private", embedding=_vec(1), user_id="alice")
+    )
+
+    # A different user cannot delete it (treated as absent → False, still there).
+    assert await store.delete_memory("solo", m.id, requesting_user_id="bob") is False
+    assert await store.get_memory("solo", m.id) is not None
+
+    # The owner can.
+    assert await store.delete_memory("solo", m.id, requesting_user_id="alice") is True
+    assert await store.get_memory("solo", m.id) is None
+
+
+@pytest.mark.asyncio
+async def test_write_unowned_memory_is_mutable_by_anyone(store):
+    # Unowned rows fail open on writes too (consistent with reads).
+    from lore.persistence.types import MemoryPatch
+
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="ownerless", embedding=_vec(1))
+    )
+    assert m.user_id is None
+    upd = await store.update_memory(
+        "solo", m.id, MemoryPatch(tags=("ok",)), requesting_user_id="bob"
+    )
+    assert tuple(upd.tags) == ("ok",)
+    assert await store.delete_memory("solo", m.id, requesting_user_id="bob") is True
+
+
+@pytest.mark.asyncio
+async def test_shared_memory_is_owner_only_on_writes(store):
+    """A SHARED memory is READable by the team but only its OWNER may mutate or
+    delete it (#69) — writes are owner-only, unlike reads which include shared."""
+    from lore.persistence.exceptions import StoreNotFoundError
+    from lore.persistence.types import MemoryPatch
+
+    m = await store.insert_memory(
+        NewMemory(org_id="solo", content="alice shared", embedding=_vec(1), user_id="alice")
+    )
+    await store.promote_memory("solo", m.id, promoted_by="alice")  # → visibility 'shared'
+
+    # A teammate can READ it (shared) ...
+    assert m.id in await _recall_ids(store, requesting_user_id="bob")
+    # ... but cannot UPDATE or DELETE it.
+    with pytest.raises(StoreNotFoundError):
+        await store.update_memory(
+            "solo", m.id, MemoryPatch(tags=("hijack",)), requesting_user_id="bob"
+        )
+    assert await store.delete_memory("solo", m.id, requesting_user_id="bob") is False
+    assert await store.get_memory("solo", m.id, requesting_user_id="bob") is not None
+
+    # The owner still can.
+    assert await store.delete_memory("solo", m.id, requesting_user_id="alice") is True
