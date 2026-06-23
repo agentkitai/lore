@@ -1297,9 +1297,6 @@ class SqliteStore:
         if patch.tags is not None:
             sets.append("tags = ?")
             params.append(json.dumps(list(patch.tags)))
-        if patch.confidence is not None:
-            sets.append("confidence = ?")
-            params.append(patch.confidence)
         if patch.source is not None:
             sets.append("source = ?")
             params.append(patch.source)

@@ -707,9 +707,6 @@ class PostgresStore:
         if patch.tags is not None:
             params.append(json.dumps(list(patch.tags)))
             sets.append(f"tags = ${len(params)}::jsonb")
-        if patch.confidence is not None:
-            params.append(patch.confidence)
-            sets.append(f"confidence = ${len(params)}")
         if patch.source is not None:
             params.append(patch.source)
             sets.append(f"source = ${len(params)}")
