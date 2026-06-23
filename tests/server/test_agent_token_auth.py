@@ -15,6 +15,11 @@ import pytest
 pytest.importorskip("fastapi")
 import jwt  # PyJWT
 
+from lore.server.auth import AuthError, _resolve_agent_token, get_auth_context
+from lore.server.config import settings
+
+SECRET = "agentgate-shared-secret-at-least-32-chars!"
+
 
 def _b64url(d: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(d).encode()).rstrip(b"=").decode()
@@ -23,11 +28,6 @@ def _b64url(d: dict) -> str:
 def _alg_none_token(sub: str) -> str:
     """An unsigned alg:none token — the classic algorithm-confusion attack."""
     return f"{_b64url({'alg': 'none', 'typ': 'JWT'})}.{_b64url({'sub': sub, 'typ': 'agent', 'tid': 'default'})}."
-
-from lore.server.auth import _resolve_agent_token, get_auth_context, AuthError
-from lore.server.config import settings
-
-SECRET = "agentgate-shared-secret-at-least-32-chars!"
 
 
 def _token(claims: dict, secret: str = SECRET, ttl: int = 900) -> str:
