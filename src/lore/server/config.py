@@ -49,6 +49,12 @@ class Settings:
     # Auth mode: "dual" | "oidc-required" | "api-key-only"
     auth_mode: str = "api-key-only"
 
+    # AgentGate agent-identity (#12 Phase 3). When set to AgentGate's signing
+    # secret, an AgentGate-minted agent token (typ:"agent", HS256) is accepted
+    # as a principal and the memory is bound to the verified agent id. Unset →
+    # feature off. Independent of auth_mode (a distinct trust anchor).
+    agentgate_jwt_secret: Optional[str] = None
+
     # Observability
     metrics_enabled: bool = True
     log_format: str = "pretty"  # "json" or "pretty"
@@ -82,6 +88,7 @@ class Settings:
             oidc_role_claim=os.environ.get("OIDC_ROLE_CLAIM", "role"),
             oidc_org_claim=os.environ.get("OIDC_ORG_CLAIM", "tenant_id"),
             auth_mode=os.environ.get("AUTH_MODE", "api-key-only"),
+            agentgate_jwt_secret=os.environ.get("AGENTGATE_JWT_SECRET"),
             metrics_enabled=os.environ.get("METRICS_ENABLED", "true").lower() in ("true", "1", "yes"),
             log_format=os.environ.get("LOG_FORMAT", "pretty"),
             log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),

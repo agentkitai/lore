@@ -10,6 +10,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Tuple
 
+import jwt  # PyJWT — already required (see oidc.py); used to verify agent tokens
+
 try:
     from fastapi import Depends, HTTPException, Request
 except ImportError:
@@ -39,7 +41,10 @@ class AuthContext:
         and as the per-user recall filter (migration 026). For OIDC this is
         ``oidc:{sub}`` (one identity per user); for API keys it is the key id
         (one identity per key, so per-user keys get per-user isolation while a
-        shared key is correctly one identity). Always present in server mode;
+        shared key is correctly one identity); for an AgentGate agent token it
+        is the verified ``agt_*`` id (#12 — the same identity string AgentLens
+        stamps, so an agent's memories and traces correlate). Always present in
+        server mode;
         solo/embedded mode has no AuthContext, so the filter is simply never
         applied. The SAME value is written on capture and used on recall, so it
         must never be transformed (e.g. don't strip the ``oidc:`` prefix) or a
@@ -150,10 +155,17 @@ def _map_api_key_role(is_root: bool, db_role: Optional[str] = None) -> str:
 async def get_auth_context(request: Request) -> AuthContext:
     """FastAPI dependency: validate API key or JWT and return AuthContext.
 
-    Behavior depends on AUTH_MODE:
+    AUTH_MODE governs which HUMAN/user credentials are accepted:
     - "api-key-only" (default): only lore_sk_ keys accepted
     - "dual": both API keys and JWTs accepted
     - "oidc-required": only JWTs accepted
+
+    SEPARATELY — and only when AGENTGATE_JWT_SECRET is configured — an AgentGate
+    agent token (typ:"agent") is accepted in ANY mode. It is a distinct, opt-in
+    trust anchor orthogonal to AUTH_MODE (which governs human credentials), so
+    setting api-key-only / oidc-required does NOT disable it; leaving the secret
+    unset does. This is intentional: agents authenticate via AgentGate-minted
+    tokens regardless of how humans authenticate to this Lore instance.
     """
     auth_header = request.headers.get("authorization", "")
     if not auth_header.startswith("Bearer "):
@@ -168,11 +180,59 @@ async def get_auth_context(request: Request) -> AuthContext:
             raise _auth_error("api_key_not_allowed", 401)
         return await _resolve_api_key(token)
 
+    # AgentGate agent-token path (#12 Phase 3) — opt-in via AGENTGATE_JWT_SECRET,
+    # a distinct trust anchor independent of auth_mode. Falls through to the
+    # normal JWT logic when the token isn't a valid agent token.
+    agent_ctx = _resolve_agent_token(token)
+    if agent_ctx is not None:
+        return agent_ctx
+
     # JWT path
     if mode == "api-key-only":
         raise _auth_error("invalid_api_key")
 
     return await _resolve_jwt(token)
+
+
+def _resolve_agent_token(token: str) -> Optional[AuthContext]:
+    """Verify an AgentGate-minted agent token (#12 Phase 3).
+
+    Returns an AuthContext bound to the verified agent id, or None when the
+    feature is off (no shared secret configured) or the token is not a valid
+    agent token — in which case the caller falls through to the normal
+    JWT/api-key logic.
+
+    The token is the same artifact AgentGate issues from POST /api/agents/token:
+    an HS256 JWT over the SHARED signing secret with a load-bearing ``typ:"agent"``
+    claim. PyJWT validates the signature and expiry; we additionally require the
+    typ guard (so a user/OIDC token can never cross over). The agent becomes a
+    first-class principal — ``principal_id`` is the verified ``agt_*`` id — so
+    the existing ownership + private/shared visibility filter applies unchanged
+    (own private + team shared + unowned), private-by-default.
+
+    Verification is cryptographic only (no callback to AgentGate), so it proves
+    identity, not liveness; agent tokens are short-lived, bounding the staleness.
+    """
+    secret = settings.agentgate_jwt_secret
+    if not secret:
+        return None
+    try:
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
+    except Exception:
+        return None
+    if payload.get("typ") != "agent":
+        return None
+    sub = payload.get("sub")
+    if not isinstance(sub, str) or not sub:
+        return None
+    org_id = payload.get("tid") or "default"
+    return AuthContext(
+        org_id=org_id,
+        project=None,
+        is_root=False,
+        key_id=sub,  # principal_id == the verified agt_* id
+        role="writer",  # agents read/write memories; never manage keys/policies
+    )
 
 
 async def _resolve_jwt(token: str) -> AuthContext:

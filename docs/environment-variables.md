@@ -109,6 +109,37 @@ On each write, a memory is reconciled against **the writer's own** existing memo
 
 ---
 
+## Agent Identity (AgentGate)
+
+When `AGENTGATE_JWT_SECRET` is set to AgentGate's signing secret, Lore accepts an
+AgentGate-minted **agent token** (an `HS256` JWT with a `typ:"agent"` claim,
+issued by `POST /api/agents/token`) as a Bearer credential. The memory is then
+bound to the verified `agt_*` agent id as its owner (`principal_id`) — the same
+identity string AgentLens stamps on traces, so an agent's memories and traces
+correlate. The agent is a first-class principal: the existing private/shared
+visibility rules apply unchanged (own private + team shared, private-by-default).
+
+This is a distinct trust anchor, independent of `AUTH_MODE` (it works even in
+`api-key-only` and `oidc-required` mode — setting a mode does **not** disable
+it; leaving the secret unset does). When unset, the feature is off.
+Verification is cryptographic only (no callback to AgentGate); agent tokens are
+short-lived, which bounds revocation staleness.
+
+> ⚠️ **Blast radius.** `AGENTGATE_JWT_SECRET` is the same HS256 secret AgentGate
+> signs every agent token with, shared verbatim with AgentLens and Lore. Anyone
+> who learns it can **forge a valid agent token for any `agt_*` id (and any
+> `tid`/org)** accepted by all three services. Treat it as a master credential:
+> store it in a secrets manager (or `*_FILE`), never commit it, rotate on
+> suspicion, and only set it on Lore instances that should trust AgentGate
+> agents. A future asymmetric/JWKS option would remove this shared-secret
+> coupling.
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `AGENTGATE_JWT_SECRET` | none | No | AgentGate's HS256 signing secret, shared with Lore to verify agent tokens. Unset → feature off. |
+
+---
+
 ## Alerting
 
 | Variable | Default | Required | Description |
