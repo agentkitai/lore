@@ -22,6 +22,7 @@ from lore.persistence import (
 )
 from lore.persistence.exceptions import StoreNotFoundError
 from lore.redact.write import get_write_redactor, redact_for_write
+from lore.services.reconciliation import reconcile_for_write
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,44 @@ async def create_memory(
         if scope is not None
         else default_scope_for_type(meta_dict.get("type"))
     )
-    return await store.insert_memory(
+
+    # Write-time AUDN reconciliation (#66): fold near-duplicates / supersede stale
+    # versions instead of always appending. Gated by LORE_RECONCILIATION_ENABLED
+    # (default on) — disabled → always "add" (append-only). See reconciliation.py.
+    decision = await reconcile_for_write(
+        store,
+        org_id=org_id,
+        embedding=embedding,
+        tags=normalized_tags,
+        mem_type=meta_dict.get("type"),
+        project=project,
+        user_id=user_id,
+    )
+    if decision.action == "none" and decision.candidate is not None:
+        # Re-read so callers get a canonical StoredMemory (recall yields a
+        # ScoredMemory subclass with a stray score field). If the candidate
+        # vanished between reconcile and re-read (rare race), fall through to a
+        # normal insert rather than returning a stale row.
+        existing = await store.get_memory(
+            org_id, decision.candidate.id, requesting_user_id=user_id
+        )
+        if existing is not None:
+            logger.info(
+                "reconcile None: skip redundant write org=%s candidate=%s sim=%.3f",
+                org_id, decision.candidate.id, decision.similarity,
+            )
+            return existing
+    if decision.action == "update" and decision.candidate is not None:
+        merged_tags = tuple(sorted(set(decision.candidate.tags) | set(normalized_tags)))
+        logger.info(
+            "reconcile Update: merge tags into org=%s candidate=%s",
+            org_id, decision.candidate.id,
+        )
+        return await store.update_memory(
+            org_id, decision.candidate.id, MemoryPatch(tags=merged_tags)
+        )
+
+    stored = await store.insert_memory(
         NewMemory(
             org_id=org_id,
             content=content,
@@ -95,6 +133,28 @@ async def create_memory(
             user_id=user_id,
         )
     )
+    if decision.action == "delete" and decision.candidate is not None:
+        logger.info(
+            "reconcile Delete: supersede org=%s old=%s new=%s sim=%.3f",
+            org_id, decision.candidate.id, stored.id, decision.similarity,
+        )
+        # The insert above already committed. Record the supersession separately;
+        # if it fails, degrade to append-only (the new row stands, the old one is
+        # just not suppressed) rather than failing a write that already succeeded.
+        try:
+            await store.record_supersession(
+                decision.candidate.id,
+                superseded_by=stored.id,
+                reason="write-time reconciliation",
+                agent="reconcile",
+            )
+        except Exception:
+            logger.warning(
+                "reconcile Delete: supersession failed org=%s old=%s new=%s; "
+                "kept both rows (append-only fallback)",
+                org_id, decision.candidate.id, stored.id, exc_info=True,
+            )
+    return stored
 
 
 async def get_memory(

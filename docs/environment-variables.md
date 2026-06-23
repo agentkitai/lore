@@ -40,6 +40,19 @@ Complete reference for all environment variables used by Lore. Variables are gro
 
 ---
 
+## Write-time reconciliation
+
+On each write, a memory is reconciled against **the writer's own** existing memories in the same org/scope: a redundant near-duplicate is skipped, one that gains new tags is merged, a strong-but-changed prior version is superseded by the fresh one, otherwise it's a new row. Heuristic-only (cosine similarity, same-type, non-superseded candidates). It never touches another user's rows (a near-duplicate of a teammate's shared memory just becomes a new row), and `observation`-type memories always append. Set `LORE_RECONCILIATION_ENABLED=false` to restore pure append-only.
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `LORE_RECONCILIATION_ENABLED` | `true` | No | Reconcile writes (Add/Update/Delete/None) instead of always appending |
+| `LORE_RECON_DUPLICATE_THRESHOLD` | `0.97` | No | Cosine ≥ this (same type, own) → near-exact: merge tags or skip |
+| `LORE_RECON_SUPERSEDE_THRESHOLD` | `0.90` | No | Cosine in [this, duplicate) (same type, own) → supersede the prior version |
+| `LORE_RECON_MAX_CANDIDATES` | `5` | No | Number of nearest candidates considered per write |
+
+---
+
 ## Knowledge Graph Tuning
 
 | Variable | Default | Required | Description |
