@@ -59,6 +59,7 @@ async def create_snapshot(
         session_id=body.session_id,
         tags=body.tags,
         project=project,
+        user_id=auth.principal_id,
     )
     return SnapshotCreateResponse(
         id=stored.id,

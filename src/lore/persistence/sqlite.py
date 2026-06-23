@@ -1942,12 +1942,14 @@ class SqliteStore:
         memory_id: str,
         *,
         direction: str,
+        requesting_user_id: Optional[str] = None,
     ) -> "StoredMemory":
         """Increment ``upvotes`` or ``downvotes``; mirrors PG signature.
 
         ``direction`` is ``'up'`` or ``'down'``; anything else raises
         ``ValueError`` (matches PG's ``ValueError``). Raises
-        ``StoreNotFoundError`` if the memory doesn't exist.
+        ``StoreNotFoundError`` if the memory doesn't exist or is not visible to
+        ``requesting_user_id`` (read visibility — vote on what you can see).
         """
         if direction == "up":
             column = "upvotes"
@@ -1955,13 +1957,19 @@ class SqliteStore:
             column = "downvotes"
         else:
             raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
+        # Vote is gated by READ visibility (include_shared=True): a teammate may
+        # vote on a shared memory, but not on another principal's private row.
+        vis_where: list[str] = []
+        vis_params: list[Any] = []
+        _append_visibility(vis_where, vis_params, requesting_user_id)
+        vis_clause = (" AND " + " AND ".join(vis_where)) if vis_where else ""
         sql = (
             f"UPDATE memories SET {column} = COALESCE({column}, 0) + 1, "
             "updated_at = datetime('now') "
-            "WHERE id = ? AND org_id = ?"
+            f"WHERE id = ? AND org_id = ?{vis_clause}"
         )
         async with self._acquire() as conn:
-            cursor = await conn.execute(sql, (memory_id, org_id))
+            cursor = await conn.execute(sql, (memory_id, org_id, *vis_params))
             updated = cursor.rowcount
             await cursor.close()
             await conn.commit()

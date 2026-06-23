@@ -30,6 +30,7 @@ async def create_snapshot(
     session_id: Optional[str] = None,
     tags: Optional[Sequence[str]] = None,
     project: Optional[str] = None,
+    user_id: Optional[str] = None,
 ) -> StoredMemory:
     """Create a session snapshot stored as a tagged memory."""
     # Write-side redaction: snapshots capture raw session state, so scrub
@@ -56,5 +57,6 @@ async def create_snapshot(
         tags=all_tags,
         project=project,
         meta=meta,
+        user_id=user_id,    # own the snapshot (#71): session state is the creator's, private by default
     )
     return await store.insert_memory(nm)

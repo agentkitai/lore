@@ -166,9 +166,20 @@ class Store(Protocol):
         ...
 
     async def vote_memory(
-        self, org_id: str, memory_id: str, *, direction: str
+        self,
+        org_id: str,
+        memory_id: str,
+        *,
+        direction: str,
+        requesting_user_id: Optional[str] = None,
     ) -> StoredMemory:
-        """direction is 'up' or 'down'. Returns the updated memory."""
+        """direction is 'up' or 'down'. Returns the updated memory.
+
+        Migration 026: when ``requesting_user_id`` is set, voting is gated by
+        READ visibility — a caller may vote on shared/own/unowned memories but
+        not on another principal's private row (raises StoreNotFoundError).
+        None = unfiltered (internal/solo).
+        """
         ...
 
     async def enrich_memory_meta(self, memory_id: str, enrichment_data: Mapping[str, Any]) -> None:

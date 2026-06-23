@@ -1143,6 +1143,7 @@ class PostgresStore:
         memory_id: str,
         *,
         direction: str,
+        requesting_user_id: Optional[str] = None,
     ) -> StoredMemory:
         if direction == "up":
             column = "upvotes"
@@ -1151,20 +1152,25 @@ class PostgresStore:
         else:
             raise ValueError(f"direction must be 'up' or 'down', got {direction!r}")
 
+        # Vote is gated by READ visibility: a teammate may vote on a shared
+        # memory, but not on another principal's private row.
+        params: list = [memory_id, org_id]
+        vis_where: list[str] = []
+        _append_visibility(vis_where, params, requesting_user_id)
+        vis_clause = (" AND " + " AND ".join(vis_where) + " ") if vis_where else " "
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 f"""
                 UPDATE memories
                 SET {column} = COALESCE({column}, 0) + 1,
                     updated_at = now()
-                WHERE id = $1 AND org_id = $2
+                WHERE id = $1 AND org_id = $2{vis_clause}
                 RETURNING id, org_id, content, context, tags, source,
                           project, created_at, updated_at, expires_at, upvotes,
                           downvotes, meta, access_count,
-                          last_accessed_at, scope
+                          last_accessed_at, scope, visibility, user_id
                 """,
-                memory_id,
-                org_id,
+                *params,
             )
         if row is None:
             raise StoreNotFoundError("memories", memory_id)

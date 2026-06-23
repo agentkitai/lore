@@ -268,9 +268,16 @@ async def search_memories(
 
 
 async def vote_memory(
-    store: Store, *, org_id: str, memory_id: str, direction: str
+    store: Store,
+    *,
+    org_id: str,
+    memory_id: str,
+    direction: str,
+    requesting_user_id: Optional[str] = None,
 ) -> StoredMemory:
-    return await store.vote_memory(org_id, memory_id, direction=direction)
+    return await store.vote_memory(
+        org_id, memory_id, direction=direction, requesting_user_id=requesting_user_id
+    )
 
 
 async def enrich_memory_async(

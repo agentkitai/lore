@@ -312,10 +312,14 @@ async def update(
         )
 
     if has_upvote:
-        result = await store.vote_memory(org_id, lesson_id, direction="up")
+        result = await store.vote_memory(
+            org_id, lesson_id, direction="up", requesting_user_id=requesting_user_id
+        )
 
     if has_downvote:
-        result = await store.vote_memory(org_id, lesson_id, direction="down")
+        result = await store.vote_memory(
+            org_id, lesson_id, direction="down", requesting_user_id=requesting_user_id
+        )
 
     return result
 
