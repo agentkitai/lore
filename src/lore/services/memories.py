@@ -181,6 +181,7 @@ async def update_memory(
     project: Optional[str] = None,
     expires_at: Optional[datetime] = None,
     meta: Optional[Mapping[str, Any]] = None,
+    requesting_user_id: Optional[str] = None,
 ) -> StoredMemory:
     # Redact updated content/context too (no-op when neither is being patched).
     content, context, _redaction_meta = redact_for_write(
@@ -195,13 +196,17 @@ async def update_memory(
         expires_at=expires_at,
         meta=dict(meta) if meta is not None else None,
     )
-    return await store.update_memory(org_id, memory_id, patch)
+    return await store.update_memory(
+        org_id, memory_id, patch, requesting_user_id=requesting_user_id
+    )
 
 
 async def delete_memory(
-    store: Store, *, org_id: str, memory_id: str
+    store: Store, *, org_id: str, memory_id: str, requesting_user_id: Optional[str] = None
 ) -> bool:
-    return await store.delete_memory(org_id, memory_id)
+    return await store.delete_memory(
+        org_id, memory_id, requesting_user_id=requesting_user_id
+    )
 
 
 async def list_memories(

@@ -360,6 +360,7 @@ async def update_memory(
             memory_id=memory_id,
             tags=body.tags,
             meta=body.meta,
+            requesting_user_id=auth.principal_id,
         )
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -376,7 +377,9 @@ async def delete_memory(
 ) -> None:
     """Delete a memory."""
     store = await get_store()
-    deleted = await _delete_memory(store, org_id=auth.org_id, memory_id=memory_id)
+    deleted = await _delete_memory(
+        store, org_id=auth.org_id, memory_id=memory_id, requesting_user_id=auth.principal_id
+    )
     if not deleted:
         raise HTTPException(status_code=404, detail="Memory not found")
 
