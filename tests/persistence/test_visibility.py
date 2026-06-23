@@ -348,3 +348,28 @@ async def test_shared_memory_is_owner_only_on_writes(store):
 
     # The owner still can.
     assert await store.delete_memory("solo", m.id, requesting_user_id="alice") is True
+
+
+@pytest.mark.asyncio
+async def test_vote_is_read_visibility_gated(store):
+    """Voting is gated by READ visibility (#71): a teammate may vote on a shared
+    memory but not on another principal's private row."""
+    from lore.persistence.exceptions import StoreNotFoundError
+
+    private = await store.insert_memory(
+        NewMemory(org_id="solo", content="alice private", embedding=_vec(1), user_id="alice")
+    )
+    shared = await store.insert_memory(
+        NewMemory(org_id="solo", content="alice shared", embedding=_vec(2), user_id="alice")
+    )
+    await store.promote_memory("solo", shared.id, promoted_by="alice")
+
+    # Not on another user's PRIVATE memory ...
+    with pytest.raises(StoreNotFoundError):
+        await store.vote_memory("solo", private.id, direction="up", requesting_user_id="bob")
+    # ... but a SHARED memory is fair game (you can see it).
+    voted = await store.vote_memory("solo", shared.id, direction="up", requesting_user_id="bob")
+    assert voted.upvotes == 1
+    # Owner votes own private; unfiltered (None) path still works.
+    assert (await store.vote_memory("solo", private.id, direction="up", requesting_user_id="alice")).upvotes == 1
+    assert (await store.vote_memory("solo", private.id, direction="down")).downvotes == 1

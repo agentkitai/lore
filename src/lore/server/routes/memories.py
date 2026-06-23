@@ -440,7 +440,8 @@ async def upvote_memory(
     store = await get_store()
     try:
         updated = await _vote_memory(
-            store, org_id=auth.org_id, memory_id=memory_id, direction="up"
+            store, org_id=auth.org_id, memory_id=memory_id, direction="up",
+            requesting_user_id=auth.principal_id,
         )
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")
@@ -456,7 +457,8 @@ async def downvote_memory(
     store = await get_store()
     try:
         updated = await _vote_memory(
-            store, org_id=auth.org_id, memory_id=memory_id, direction="down"
+            store, org_id=auth.org_id, memory_id=memory_id, direction="down",
+            requesting_user_id=auth.principal_id,
         )
     except StoreNotFoundError:
         raise HTTPException(status_code=404, detail="Memory not found")

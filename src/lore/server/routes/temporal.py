@@ -42,6 +42,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/memories", tags=["temporal"])
 
 
+def _owner_can_mutate(memory, principal_id: Optional[str]) -> bool:
+    """Owner-only authz for destructive temporal ops (#71). A supersede /
+    consolidate marks the source memory superseded, so — like delete (#69) —
+    only its owner (or an unowned row, or the solo/no-principal mode) may do it.
+    A teammate can READ a shared memory but not supersede/consolidate it away.
+    """
+    return principal_id is None or memory.user_id is None or memory.user_id == principal_id
+
+
 # ── Models ─────────────────────────────────────────────────────────
 
 
@@ -118,11 +127,17 @@ async def supersede_memory(
 
     # Enforce that the memory exists in the caller's org. ``by`` is
     # optional; when present we also verify it.
+    # Owner-only (#71): superseding marks the TARGET superseded — a destructive
+    # change — so only its owner (or an unowned row) may do it, mirroring delete.
     target = await store.get_memory(auth.org_id, memory_id)
-    if target is None:
+    if target is None or not _owner_can_mutate(target, auth.principal_id):
         raise HTTPException(status_code=404, detail="Memory not found")
     if body.by is not None:
-        new = await store.get_memory(auth.org_id, body.by)
+        # The replacement is only referenced, not mutated → read visibility is
+        # enough (you may supersede with any memory you can see).
+        new = await store.get_memory(
+            auth.org_id, body.by, requesting_user_id=auth.principal_id
+        )
         if new is None:
             raise HTTPException(status_code=404, detail="Replacement memory not found")
 
@@ -187,7 +202,9 @@ async def get_supersession_chain(
     store=Depends(get_store),
 ) -> SupersessionChainResponse:
     """Full audit trail for a memory, oldest first."""
-    target = await store.get_memory(auth.org_id, memory_id)
+    target = await store.get_memory(
+        auth.org_id, memory_id, requesting_user_id=auth.principal_id
+    )
     if target is None:
         raise HTTPException(status_code=404, detail="Memory not found")
     events = await temporal_svc.supersession_chain(store, memory_id)
@@ -230,7 +247,9 @@ async def get_provenance(
     where this id appears as ``superseded_by``. ``chain`` answers "what
     happened to this memory?" — its own ``memory_supersessions`` rows.
     """
-    target = await store.get_memory(auth.org_id, memory_id)
+    target = await store.get_memory(
+        auth.org_id, memory_id, requesting_user_id=auth.principal_id
+    )
     if target is None:
         raise HTTPException(status_code=404, detail="Memory not found")
     sources = await temporal_svc.supersession_sources(store, memory_id)
@@ -271,7 +290,10 @@ async def consolidate(
         seen.add(sid)
         deduped.append(sid)
     for sid in deduped:
-        if await store.get_memory(auth.org_id, sid) is None:
+        # Owner-only (#71): consolidation supersedes each source — destructive —
+        # so the caller must own every source (or it must be unowned).
+        src = await store.get_memory(auth.org_id, sid)
+        if src is None or not _owner_can_mutate(src, auth.principal_id):
             raise HTTPException(
                 status_code=404,
                 detail=f"Source memory not found: {sid}",
@@ -299,6 +321,7 @@ async def consolidate(
         project=auth.project or body.project,
         meta=meta,
         scope=body.scope,
+        user_id=auth.principal_id,  # own the consolidated memory (#71/#69)
     )
 
     superseded_count = await temporal_svc.consolidate_memories(
