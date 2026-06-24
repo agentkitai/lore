@@ -215,13 +215,16 @@ class StoredRelationship:
     source_memory_id: Optional[str]
     valid_from: datetime
     valid_until: Optional[datetime]
-    # superseded_by — the newer edge that replaced this one (correction
-    # lineage, migration 027). None = not superseded. See
-    # ``StoredRelationshipSupersession`` for the append-only audit log.
-    superseded_by: Optional[str]
     status: str
     created_at: datetime
     updated_at: datetime
+    # superseded_by — the newer edge that replaced this one (correction
+    # lineage, migration 027). None = not superseded. Default present (and
+    # placed last) to satisfy the dataclass field-order rule and keep
+    # hand-built fixtures that predate the field working; production rows
+    # always carry the real value from the column. See
+    # ``StoredRelationshipSupersession`` for the append-only audit log.
+    superseded_by: Optional[str] = None
 
 
 @dataclass(frozen=True, slots=True)
