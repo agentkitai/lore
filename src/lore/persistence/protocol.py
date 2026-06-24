@@ -60,6 +60,7 @@ from lore.persistence.types import (
     StoredProfile,
     StoredRecommendationConfig,
     StoredRelationship,
+    StoredRelationshipSupersession,
     StoredRetentionPolicy,
     StoredSloAlert,
     StoredSloDefinition,
@@ -534,6 +535,56 @@ class Store(Protocol):
         rel_types: Optional[Sequence[str]] = None,
     ) -> Sequence[StoredRelationship]:
         """Hop query for graph traversal. direction in {'inbound','outbound','both'}."""
+        ...
+
+    # ── Relationship supersession (bi-temporal facts, #67) ──────────────
+    # Relationship edges (subject–predicate–object) ARE Lore's durable facts.
+    # These mirror the memory SupersessionOps for supersede-not-delete + an
+    # auditable correction chain at the edge level.
+
+    async def supersede_relationship(
+        self,
+        relationship_id: str,
+        *,
+        superseded_by: str,
+        reason: Optional[str] = None,
+        agent: str = "auto",
+    ) -> None:
+        """Supersede-not-delete: close ``relationship_id``'s validity window
+        (``valid_until = now``), point its ``superseded_by`` at the newer edge,
+        and append the correction to ``relationship_supersessions`` — atomically.
+        ``query_relationships(at_time=...)`` then excludes it as of now while
+        as-of-past-date queries still return it."""
+        ...
+
+    async def record_relationship_supersession(
+        self,
+        relationship_id: str,
+        *,
+        superseded_by: Optional[str],
+        reason: Optional[str],
+        agent: str = "auto",
+    ) -> None:
+        """Append a row to ``relationship_supersessions`` WITHOUT touching the
+        edge's validity window (bare primitive; parity with
+        ``record_supersession``). Prefer ``supersede_relationship``."""
+        ...
+
+    async def is_relationship_superseded(
+        self,
+        relationship_id: str,
+        *,
+        at: Optional[datetime] = None,
+    ) -> bool:
+        """True iff the edge's LATEST ``relationship_supersessions`` row before
+        ``at`` (default ``now``) has ``superseded_by IS NOT NULL``."""
+        ...
+
+    async def get_relationship_supersession_chain(
+        self,
+        relationship_id: str,
+    ) -> Sequence[StoredRelationshipSupersession]:
+        """Full correction trail for an edge, ordered oldest-first."""
         ...
 
     async def get_graph_stats(

@@ -256,6 +256,9 @@ class Relationship:
     source_memory_id: Optional[str] = None
     valid_from: str = ""
     valid_until: Optional[str] = None
+    # superseded_by — newer edge that replaced this one (correction lineage,
+    # migration 027). None = current/not superseded.
+    superseded_by: Optional[str] = None
     status: str = "approved"
     created_at: str = ""
     updated_at: str = ""

@@ -20,11 +20,15 @@ See docs/superpowers/specs/2026-05-07-lore-temporal-design.md.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional, Sequence
 
 from lore.persistence import Store, StoredMemory
-from lore.persistence.types import StoredSupersession
+from lore.persistence.types import (
+    StoredRelationshipSupersession,
+    StoredSupersession,
+)
 
 
 async def supersede_memory(
@@ -136,3 +140,118 @@ async def memories_at_time(
         limit=limit,
         requesting_user_id=requesting_user_id,
     )
+
+
+# ── Bi-temporal facts (#67) ─────────────────────────────────────────────
+#
+# Lore stores "facts" (subject–predicate–object assertions) as graph
+# relationships: entity[subject] --predicate--> entity[object]. Edges already
+# carry a validity window (valid_from / valid_until), so as-of-date fact
+# queries are a thin SPO-shaped view over query_relationships(at_time=...).
+# supersede_relationship adds supersede-not-delete + an auditable correction
+# chain, mirroring the memory supersession helpers above.
+
+
+@dataclass(frozen=True, slots=True)
+class FactAtTime:
+    """A subject–predicate–object fact (a relationship edge) as it stood at a
+    given timestamp. ``subject`` / ``object`` are resolved entity names."""
+
+    relationship_id: str
+    subject: str
+    predicate: str
+    object: str
+    valid_from: Optional[datetime]
+    valid_until: Optional[datetime]
+    superseded_by: Optional[str]
+    weight: float
+    source_memory_id: Optional[str]
+
+
+async def supersede_relationship(
+    store: Store,
+    relationship_id: str,
+    *,
+    superseded_by: str,
+    reason: Optional[str] = None,
+    agent: str = "auto",
+) -> None:
+    """Supersede-not-delete a fact edge: close its validity window, point it at
+    the newer edge that replaced it, and append the correction to the
+    ``relationship_supersessions`` audit log. See ``Store.supersede_relationship``.
+    """
+    await store.supersede_relationship(
+        relationship_id,
+        superseded_by=superseded_by,
+        reason=reason,
+        agent=agent,
+    )
+
+
+async def relationship_supersession_chain(
+    store: Store,
+    relationship_id: str,
+) -> Sequence[StoredRelationshipSupersession]:
+    """Full correction trail for a fact edge, oldest first."""
+    return await store.get_relationship_supersession_chain(relationship_id)
+
+
+async def facts_at_time(
+    store: Store,
+    *,
+    entity: str,
+    at: datetime,
+    predicate: Optional[str] = None,
+    direction: str = "both",
+    limit: int = 50,
+) -> list[FactAtTime]:
+    """Subject–predicate–object facts involving ``entity`` that were valid at
+    ``at`` — the relationship edges whose validity window contains ``at``
+    (``valid_from <= at`` and ``valid_until`` is null or ``> at``), excluding
+    ones superseded by then.
+
+    A thin SPO-shaped view over ``query_relationships(at_time=...)`` with entity
+    -name resolution. Returns ``[]`` if ``entity`` is unknown.
+    """
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+
+    ent = await store.get_entity_by_name(entity)
+    if ent is None:
+        normalized = entity.strip().lower()
+        if normalized != entity:
+            ent = await store.get_entity_by_name(normalized)
+    if ent is None:
+        return []
+
+    rels = await store.query_relationships(
+        [ent.id],
+        direction=direction,
+        at_time=at,
+        rel_types=[predicate] if predicate else None,
+    )
+
+    names: dict[str, str] = {ent.id: ent.name}
+
+    async def _name(entity_id: str) -> str:
+        if entity_id not in names:
+            other = await store.get_entity(entity_id)
+            names[entity_id] = other.name if other is not None else entity_id
+        return names[entity_id]
+
+    facts: list[FactAtTime] = []
+    for rel in rels[:limit]:
+        facts.append(
+            FactAtTime(
+                relationship_id=rel.id,
+                subject=await _name(rel.source_entity_id),
+                predicate=rel.rel_type,
+                object=await _name(rel.target_entity_id),
+                valid_from=rel.valid_from,
+                valid_until=rel.valid_until,
+                superseded_by=rel.superseded_by,
+                weight=rel.weight,
+                source_memory_id=rel.source_memory_id,
+            )
+        )
+    return facts
