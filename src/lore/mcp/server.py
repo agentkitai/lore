@@ -166,6 +166,99 @@ def _maybe_auto_snapshot(
 
 _lore: Optional[Lore] = None
 
+# Holds the in-process uvicorn server for LORE_STORE=local (durable SQLite).
+_embedded_server: Any = None
+
+
+def _stop_embedded_server() -> None:
+    """Signal the embedded local server to shut down (atexit hook)."""
+    if _embedded_server is not None:
+        _embedded_server.should_exit = True
+
+
+def _start_embedded_server() -> "tuple[str, str]":
+    """Start the lore HTTP server (SQLite) on a localhost port in a daemon
+    thread and return ``(api_url, api_key)``.
+
+    This is how ``LORE_STORE=local`` gets DURABLE storage. The sync MCP SDK has
+    no SQLite store of its own (only ``HttpStore`` + in-memory ``MemoryStore``),
+    so local mode runs the full server — ``SqliteStore`` at the configured DB
+    (default ``~/.lore/lore.db``) — in-process and talks to it over HTTP exactly
+    like remote mode, reusing the entire service/Store stack. The server's
+    startup bootstraps the solo org + an API key written to ``~/.lore/key.txt``
+    (``bootstrap_solo_if_empty``), which we read back to authenticate.
+    """
+    global _embedded_server
+    try:
+        import uvicorn
+
+        from lore.server.app import app
+    except ImportError as e:  # pragma: no cover - packaging guard
+        raise RuntimeError(
+            "LORE_STORE=local (durable SQLite) needs the embedded-server deps. "
+            "Install them with:\n"
+            "    pip install 'lore-sdk[mcp]'\n"
+            "or set LORE_STORE=remote with LORE_API_URL + LORE_API_KEY to use a "
+            "standalone server."
+        ) from e
+
+    import atexit
+    import socket
+    import threading
+    import time
+    import urllib.request
+    from pathlib import Path
+
+    # Reserve a free localhost port (brief TOCTOU window; fine on loopback).
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=port, log_level="warning", lifespan="on",
+    )
+    server = uvicorn.Server(config)
+    _embedded_server = server
+    atexit.register(_stop_embedded_server)
+
+    threading.Thread(
+        target=server.run, name="lore-embedded-server", daemon=True,
+    ).start()
+
+    base = f"http://127.0.0.1:{port}"
+    # Wait for health: lifespan startup done → store initialized → key written.
+    deadline = time.monotonic() + 60.0
+    last_err: object = None
+    while time.monotonic() < deadline:
+        if getattr(server, "should_exit", False):
+            raise RuntimeError(f"embedded lore server exited during startup: {last_err}")
+        try:
+            with urllib.request.urlopen(base + "/health", timeout=2) as resp:
+                if resp.status == 200:
+                    break
+        except Exception as e:  # server not up yet
+            last_err = e
+            time.sleep(0.25)
+    else:
+        raise RuntimeError("embedded lore server did not become healthy within 60s")
+
+    # Read the solo API key bootstrap wrote (always ~/.lore/key.txt).
+    key_path = Path("~/.lore/key.txt").expanduser()
+    for _ in range(40):
+        try:
+            key = key_path.read_text().strip()
+        except OSError:
+            key = ""
+        if key:
+            logger.info("lore-memory: local mode using embedded SQLite server at %s", base)
+            return base, key
+        time.sleep(0.1)
+    raise RuntimeError(
+        f"embedded lore server is up but no API key at {key_path}. "
+        f"Delete the DB to re-bootstrap, or use LORE_STORE=remote."
+    )
+
 
 def _get_lore() -> Lore:
     """Return the module-level Lore instance, creating it on first call."""
@@ -194,11 +287,16 @@ def _get_lore() -> Lore:
             # Auto-enable if an API key is available
             enrichment = bool(os.environ.get("OPENAI_API_KEY"))
         enrichment_model = os.environ.get("LORE_ENRICHMENT_MODEL", "gpt-4o-mini")
+        # Durable SQLite, zero-config: the sync SDK has no SQLite store, so run
+        # the full lore server (SqliteStore) in-process on a localhost port and
+        # talk to it over HTTP, exactly like remote mode. (Previously this
+        # branch built an HttpStore with no URL and crashed on every tool call.)
+        api_url, api_key = _start_embedded_server()
         _lore = Lore(
             project=project,
             store="remote",
-            api_url=os.environ.get("LORE_API_URL"),
-            api_key=os.environ.get("LORE_API_KEY"),
+            api_url=api_url,
+            api_key=api_key,
             enrichment=enrichment,
             enrichment_model=enrichment_model,
         )
