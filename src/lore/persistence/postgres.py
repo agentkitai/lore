@@ -72,6 +72,7 @@ from lore.persistence.types import (
     StoredProfile,
     StoredRecommendationConfig,
     StoredRelationship,
+    StoredRelationshipSupersession,
     StoredRetentionPolicy,
     StoredSloAlert,
     StoredSloDefinition,
@@ -216,6 +217,7 @@ def _row_to_relationship(row: "asyncpg.Record") -> StoredRelationship:
         source_memory_id=row["source_memory_id"],
         valid_from=row["valid_from"],
         valid_until=row["valid_until"],
+        superseded_by=row["superseded_by"],
         status=row["status"] or "approved",
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -1502,7 +1504,7 @@ class PostgresStore:
                 """
                 SELECT id, source_entity_id, target_entity_id, rel_type, weight,
                        properties, source_fact_id, source_memory_id,
-                       valid_from, valid_until, status, created_at, updated_at
+                       valid_from, valid_until, superseded_by, status, created_at, updated_at
                 FROM relationships
                 WHERE id = $1
                 """,
@@ -1522,7 +1524,7 @@ class PostgresStore:
                 """
                 SELECT id, source_entity_id, target_entity_id, rel_type, weight,
                        properties, source_fact_id, source_memory_id,
-                       valid_from, valid_until, status, created_at, updated_at
+                       valid_from, valid_until, superseded_by, status, created_at, updated_at
                 FROM relationships
                 WHERE source_entity_id = $1
                   AND target_entity_id = $2
@@ -1548,7 +1550,7 @@ class PostgresStore:
                 VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
                 RETURNING id, source_entity_id, target_entity_id, rel_type, weight,
                           properties, source_fact_id, source_memory_id,
-                          valid_from, valid_until, status, created_at, updated_at
+                          valid_from, valid_until, superseded_by, status, created_at, updated_at
                 """,
                 rel_id,
                 rel.source_entity_id,
@@ -1569,24 +1571,68 @@ class PostgresStore:
         memory_id: str,
         relationships: Sequence[NewRelationship],
     ) -> int:
-        """Replace this memory's outgoing relationships atomically.
+        """Reconcile this memory's relationships — supersede-NOT-delete (#67).
 
-        Active-edge UNIQUE conflicts (the partial unique index from
-        migration 007 — same source/target/type with valid_until NULL)
-        are silently skipped because the edge already exists from
-        another memory; ON CONFLICT DO NOTHING handles that without
-        rolling back the whole replace.
+        Instead of hard-deleting this memory's edges and re-inserting, diff
+        against what it currently asserts:
+          * edges this memory previously asserted but no longer does are
+            EXPIRED (``valid_until = now``) rather than deleted — preserving
+            history so ``query_relationships(at_time=...)`` / as-of-date fact
+            queries still return them for past timestamps;
+          * still-asserted edges are left untouched (no churn; ``valid_from``
+            stays put, so "since when was this true" is preserved);
+          * genuinely-new edges are inserted.
+        Active-edge UNIQUE conflicts (same key already active from ANOTHER
+        memory — the partial unique index from migration 007) are skipped via
+        ON CONFLICT DO NOTHING. Returns the count of newly-inserted edges.
+
+        Scope note: this expires edges THIS memory dropped; it does not detect
+        cross-memory contradictions (memory M2 asserting the opposite of M1's
+        edge). That correction-with-lineage path is ``supersede_relationship``,
+        driven by an explicit caller. ponytail: server-side LLM contradiction
+        detection is a separate spike (#67) — wire supersede_relationship when
+        it lands.
         """
         inserted = 0
+        now = datetime.now(timezone.utc)
         async with self._acquire() as conn:
             async with conn.transaction():
-                await conn.execute(
-                    "DELETE FROM relationships WHERE source_memory_id = $1",
+                existing = await conn.fetch(
+                    """
+                    SELECT id, source_entity_id, target_entity_id, rel_type
+                    FROM relationships
+                    WHERE source_memory_id = $1 AND valid_until IS NULL
+                    """,
                     memory_id,
                 )
+                existing_by_key = {
+                    (r["source_entity_id"], r["target_entity_id"], r["rel_type"]): r["id"]
+                    for r in existing
+                }
+                new_keys = {
+                    (r.source_entity_id, r.target_entity_id, r.rel_type)
+                    for r in relationships
+                }
+                # Expire (don't delete) edges this memory no longer asserts.
+                stale_ids = [
+                    rid for key, rid in existing_by_key.items() if key not in new_keys
+                ]
+                if stale_ids:
+                    await conn.execute(
+                        """
+                        UPDATE relationships
+                        SET valid_until = $2, updated_at = now()
+                        WHERE id = ANY($1) AND valid_until IS NULL
+                        """,
+                        stale_ids,
+                        now,
+                    )
+                # Insert genuinely-new edges; leave still-asserted ones untouched.
                 for r in relationships:
+                    if (r.source_entity_id, r.target_entity_id, r.rel_type) in existing_by_key:
+                        continue
                     rel_id = f"rel_{ULID()}"
-                    valid_from = r.valid_from or datetime.now(timezone.utc)
+                    valid_from = r.valid_from or now
                     result = await conn.execute(
                         """
                         INSERT INTO relationships
@@ -1631,7 +1677,7 @@ class PostgresStore:
         sql = f"""
             SELECT id, source_entity_id, target_entity_id, rel_type, weight,
                    properties, source_fact_id, source_memory_id,
-                   valid_from, valid_until, status, created_at, updated_at
+                   valid_from, valid_until, superseded_by, status, created_at, updated_at
             FROM relationships
             WHERE {' AND '.join(where)}
             ORDER BY weight DESC NULLS LAST, created_at DESC
@@ -1655,7 +1701,7 @@ class PostgresStore:
                 WHERE id = $1
                 RETURNING id, source_entity_id, target_entity_id, rel_type, weight,
                           properties, source_fact_id, source_memory_id,
-                          valid_from, valid_until, status, created_at, updated_at
+                          valid_from, valid_until, superseded_by, status, created_at, updated_at
                 """,
                 rel_id,
                 status,
@@ -1805,7 +1851,7 @@ class PostgresStore:
         sql = f"""
             SELECT id, source_entity_id, target_entity_id, rel_type, weight,
                    properties, source_fact_id, source_memory_id,
-                   valid_from, valid_until, status, created_at, updated_at
+                   valid_from, valid_until, superseded_by, status, created_at, updated_at
             FROM relationships
             WHERE {' AND '.join(where)}
             ORDER BY weight DESC NULLS LAST, created_at DESC
@@ -4130,6 +4176,114 @@ class PostgresStore:
         async with self._acquire() as conn:
             rows = await conn.fetch(sql, *params)
         return [_row_to_stored(r) for r in rows]
+
+    # ── Relationship supersession (bi-temporal facts, #67) ──────────────
+    # Lore's durable "facts" are relationship edges (subject–predicate–object).
+    # These mirror the memory_supersessions ops above, adding supersede-not-
+    # delete + an auditable correction chain for edges.
+
+    async def supersede_relationship(
+        self,
+        relationship_id: str,
+        *,
+        superseded_by: str,
+        reason: Optional[str] = None,
+        agent: str = "auto",
+    ) -> None:
+        """Expire ``relationship_id``, point it at the newer edge that replaced
+        it, and append the correction to ``relationship_supersessions`` — all in
+        one transaction.
+
+        The edge's validity window is closed (``valid_until = now()``) so
+        ``query_relationships(at_time=...)`` stops returning it as of now, while
+        as-of-past-date queries still see it. ``COALESCE`` preserves an existing
+        ``valid_until`` (don't move an already-recorded expiry).
+        """
+        async with self._acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    """
+                    UPDATE relationships
+                    SET valid_until = COALESCE(valid_until, now()),
+                        superseded_by = $2,
+                        updated_at = now()
+                    WHERE id = $1
+                    """,
+                    relationship_id,
+                    superseded_by,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO relationship_supersessions
+                        (relationship_id, superseded_by, reason, agent)
+                    VALUES ($1, $2, $3, $4)
+                    """,
+                    relationship_id,
+                    superseded_by,
+                    reason,
+                    agent,
+                )
+
+    async def is_relationship_superseded(
+        self,
+        relationship_id: str,
+        *,
+        at: Optional[datetime] = None,
+    ) -> bool:
+        async with self._acquire() as conn:
+            if at is None:
+                row = await conn.fetchrow(
+                    """
+                    SELECT superseded_by
+                    FROM relationship_supersessions
+                    WHERE relationship_id = $1
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    relationship_id,
+                )
+            else:
+                row = await conn.fetchrow(
+                    """
+                    SELECT superseded_by
+                    FROM relationship_supersessions
+                    WHERE relationship_id = $1
+                      AND ts <= $2
+                    ORDER BY ts DESC, id DESC
+                    LIMIT 1
+                    """,
+                    relationship_id,
+                    at,
+                )
+        if row is None:
+            return False
+        return row["superseded_by"] is not None
+
+    async def get_relationship_supersession_chain(
+        self,
+        relationship_id: str,
+    ) -> Sequence[StoredRelationshipSupersession]:
+        async with self._acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, relationship_id, superseded_by, reason, ts, agent
+                FROM relationship_supersessions
+                WHERE relationship_id = $1
+                ORDER BY ts ASC, id ASC
+                """,
+                relationship_id,
+            )
+        return [
+            StoredRelationshipSupersession(
+                id=int(r["id"]),
+                relationship_id=r["relationship_id"],
+                superseded_by=r["superseded_by"],
+                reason=r["reason"],
+                ts=r["ts"],
+                agent=r["agent"],
+            )
+            for r in rows
+        ]
 
     async def list_timeline_around(
         self,

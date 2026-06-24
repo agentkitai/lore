@@ -215,6 +215,10 @@ class StoredRelationship:
     source_memory_id: Optional[str]
     valid_from: datetime
     valid_until: Optional[datetime]
+    # superseded_by — the newer edge that replaced this one (correction
+    # lineage, migration 027). None = not superseded. See
+    # ``StoredRelationshipSupersession`` for the append-only audit log.
+    superseded_by: Optional[str]
     status: str
     created_at: datetime
     updated_at: datetime
@@ -825,6 +829,27 @@ class StoredSupersession:
 
     id: int
     memory_id: str
+    superseded_by: Optional[str]
+    reason: Optional[str]
+    ts: datetime
+    agent: str
+
+
+@dataclass(frozen=True, slots=True)
+class StoredRelationshipSupersession:
+    """A single row from ``relationship_supersessions`` (bi-temporal facts, #67).
+
+    Append-only audit log entry linking a relationship (a subject–predicate–
+    object "fact" edge) to (optionally) the newer relationship that supersedes
+    it. ``superseded_by IS None`` means an explicit un-supersession.
+
+    Direct mirror of ``StoredSupersession`` (memories); the "is superseded?"
+    question reads the LATEST row by ``ts`` for a given ``relationship_id`` —
+    see ``Store.is_relationship_superseded`` for the canonical query shape.
+    """
+
+    id: int
+    relationship_id: str
     superseded_by: Optional[str]
     reason: Optional[str]
     ts: datetime

@@ -2069,6 +2069,123 @@ def supersession_chain(memory_id: str) -> str:
         return f"Failed to fetch supersession chain: {e}"
 
 
+# ── Bi-temporal facts (#67) ─────────────────────────────────────────
+# Lore stores facts (subject–predicate–object) as graph relationships, which
+# carry a validity window. These tools expose as-of-date fact queries and
+# supersede-not-delete + audit chains over that substrate.
+
+
+@mcp.tool(
+    description=(
+        "List the facts (subject–predicate–object relationships) about an "
+        "entity that were valid at a given point in time. "
+        "USE THIS WHEN: you need 'what was true about X as of date Y?' for "
+        "audit/compliance, debugging stale context, or historical questions "
+        "(e.g. 'what database did ServiceX use on 2026-05-01?'). Excludes "
+        "facts that had already been superseded as of that timestamp. "
+        "Optionally filter by predicate."
+    ),
+)
+def facts_at_time(
+    at: str,
+    entity: str,
+    predicate: Optional[str] = None,
+    direction: str = "both",
+    limit: int = 50,
+) -> str:
+    """Subject–predicate–object facts about ``entity`` valid at ``at``."""
+    try:
+        params: Dict[str, Any] = {"at": at, "entity": entity, "limit": limit}
+        if predicate is not None:
+            params["predicate"] = predicate
+        if direction != "both":
+            params["direction"] = direction
+        data = _temporal_request("GET", "/v1/facts/at_time", params=params)
+        facts = data.get("facts", [])
+        if not facts:
+            return f"No facts about '{entity}' valid at {at}."
+        lines = [f"Found {len(facts)} fact(s) about '{entity}' valid at {at}:"]
+        for f in facts:
+            superseded = (
+                f" superseded_by={f['superseded_by']}" if f.get("superseded_by") else ""
+            )
+            lines.append(
+                f"[{f.get('relationship_id', '?')}] "
+                f"{f.get('subject', '?')} {f.get('predicate', '?')} "
+                f"{f.get('object', '?')}"
+                f"{superseded}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to list facts at time: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Supersede a fact (relationship) with a newer one — supersede-NOT-"
+        "delete. USE THIS WHEN: a fact was corrected (e.g. 'ServiceX uses "
+        "Postgres' is now 'ServiceX uses MySQL'). Pass the old fact's "
+        "relationship_id and the newer fact's id as superseded_by. The old "
+        "fact stops appearing in current fact queries but stays queryable "
+        "as-of past dates, and the correction is recorded in the audit chain. "
+        "Get relationship_ids from facts_at_time."
+    ),
+)
+def supersede_fact(
+    relationship_id: str,
+    superseded_by: str,
+    reason: Optional[str] = None,
+) -> str:
+    """Supersede-not-delete a fact edge."""
+    try:
+        body: Dict[str, Any] = {"by": superseded_by, "reason": reason}
+        data = _temporal_request(
+            "POST", f"/v1/facts/{relationship_id}/supersede", json=body,
+        )
+        return json.dumps(
+            {
+                "status": "ok",
+                "relationship_id": data.get("relationship_id"),
+                "superseded_by": data.get("superseded_by"),
+                "reason": data.get("reason"),
+            }
+        )
+    except Exception as e:
+        return f"Failed to supersede fact: {e}"
+
+
+@mcp.tool(
+    description=(
+        "Show the correction trail for a fact (relationship). "
+        "USE THIS WHEN: auditing 'how did this fact change over time?' or "
+        "tracing which newer fact replaced an old one and why. Returns the "
+        "supersession events oldest first."
+    ),
+)
+def fact_supersession_chain(relationship_id: str) -> str:
+    """Audit trail for a fact's supersessions."""
+    try:
+        data = _temporal_request(
+            "GET", f"/v1/facts/{relationship_id}/supersession-chain",
+        )
+        events = data.get("events", [])
+        if not events:
+            return f"Fact {relationship_id} has no supersession history."
+        lines = [
+            f"Supersession chain for {relationship_id} ({len(events)} event(s)):"
+        ]
+        for e in events:
+            sb = e.get("superseded_by") or "(un-superseded)"
+            reason = e.get("reason") or ""
+            lines.append(
+                f"  {e.get('ts', '?')} agent={e.get('agent', '?')} "
+                f"by={sb} reason={reason}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Failed to fetch fact supersession chain: {e}"
+
+
 def run_server() -> None:
     """Start the MCP server with stdio transport."""
     mcp.run(transport="stdio")

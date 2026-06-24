@@ -36,6 +36,7 @@ from lore.server.routes.analytics import router as analytics_router
 from lore.server.routes.audit import router as audit_router
 from lore.server.routes.conversations import router as conversations_router
 from lore.server.routes.export import router as export_router
+from lore.server.routes.facts import router as facts_router
 from lore.server.routes.graph import router as graph_router
 from lore.server.routes.graph_backfill import router as graph_backfill_router
 from lore.server.routes.ingest import router as ingest_router
@@ -179,6 +180,7 @@ app.include_router(snapshots_router)
 app.include_router(export_router)
 app.include_router(graph_router)
 app.include_router(graph_backfill_router)
+app.include_router(facts_router)
 app.include_router(review_router)
 app.include_router(topics_router)
 app.include_router(setup_validation_router)
