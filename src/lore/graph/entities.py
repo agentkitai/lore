@@ -18,9 +18,15 @@ def _utc_now_iso() -> str:
 class EntityManager:
     """Manages entity lifecycle: creation, dedup, alias resolution, merge."""
 
-    def __init__(self, store: Store, topic_summary_cache=None) -> None:
+    def __init__(
+        self, store: Store, topic_summary_cache=None, org_id: str = "solo"
+    ) -> None:
         self.store = store
         self._topic_summary_cache = topic_summary_cache
+        # Embedded mode is single-tenant per process; stamp the process org
+        # ("solo" by default) onto graph rows for forward-compatibility with
+        # the org-scoped schema. Not a cross-tenant boundary — see #83 spec.
+        self._org_id = org_id
 
     @staticmethod
     def _normalize_name(raw: str) -> str:

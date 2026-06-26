@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from lore.persistence import Store
+from lore.server.auth import AuthContext, get_auth_context
 from lore.server.db import get_store
 from lore.services.graph.graph import get_clusters, get_stats, get_timeline
 
@@ -50,8 +51,9 @@ def _node_to_pydantic(n) -> GraphNode:
 async def get_stats_route(
     project: Optional[str] = Query(None),
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> StatsResponse:
-    s = await get_stats(store, project=project)
+    s = await get_stats(store, project=project, org_id=auth.org_id)
     return StatsResponse(
         total_memories=s.total_memories,
         total_entities=s.total_entities,
@@ -73,9 +75,12 @@ async def get_clusters_route(
     group_by: str = Query("project"),
     project: Optional[str] = Query(None),
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> ClusterResponse:
     try:
-        result = await get_clusters(store, group_by=group_by, project=project)
+        result = await get_clusters(
+            store, group_by=group_by, project=project, org_id=auth.org_id
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return ClusterResponse(
@@ -99,9 +104,12 @@ async def get_timeline_route(
     bucket: str = Query("day"),
     project: Optional[str] = Query(None),
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> TimelineResponse:
     try:
-        result = await get_timeline(store, bucket=bucket, project=project)
+        result = await get_timeline(
+            store, bucket=bucket, project=project, org_id=auth.org_id
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return TimelineResponse(

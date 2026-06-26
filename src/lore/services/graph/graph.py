@@ -181,10 +181,7 @@ async def get_graph_data(
     until: Optional[datetime] = None,
     limit: int = 1000,
     include_orphans: bool = True,
-    # NOTE: org_id is pinned to "solo" to preserve legacy UI behaviour.
-    # The legacy SQL routes did not filter by org. Update when multi-org is
-    # introduced.
-    org_id: str = "solo",
+    org_id: str,
 ) -> GraphData:
     """Build a graph view: nodes (memories + entities) and edges (mentions + approved relationships).
 
@@ -194,7 +191,7 @@ async def get_graph_data(
     Future optimization: add Store.list_mentions(memory_ids=...) to batch this.
     """
     # 1. Get total counts via stats (avoids a separate COUNT query).
-    stats = await store.get_graph_stats(project=project)
+    stats = await store.get_graph_stats(org_id, project=project)
 
     # 2. Fetch filtered memory subset.
     f = MemoryFilter(
@@ -209,7 +206,7 @@ async def get_graph_data(
     memories = await store.list_memories(f)
 
     # 3. Fetch all entities (no limit in legacy SQL).
-    entities = await store.list_entities(limit=10000)
+    entities = await store.list_entities(org_id, limit=10000)
 
     # 4. Build memory nodes.
     nodes: list[GraphNode] = []
@@ -240,7 +237,7 @@ async def get_graph_data(
     capped_memories = list(memories)[:500]
 
     for m in capped_memories:
-        mentions = await store.get_mentions_for_memory(m.id)
+        mentions = await store.get_mentions_for_memory(m.id, org_id)
         for mention in mentions:
             edges.append(
                 GraphEdge(
@@ -255,7 +252,7 @@ async def get_graph_data(
     # 7. Build edges: approved active relationships among entity subset.
     if entity_ids:
         relationships = await store.query_relationships(
-            entity_ids, direction="both", active_only=True
+            entity_ids, org_id, direction="both", active_only=True
         )
         for rel in relationships:
             if rel.status == "approved":
@@ -295,6 +292,7 @@ async def search_graph_memories(
     store: Store,
     query: str,
     *,
+    org_id: str,
     limit: int = 20,
 ) -> SearchResults:
     """Full-text (substring) search over memories for the graph UI search box.
@@ -305,7 +303,7 @@ async def search_graph_memories(
     if not query or not query.strip():
         return SearchResults(results=(), total=0)
 
-    memories = await store.search_memories_text(query, limit=limit)
+    memories = await store.search_memories_text(org_id, query, limit=limit)
 
     hits = tuple(
         SearchHit(
@@ -324,22 +322,22 @@ async def get_memory_with_graph(
     store: Store,
     memory_id: str,
     *,
-    org_id: str = "solo",
+    org_id: str,
 ) -> Optional[MemoryWithGraph]:
     """Fetch a memory together with its connected entities and related memories.
 
-    Returns None when the memory does not exist. org_id defaults to "solo" to
-    preserve legacy UI behaviour (the legacy route did not enforce org scope).
+    Returns None when the memory does not exist. org_id is required so the
+    fetch is scoped to the caller's tenant.
     """
     memory = await store.get_memory(org_id, memory_id)
     if memory is None:
         return None
 
     # Connected entities via mention table.
-    mentions = await store.get_mentions_for_memory(memory_id)
+    mentions = await store.get_mentions_for_memory(memory_id, org_id)
     entity_refs: list[ConnectedEntityRef] = []
     for mention in mentions:
-        entity = await store.get_entity(mention.entity_id)
+        entity = await store.get_entity(mention.entity_id, org_id)
         if entity is not None:
             entity_refs.append(
                 ConnectedEntityRef(
@@ -355,7 +353,7 @@ async def get_memory_with_graph(
     related_memories: list[ConnectedMemoryRef] = []
     if entity_ids:
         related = await store.get_memories_by_entities(
-            entity_ids, exclude_memory_id=memory_id, limit=20
+            org_id, entity_ids, exclude_memory_id=memory_id, limit=20
         )
         for rm in related:
             content = rm.content or ""
@@ -379,10 +377,11 @@ async def get_memory_with_graph(
 async def get_stats(
     store: Store,
     *,
+    org_id: str,
     project: Optional[str] = None,
 ) -> GraphStats:
     """Delegate to store.get_graph_stats. Returns the typed GraphStats dataclass."""
-    return await store.get_graph_stats(project=project)
+    return await store.get_graph_stats(org_id, project=project)
 
 
 async def get_clusters(
@@ -390,7 +389,7 @@ async def get_clusters(
     *,
     group_by: str = "project",
     project: Optional[str] = None,
-    org_id: str = "solo",
+    org_id: str,
 ) -> ClusterResult:
     """Group memories into clusters by project, type, or tier.
 
@@ -452,6 +451,7 @@ async def get_clusters(
 async def get_timeline(
     store: Store,
     *,
+    org_id: str,
     bucket: str = "day",
     project: Optional[str] = None,
 ) -> TimelineResult:
@@ -463,7 +463,7 @@ async def get_timeline(
         raise ValueError(
             f"bucket must be one of {sorted(VALID_TIMELINE_BUCKETS)}; got {bucket!r}"
         )
-    rows = await store.get_timeline_buckets(trunc=bucket, project=project)
+    rows = await store.get_timeline_buckets(org_id, trunc=bucket, project=project)
     if not rows:
         return TimelineResult(buckets=(), range_start=None, range_end=None)
 

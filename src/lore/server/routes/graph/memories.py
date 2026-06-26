@@ -11,6 +11,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from lore.persistence import Store
+from lore.server.auth import AuthContext, get_auth_context
 from lore.server.db import get_store
 from lore.services.graph.graph import (
     get_graph_data,
@@ -80,6 +81,7 @@ async def get_graph(
     limit: int = Query(1000, ge=1, le=10000),
     include_orphans: bool = Query(True),
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> GraphResponse:
     since_dt = _parse_iso(since)
     until_dt = _parse_iso(until)
@@ -92,6 +94,7 @@ async def get_graph(
         until=until_dt,
         limit=limit,
         include_orphans=include_orphans,
+        org_id=auth.org_id,
     )
     return GraphResponse(
         nodes=[_node_to_pydantic(n) for n in data.nodes],
@@ -110,10 +113,11 @@ async def get_graph(
 async def search_memories(
     request: dict,
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> SearchResponse:
     query = request.get("query", "")
     limit = request.get("limit", 20)
-    res = await search_graph_memories(store, query, limit=limit)
+    res = await search_graph_memories(store, query, limit=limit, org_id=auth.org_id)
     return SearchResponse(
         results=[
             SearchResult(
@@ -133,8 +137,9 @@ async def search_memories(
 async def get_memory_detail(
     memory_id: str,
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> MemoryDetailResponse:
-    detail = await get_memory_with_graph(store, memory_id)
+    detail = await get_memory_with_graph(store, memory_id, org_id=auth.org_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Memory not found")
     m = detail.memory

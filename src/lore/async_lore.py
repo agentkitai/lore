@@ -939,12 +939,15 @@ class AsyncLore:
         # Relink each original's entity mentions onto the consolidated row
         # (idempotent replace), then supersede + delete the original.
         for orig in group:
-            existing = await store.get_mentions_for_memory(orig.id)
+            existing = await store.get_mentions_for_memory(
+                orig.id, consolidated.org_id
+            )
             if existing:
                 await store.replace_memory_mentions(
                     consolidated.id,
                     [
                         NewMention(
+                            org_id=consolidated.org_id,
                             entity_id=mm.entity_id,
                             memory_id=consolidated.id,
                             mention_type=mm.mention_type,
@@ -952,6 +955,7 @@ class AsyncLore:
                         )
                         for mm in existing
                     ],
+                    consolidated.org_id,
                 )
             await store.record_supersession(
                 orig.id,

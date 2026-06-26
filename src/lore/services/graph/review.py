@@ -106,6 +106,7 @@ def _age_hours(created_at: datetime, *, now: Optional[datetime] = None) -> float
 async def list_pending_reviews(
     store: Store,
     *,
+    org_id: str,
     rel_type: Optional[str] = None,
     limit: int = 50,
     min_risk: Optional[float] = None,
@@ -114,6 +115,7 @@ async def list_pending_reviews(
     and sorted highest-risk first.
     """
     rows = await store.list_pending_relationships(
+        org_id,
         rel_type=rel_type,
         limit=limit * 2 if min_risk is not None else limit,
     )
@@ -122,9 +124,7 @@ async def list_pending_reviews(
     for row in rows:
         memory_content: Optional[str] = None
         if row.source_memory_id is not None:
-            # TODO: replace hardcoded "solo" org_id with a proper org parameter
-            # once multi-org support lands. Matches legacy route (no org filter).
-            mem = await store.get_memory("solo", row.source_memory_id)
+            mem = await store.get_memory(org_id, row.source_memory_id)
             if mem is not None:
                 memory_content = (mem.content or "")[:200]
         risk = _compute_risk_score(
@@ -163,6 +163,7 @@ async def review_relationship(
     store: Store,
     relationship_id: str,
     *,
+    org_id: str,
     action: str,
     reason: Optional[str] = None,
 ) -> ReviewActionResult:
@@ -172,17 +173,19 @@ async def review_relationship(
             f"action must be one of {sorted(VALID_ACTIONS)}; got {action!r}"
         )
 
-    existing = await store.get_relationship(relationship_id)
+    existing = await store.get_relationship(relationship_id, org_id)
     if existing is None:
         from lore.persistence.exceptions import StoreNotFoundError
 
         raise StoreNotFoundError("relationships", relationship_id)
     new_status = "approved" if action == "approve" else "rejected"
-    updated = await store.update_relationship_status(relationship_id, status=new_status)
+    updated = await store.update_relationship_status(
+        relationship_id, org_id, status=new_status
+    )
 
     if action == "reject":
-        source = await store.get_entity(existing.source_entity_id)
-        target = await store.get_entity(existing.target_entity_id)
+        source = await store.get_entity(existing.source_entity_id, org_id)
+        target = await store.get_entity(existing.target_entity_id, org_id)
         if source is not None and target is not None:
             await store.save_rejected_pattern(
                 source.name,
@@ -202,6 +205,7 @@ async def bulk_review(
     store: Store,
     ids: Sequence[str],
     *,
+    org_id: str,
     action: str,
     reason: Optional[str] = None,
 ) -> BulkReviewResult:
@@ -215,7 +219,9 @@ async def bulk_review(
     updated = 0
     for rel_id in ids:
         try:
-            await review_relationship(store, rel_id, action=action, reason=reason)
+            await review_relationship(
+                store, rel_id, org_id=org_id, action=action, reason=reason
+            )
             updated += 1
         except Exception:
             # Tolerate per-item failures (e.g. row already deleted) — bulk-review semantics

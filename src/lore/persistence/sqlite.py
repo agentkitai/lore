@@ -751,6 +751,7 @@ def _row_to_entity(row) -> StoredEntity:
         metadata = metadata_raw
     return StoredEntity(
         id=row["id"],
+        org_id=row["org_id"],
         name=row["name"],
         entity_type=row["entity_type"],
         aliases=tuple(aliases or ()),
@@ -768,6 +769,7 @@ def _row_to_mention(row) -> StoredMention:
     """Translate a SQLite ``entity_mentions`` row to ``StoredMention``."""
     return StoredMention(
         id=row["id"],
+        org_id=row["org_id"],
         entity_id=row["entity_id"],
         memory_id=row["memory_id"],
         mention_type=row["mention_type"] or "explicit",
@@ -792,6 +794,7 @@ def _row_to_relationship(row) -> StoredRelationship:
         properties = properties_raw
     return StoredRelationship(
         id=row["id"],
+        org_id=row["org_id"],
         source_entity_id=row["source_entity_id"],
         target_entity_id=row["target_entity_id"],
         rel_type=row["rel_type"],
@@ -4367,7 +4370,7 @@ class SqliteStore:
 
     # ── GraphOps: entities (Phase 3I) ─────────────────────────────────
 
-    async def get_entity(self, entity_id: str) -> Optional[StoredEntity]:
+    async def get_entity(self, entity_id: str, org_id: str) -> Optional[StoredEntity]:
         """Fetch an entity by id; returns None when missing.
 
         Mirrors ``PostgresStore.get_entity``.
@@ -4375,18 +4378,18 @@ class SqliteStore:
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
-                WHERE id = ?
+                WHERE id = ? AND org_id = ?
                 """,
-                (entity_id,),
+                (entity_id, org_id),
             ) as cur:
                 row = await cur.fetchone()
         return _row_to_entity(row) if row else None
 
-    async def get_entity_by_name(self, name: str) -> Optional[StoredEntity]:
+    async def get_entity_by_name(self, name: str, org_id: str) -> Optional[StoredEntity]:
         """Fetch an entity by exact name; case-sensitive (services normalize).
 
         Mirrors ``PostgresStore.get_entity_by_name``.
@@ -4394,19 +4397,19 @@ class SqliteStore:
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
-                WHERE name = ?
+                WHERE name = ? AND org_id = ?
                 """,
-                (name,),
+                (name, org_id),
             ) as cur:
                 row = await cur.fetchone()
         return _row_to_entity(row) if row else None
 
     async def find_entity_by_name_or_alias(
-        self, name: str,
+        self, name: str, org_id: str,
     ) -> Optional[StoredEntity]:
         """Case-insensitive name + alias lookup.
 
@@ -4429,14 +4432,14 @@ class SqliteStore:
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
-                WHERE LOWER(name) = ?
+                WHERE LOWER(name) = ? AND org_id = ?
                 LIMIT 1
                 """,
-                (lname,),
+                (lname, org_id),
             ) as cur:
                 row = await cur.fetchone()
         if row is not None:
@@ -4448,12 +4451,14 @@ class SqliteStore:
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
                 WHERE aliases IS NOT NULL AND aliases != '[]'
-                """
+                  AND org_id = ?
+                """,
+                (org_id,),
             ) as cur:
                 rows = await cur.fetchall()
         for r in rows:
@@ -4467,6 +4472,7 @@ class SqliteStore:
 
     async def list_entities(
         self,
+        org_id: str,
         *,
         entity_type: Optional[str] = None,
         min_mentions: int = 0,
@@ -4476,8 +4482,8 @@ class SqliteStore:
 
         Mirrors ``PostgresStore.list_entities``.
         """
-        where: list[str] = []
-        params: list[Any] = []
+        where: list[str] = ["org_id = ?"]
+        params: list[Any] = [org_id]
         if entity_type is not None:
             where.append("entity_type = ?")
             params.append(entity_type)
@@ -4487,7 +4493,7 @@ class SqliteStore:
         where_sql = ("WHERE " + " AND ".join(where)) if where else ""
         params.append(limit)
         sql = f"""
-            SELECT id, name, entity_type, aliases, description, metadata,
+            SELECT id, org_id, name, entity_type, aliases, description, metadata,
                    mention_count, first_seen_at, last_seen_at,
                    created_at, updated_at
             FROM entities
@@ -4517,13 +4523,13 @@ class SqliteStore:
         async with self.transaction() as tx:
             async with tx.execute(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
-                WHERE name = ?
+                WHERE org_id = ? AND name = ?
                 """,
-                (entity.name,),
+                (entity.org_id, entity.name),
             ) as cur:
                 existing = await cur.fetchone()
 
@@ -4531,14 +4537,15 @@ class SqliteStore:
                 await tx.execute(
                     """
                     INSERT INTO entities
-                        (id, name, entity_type, aliases, description, metadata,
+                        (id, org_id, name, entity_type, aliases, description, metadata,
                          mention_count, first_seen_at, last_seen_at,
                          created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                             datetime('now'), datetime('now'))
                     """,
                     (
                         new_id,
+                        entity.org_id,
                         entity.name,
                         entity.entity_type,
                         json.dumps(list(entity.aliases)),
@@ -4588,7 +4595,7 @@ class SqliteStore:
                         aliases = ?,
                         metadata = ?,
                         updated_at = datetime('now')
-                    WHERE id = ?
+                    WHERE id = ? AND org_id = ?
                     """,
                     (
                         entity.mention_count,
@@ -4596,13 +4603,14 @@ class SqliteStore:
                         json.dumps(merged_aliases),
                         json.dumps(merged_meta),
                         existing["id"],
+                        entity.org_id,  # defense-in-depth (#83): self-defending UPDATE
                     ),
                 )
                 target_id = existing["id"]
 
             async with tx.execute(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
@@ -4619,6 +4627,7 @@ class SqliteStore:
     async def update_entity_counts(
         self,
         entity_id: str,
+        org_id: str,
         *,
         mention_delta: int,
         last_seen_at: datetime,
@@ -4630,8 +4639,8 @@ class SqliteStore:
         """
         async with self.transaction() as tx:
             async with tx.execute(
-                "SELECT last_seen_at FROM entities WHERE id = ?",
-                (entity_id,),
+                "SELECT last_seen_at FROM entities WHERE id = ? AND org_id = ?",
+                (entity_id, org_id),
             ) as cur:
                 row = await cur.fetchone()
             if row is None:
@@ -4648,12 +4657,12 @@ class SqliteStore:
                 SET mention_count = mention_count + ?,
                     last_seen_at = ?,
                     updated_at = datetime('now')
-                WHERE id = ?
+                WHERE id = ? AND org_id = ?
                 """,
-                (mention_delta, new_last_seen.isoformat(), entity_id),
+                (mention_delta, new_last_seen.isoformat(), entity_id, org_id),
             )
 
-    async def delete_entity(self, entity_id: str) -> bool:
+    async def delete_entity(self, entity_id: str, org_id: str) -> bool:
         """Delete an entity; cascades to mentions + relationships via FKs.
 
         Returns True if a row was removed. Mirrors
@@ -4666,8 +4675,8 @@ class SqliteStore:
         """
         async with self._acquire() as conn:
             cursor = await conn.execute(
-                "DELETE FROM entities WHERE id = ?",
-                (entity_id,),
+                "DELETE FROM entities WHERE id = ? AND org_id = ?",
+                (entity_id, org_id),
             )
             try:
                 deleted = cursor.rowcount or 0
@@ -4678,17 +4687,17 @@ class SqliteStore:
 
     # ── GraphOps: mentions (Phase 3I) ─────────────────────────────────
 
-    async def get_mentions_for_memory(self, memory_id: str) -> Sequence[StoredMention]:
+    async def get_mentions_for_memory(self, memory_id: str, org_id: str) -> Sequence[StoredMention]:
         """Mentions linking entities to a given memory, newest first."""
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, entity_id, memory_id, mention_type, confidence, created_at
+                SELECT id, org_id, entity_id, memory_id, mention_type, confidence, created_at
                 FROM entity_mentions
-                WHERE memory_id = ?
+                WHERE memory_id = ? AND org_id = ?
                 ORDER BY created_at DESC
                 """,
-                (memory_id,),
+                (memory_id, org_id),
             ) as cur:
                 rows = await cur.fetchall()
         return [_row_to_mention(r) for r in rows]
@@ -4696,6 +4705,7 @@ class SqliteStore:
     async def get_mentions_for_entity(
         self,
         entity_id: str,
+        org_id: str,
         *,
         limit: int = 100,
     ) -> Sequence[StoredMention]:
@@ -4703,13 +4713,13 @@ class SqliteStore:
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, entity_id, memory_id, mention_type, confidence, created_at
+                SELECT id, org_id, entity_id, memory_id, mention_type, confidence, created_at
                 FROM entity_mentions
-                WHERE entity_id = ?
+                WHERE entity_id = ? AND org_id = ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (entity_id, limit),
+                (entity_id, org_id, limit),
             ) as cur:
                 rows = await cur.fetchall()
         return [_row_to_mention(r) for r in rows]
@@ -4726,12 +4736,13 @@ class SqliteStore:
             await conn.execute(
                 """
                 INSERT INTO entity_mentions
-                    (id, entity_id, memory_id, mention_type, confidence)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT (entity_id, memory_id) DO NOTHING
+                    (id, org_id, entity_id, memory_id, mention_type, confidence)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (org_id, entity_id, memory_id) DO NOTHING
                 """,
                 (
                     mention_id,
+                    mention.org_id,
                     mention.entity_id,
                     mention.memory_id,
                     mention.mention_type,
@@ -4740,12 +4751,13 @@ class SqliteStore:
             )
             await conn.commit()
 
-    async def count_memories_for_entity(self, entity_id: str) -> int:
+    async def count_memories_for_entity(self, entity_id: str, org_id: str) -> int:
         """Distinct memory count for an entity."""
         async with self._acquire() as conn:
             async with conn.execute(
-                "SELECT COUNT(DISTINCT memory_id) AS n FROM entity_mentions WHERE entity_id = ?",
-                (entity_id,),
+                "SELECT COUNT(DISTINCT memory_id) AS n FROM entity_mentions "
+                "WHERE entity_id = ? AND org_id = ?",
+                (entity_id, org_id),
             ) as cur:
                 row = await cur.fetchone()
         return int(row["n"]) if row and row["n"] is not None else 0
@@ -4754,6 +4766,7 @@ class SqliteStore:
         self,
         memory_id: str,
         mentions: Sequence[NewMention],
+        org_id: str,
     ) -> int:
         """Atomically replace this memory's mention rows.
 
@@ -4765,19 +4778,19 @@ class SqliteStore:
         inserted = 0
         async with self.transaction() as tx:
             await tx.execute(
-                "DELETE FROM entity_mentions WHERE memory_id = ?",
-                (memory_id,),
+                "DELETE FROM entity_mentions WHERE memory_id = ? AND org_id = ?",
+                (memory_id, org_id),
             )
             for m in mentions:
                 mention_id = f"emen_{ULID()}"
                 await tx.execute(
                     """
                     INSERT INTO entity_mentions
-                        (id, entity_id, memory_id, mention_type, confidence)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT (entity_id, memory_id) DO NOTHING
+                        (id, org_id, entity_id, memory_id, mention_type, confidence)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT (org_id, entity_id, memory_id) DO NOTHING
                     """,
-                    (mention_id, m.entity_id, m.memory_id,
+                    (mention_id, m.org_id, m.entity_id, m.memory_id,
                      m.mention_type, m.confidence),
                 )
                 inserted += 1
@@ -4822,18 +4835,18 @@ class SqliteStore:
 
     # ── GraphOps: relationships (Phase 3I) ────────────────────────────
 
-    async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
+    async def get_relationship(self, rel_id: str, org_id: str) -> Optional[StoredRelationship]:
         """Fetch a relationship by id, or None when missing."""
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                        properties, source_fact_id, source_memory_id,
                        valid_from, valid_until, superseded_by, status, created_at, updated_at
                 FROM relationships
-                WHERE id = ?
+                WHERE id = ? AND org_id = ?
                 """,
-                (rel_id,),
+                (rel_id, org_id),
             ) as cur:
                 row = await cur.fetchone()
         return _row_to_relationship(row) if row else None
@@ -4842,6 +4855,7 @@ class SqliteStore:
         self,
         source_id: str,
         target_id: str,
+        org_id: str,
         *,
         rel_type: str,
     ) -> Optional[StoredRelationship]:
@@ -4849,7 +4863,7 @@ class SqliteStore:
         async with self._acquire() as conn:
             async with conn.execute(
                 """
-                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                        properties, source_fact_id, source_memory_id,
                        valid_from, valid_until, superseded_by, status, created_at, updated_at
                 FROM relationships
@@ -4857,8 +4871,9 @@ class SqliteStore:
                   AND target_entity_id = ?
                   AND rel_type = ?
                   AND valid_until IS NULL
+                  AND org_id = ?
                 """,
-                (source_id, target_id, rel_type),
+                (source_id, target_id, rel_type, org_id),
             ) as cur:
                 row = await cur.fetchone()
         return _row_to_relationship(row) if row else None
@@ -4866,13 +4881,14 @@ class SqliteStore:
     async def list_relationships_for_entity(
         self,
         entity_id: str,
+        org_id: str,
         *,
         status: Optional[str] = None,
         limit: int = 100,
     ) -> Sequence[StoredRelationship]:
         """Edges incident to an entity, optionally filtered by status."""
-        where: list[str] = ["(source_entity_id = ? OR target_entity_id = ?)"]
-        params: list[Any] = [entity_id, entity_id]
+        where: list[str] = ["(source_entity_id = ? OR target_entity_id = ?)", "org_id = ?"]
+        params: list[Any] = [entity_id, entity_id, org_id]
         if status is not None:
             where.append("COALESCE(status, 'approved') = ?")
             params.append(status)
@@ -4880,7 +4896,7 @@ class SqliteStore:
         # SQLite sorts NULLs first by default for DESC; mirror PG's "NULLS LAST"
         # by sorting on (weight IS NULL, weight DESC).
         sql = f"""
-            SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+            SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                    properties, source_fact_id, source_memory_id,
                    valid_from, valid_until, superseded_by, status, created_at, updated_at
             FROM relationships
@@ -4908,13 +4924,14 @@ class SqliteStore:
             await tx.execute(
                 """
                 INSERT INTO relationships
-                    (id, source_entity_id, target_entity_id, rel_type, weight,
+                    (id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                      properties, source_fact_id, source_memory_id,
                      valid_from, valid_until, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rel_id,
+                    rel.org_id,
                     rel.source_entity_id,
                     rel.target_entity_id,
                     rel.rel_type,
@@ -4929,7 +4946,7 @@ class SqliteStore:
             )
             async with tx.execute(
                 """
-                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                        properties, source_fact_id, source_memory_id,
                        valid_from, valid_until, superseded_by, status, created_at, updated_at
                 FROM relationships
@@ -4946,6 +4963,7 @@ class SqliteStore:
         self,
         memory_id: str,
         relationships: Sequence[NewRelationship],
+        org_id: str,
     ) -> int:
         """Reconcile this memory's relationships — supersede-NOT-delete (#67).
 
@@ -4967,8 +4985,9 @@ class SqliteStore:
                 SELECT id, source_entity_id, target_entity_id, rel_type
                 FROM relationships
                 WHERE source_memory_id = ? AND valid_until IS NULL
+                  AND org_id = ?
                 """,
-                (memory_id,),
+                (memory_id, org_id),
             ) as cur:
                 existing_rows = await cur.fetchall()
             existing_by_key = {
@@ -4989,8 +5008,9 @@ class SqliteStore:
                     UPDATE relationships
                     SET valid_until = ?, updated_at = ?
                     WHERE id IN ({placeholders}) AND valid_until IS NULL
+                      AND org_id = ?
                     """,
-                    (now_iso, now_iso, *stale_ids),
+                    (now_iso, now_iso, *stale_ids, org_id),
                 )
             for r in relationships:
                 if (r.source_entity_id, r.target_entity_id, r.rel_type) in existing_by_key:
@@ -5001,13 +5021,14 @@ class SqliteStore:
                     await tx.execute(
                         """
                         INSERT INTO relationships
-                            (id, source_entity_id, target_entity_id, rel_type, weight,
+                            (id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                              properties, source_fact_id, source_memory_id,
                              valid_from, valid_until, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         (
                             rel_id,
+                            r.org_id,
                             r.source_entity_id,
                             r.target_entity_id,
                             r.rel_type,
@@ -5030,6 +5051,7 @@ class SqliteStore:
     async def update_relationship_status(
         self,
         rel_id: str,
+        org_id: str,
         *,
         status: str,
     ) -> StoredRelationship:
@@ -5041,8 +5063,8 @@ class SqliteStore:
         """
         async with self.transaction() as tx:
             async with tx.execute(
-                "SELECT id FROM relationships WHERE id = ?",
-                (rel_id,),
+                "SELECT id FROM relationships WHERE id = ? AND org_id = ?",
+                (rel_id, org_id),
             ) as cur:
                 exists = await cur.fetchone()
             if exists is None:
@@ -5051,13 +5073,13 @@ class SqliteStore:
                 """
                 UPDATE relationships
                 SET status = ?, updated_at = datetime('now')
-                WHERE id = ?
+                WHERE id = ? AND org_id = ?
                 """,
-                (status, rel_id),
+                (status, rel_id, org_id),
             )
             async with tx.execute(
                 """
-                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                        properties, source_fact_id, source_memory_id,
                        valid_from, valid_until, superseded_by, status, created_at, updated_at
                 FROM relationships
@@ -5073,6 +5095,7 @@ class SqliteStore:
     async def update_relationship_weight(
         self,
         rel_id: str,
+        org_id: str,
         *,
         weight: float,
     ) -> None:
@@ -5082,13 +5105,13 @@ class SqliteStore:
                 """
                 UPDATE relationships
                 SET weight = ?, updated_at = datetime('now')
-                WHERE id = ?
+                WHERE id = ? AND org_id = ?
                 """,
-                (weight, rel_id),
+                (weight, rel_id, org_id),
             )
             await conn.commit()
 
-    async def expire_relationship(self, rel_id: str) -> None:
+    async def expire_relationship(self, rel_id: str, org_id: str) -> None:
         """Mark a relationship expired by setting ``valid_until = now()``."""
         async with self._acquire() as conn:
             await conn.execute(
@@ -5096,21 +5119,22 @@ class SqliteStore:
                 UPDATE relationships
                 SET valid_until = datetime('now'),
                     updated_at = datetime('now')
-                WHERE id = ?
+                WHERE id = ? AND org_id = ?
                 """,
-                (rel_id,),
+                (rel_id, org_id),
             )
             await conn.commit()
 
     async def list_pending_relationships(
         self,
+        org_id: str,
         *,
         rel_type: Optional[str] = None,
         limit: int = 100,
     ) -> Sequence[PendingRelationshipRow]:
         """Pending relationships joined with source/target entities for review."""
-        where: list[str] = ["r.status = 'pending'"]
-        params: list[Any] = []
+        where: list[str] = ["r.status = 'pending'", "r.org_id = ?"]
+        params: list[Any] = [org_id]
         if rel_type is not None:
             where.append("r.rel_type = ?")
             params.append(rel_type)
@@ -5194,6 +5218,7 @@ class SqliteStore:
     async def query_relationships(
         self,
         entity_ids: Sequence[str],
+        org_id: str,
         *,
         direction: str = "both",
         active_only: bool = True,
@@ -5216,8 +5241,8 @@ class SqliteStore:
         ent_ids = list(entity_ids)
         ent_placeholders = ", ".join(["?"] * len(ent_ids))
 
-        where: list[str] = []
-        params: list[Any] = []
+        where: list[str] = ["org_id = ?"]
+        params: list[Any] = [org_id]
 
         if direction == "inbound":
             where.append(f"target_entity_id IN ({ent_placeholders})")
@@ -5248,7 +5273,7 @@ class SqliteStore:
             params.extend(rt_list)
 
         sql = f"""
-            SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+            SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                    properties, source_fact_id, source_memory_id,
                    valid_from, valid_until, superseded_by, status, created_at, updated_at
             FROM relationships
@@ -5264,135 +5289,105 @@ class SqliteStore:
 
     async def get_graph_stats(
         self,
+        org_id: str,
         *,
         project: Optional[str] = None,
     ) -> GraphStats:
-        """Aggregate graph statistics, optionally scoped by project.
+        """Aggregate graph statistics, scoped by org (and optionally project).
 
         Mirrors ``PostgresStore.get_graph_stats``. SQLite lacks
         ``meta->>'type'``; we use ``json_extract(meta, '$.type')``.
         """
-        proj_clause = "WHERE project = ?" if project else ""
-        proj_args: list[Any] = [project] if project else []
+        # Memories are always org-scoped; project narrows further.
+        mem_where = "WHERE org_id = ?"
+        mem_args: list[Any] = [org_id]
+        if project:
+            mem_where += " AND project = ?"
+            mem_args.append(project)
 
         cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
         cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
 
         async with self._acquire() as conn:
             async with conn.execute(
-                f"SELECT COUNT(*) AS n FROM memories {proj_clause}",
-                tuple(proj_args),
+                f"SELECT COUNT(*) AS n FROM memories {mem_where}",
+                tuple(mem_args),
             ) as cur:
                 row = await cur.fetchone()
             total_memories = int(row["n"]) if row and row["n"] is not None else 0
 
-            if project:
-                async with conn.execute(
-                    "SELECT COUNT(*) AS n FROM memories WHERE project = ? AND created_at >= ?",
-                    (project, cutoff_24h),
-                ) as cur:
-                    row = await cur.fetchone()
-                recent_24h = int(row["n"]) if row and row["n"] is not None else 0
+            async with conn.execute(
+                f"SELECT COUNT(*) AS n FROM memories {mem_where} AND created_at >= ?",
+                (*mem_args, cutoff_24h),
+            ) as cur:
+                row = await cur.fetchone()
+            recent_24h = int(row["n"]) if row and row["n"] is not None else 0
 
-                async with conn.execute(
-                    "SELECT COUNT(*) AS n FROM memories WHERE project = ? AND created_at >= ?",
-                    (project, cutoff_7d),
-                ) as cur:
-                    row = await cur.fetchone()
-                recent_7d = int(row["n"]) if row and row["n"] is not None else 0
+            async with conn.execute(
+                f"SELECT COUNT(*) AS n FROM memories {mem_where} AND created_at >= ?",
+                (*mem_args, cutoff_7d),
+            ) as cur:
+                row = await cur.fetchone()
+            recent_7d = int(row["n"]) if row and row["n"] is not None else 0
 
-                async with conn.execute(
-                    "SELECT MIN(created_at) AS v FROM memories WHERE project = ?",
-                    (project,),
-                ) as cur:
-                    row = await cur.fetchone()
-                oldest = _parse_iso(row["v"]) if row and row["v"] else None
+            async with conn.execute(
+                f"SELECT MIN(created_at) AS v FROM memories {mem_where}",
+                tuple(mem_args),
+            ) as cur:
+                row = await cur.fetchone()
+            oldest = _parse_iso(row["v"]) if row and row["v"] else None
 
-                async with conn.execute(
-                    "SELECT MAX(created_at) AS v FROM memories WHERE project = ?",
-                    (project,),
-                ) as cur:
-                    row = await cur.fetchone()
-                newest = _parse_iso(row["v"]) if row and row["v"] else None
+            async with conn.execute(
+                f"SELECT MAX(created_at) AS v FROM memories {mem_where}",
+                tuple(mem_args),
+            ) as cur:
+                row = await cur.fetchone()
+            newest = _parse_iso(row["v"]) if row and row["v"] else None
 
-                async with conn.execute(
-                    """
-                    SELECT COALESCE(json_extract(meta, '$.type'), 'general') AS t,
-                           COUNT(*) AS c
-                    FROM memories WHERE project = ? GROUP BY t
-                    """,
-                    (project,),
-                ) as cur:
-                    type_rows = await cur.fetchall()
+            async with conn.execute(
+                f"""
+                SELECT COALESCE(json_extract(meta, '$.type'), 'general') AS t,
+                       COUNT(*) AS c
+                FROM memories {mem_where} GROUP BY t
+                """,
+                tuple(mem_args),
+            ) as cur:
+                type_rows = await cur.fetchall()
 
-                async with conn.execute(
-                    """
-                    SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c
-                    FROM memories WHERE project = ? GROUP BY p
-                    """,
-                    (project,),
-                ) as cur:
-                    proj_rows = await cur.fetchall()
-            else:
-                async with conn.execute(
-                    "SELECT COUNT(*) AS n FROM memories WHERE created_at >= ?",
-                    (cutoff_24h,),
-                ) as cur:
-                    row = await cur.fetchone()
-                recent_24h = int(row["n"]) if row and row["n"] is not None else 0
+            async with conn.execute(
+                f"""
+                SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c
+                FROM memories {mem_where} GROUP BY p
+                """,
+                tuple(mem_args),
+            ) as cur:
+                proj_rows = await cur.fetchall()
 
-                async with conn.execute(
-                    "SELECT COUNT(*) AS n FROM memories WHERE created_at >= ?",
-                    (cutoff_7d,),
-                ) as cur:
-                    row = await cur.fetchone()
-                recent_7d = int(row["n"]) if row and row["n"] is not None else 0
-
-                async with conn.execute(
-                    "SELECT MIN(created_at) AS v FROM memories"
-                ) as cur:
-                    row = await cur.fetchone()
-                oldest = _parse_iso(row["v"]) if row and row["v"] else None
-
-                async with conn.execute(
-                    "SELECT MAX(created_at) AS v FROM memories"
-                ) as cur:
-                    row = await cur.fetchone()
-                newest = _parse_iso(row["v"]) if row and row["v"] else None
-
-                async with conn.execute(
-                    """
-                    SELECT COALESCE(json_extract(meta, '$.type'), 'general') AS t,
-                           COUNT(*) AS c
-                    FROM memories GROUP BY t
-                    """,
-                ) as cur:
-                    type_rows = await cur.fetchall()
-
-                async with conn.execute(
-                    """
-                    SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c
-                    FROM memories GROUP BY p
-                    """,
-                ) as cur:
-                    proj_rows = await cur.fetchall()
-
-            async with conn.execute("SELECT COUNT(*) AS n FROM entities") as cur:
+            async with conn.execute(
+                "SELECT COUNT(*) AS n FROM entities WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
                 row = await cur.fetchone()
             total_entities = int(row["n"]) if row and row["n"] is not None else 0
 
-            async with conn.execute("SELECT COUNT(*) AS n FROM relationships") as cur:
+            async with conn.execute(
+                "SELECT COUNT(*) AS n FROM relationships WHERE org_id = ?",
+                (org_id,),
+            ) as cur:
                 row = await cur.fetchone()
             total_relationships = int(row["n"]) if row and row["n"] is not None else 0
 
             async with conn.execute(
-                "SELECT entity_type, COUNT(*) AS c FROM entities GROUP BY entity_type"
+                "SELECT entity_type, COUNT(*) AS c FROM entities "
+                "WHERE org_id = ? GROUP BY entity_type",
+                (org_id,),
             ) as cur:
                 et_rows = await cur.fetchall()
 
             async with conn.execute(
                 "SELECT name, entity_type, mention_count FROM entities "
-                "ORDER BY mention_count DESC LIMIT 5"
+                "WHERE org_id = ? ORDER BY mention_count DESC LIMIT 5",
+                (org_id,),
             ) as cur:
                 top_rows = await cur.fetchall()
 
@@ -5424,6 +5419,7 @@ class SqliteStore:
 
     async def get_timeline_buckets(
         self,
+        org_id: str,
         *,
         trunc: str,
         project: Optional[str] = None,
@@ -5439,14 +5435,17 @@ class SqliteStore:
                 f"trunc must be one of {sorted(_VALID_TRUNCS)}; got {trunc!r}"
             )
         bucket_expr = _trunc_expr(trunc, "created_at")
-        proj_clause = "WHERE project = ?" if project else ""
-        proj_args: list[Any] = [project] if project else []
+        where = "WHERE org_id = ?"
+        proj_args: list[Any] = [org_id]
+        if project:
+            where += " AND project = ?"
+            proj_args.append(project)
         sql = f"""
             SELECT {bucket_expr} AS bucket_date,
                    COALESCE(json_extract(meta, '$.type'), 'general') AS mem_type,
                    COUNT(*) AS cnt
             FROM memories
-            {proj_clause}
+            {where}
             GROUP BY bucket_date, mem_type
             ORDER BY bucket_date
         """
@@ -5464,6 +5463,7 @@ class SqliteStore:
 
     async def get_memories_by_entities(
         self,
+        org_id: str,
         entity_ids: Sequence[str],
         *,
         exclude_memory_id: Optional[str] = None,
@@ -5480,8 +5480,12 @@ class SqliteStore:
         ent_ids = list(entity_ids)
         ent_placeholders = ", ".join(["?"] * len(ent_ids))
 
-        where: list[str] = [f"em.entity_id IN ({ent_placeholders})"]
-        params: list[Any] = list(ent_ids)
+        where: list[str] = [
+            f"em.entity_id IN ({ent_placeholders})",
+            "m.org_id = ?",
+            "em.org_id = ?",
+        ]
+        params: list[Any] = [*ent_ids, org_id, org_id]
         if exclude_memory_id is not None:
             where.append("m.id != ?")
             params.append(exclude_memory_id)
@@ -5506,6 +5510,7 @@ class SqliteStore:
 
     async def search_memories_text(
         self,
+        org_id: str,
         query: str,
         *,
         limit: int = 20,
@@ -5527,11 +5532,11 @@ class SqliteStore:
                        downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories
-                WHERE LOWER(content) LIKE ?
+                WHERE org_id = ? AND LOWER(content) LIKE ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (like_pattern, limit),
+                (org_id, like_pattern, limit),
             ) as cur:
                 rows = await cur.fetchall()
         return [_row_to_memory(r) for r in rows]
@@ -5655,8 +5660,9 @@ class SqliteStore:
         where: list[str] = [
             f"em.entity_id IN ({ent_placeholders})",
             "m.org_id = ?",
+            "em.org_id = ?",
         ]
-        params_tail: list[Any] = [*ids, org_id]
+        params_tail: list[Any] = [*ids, org_id, org_id]
         if scope_mode != "all":
             if project is not None:
                 where.append(
@@ -5880,6 +5886,7 @@ class SqliteStore:
     async def is_superseded(
         self,
         memory_id: str,
+        org_id: str,
         *,
         at: Optional[datetime] = None,
     ) -> bool:
@@ -5890,10 +5897,11 @@ class SqliteStore:
                     SELECT superseded_by
                     FROM memory_supersessions
                     WHERE memory_id = ?
+                      AND memory_id IN (SELECT id FROM memories WHERE org_id = ?)
                     ORDER BY ts DESC, id DESC
                     LIMIT 1
                     """,
-                    (memory_id,),
+                    (memory_id, org_id),
                 ) as cur:
                     row = await cur.fetchone()
             else:
@@ -5902,11 +5910,12 @@ class SqliteStore:
                     SELECT superseded_by
                     FROM memory_supersessions
                     WHERE memory_id = ?
+                      AND memory_id IN (SELECT id FROM memories WHERE org_id = ?)
                       AND ts <= ?
                     ORDER BY ts DESC, id DESC
                     LIMIT 1
                     """,
-                    (memory_id, self._to_iso(at)),
+                    (memory_id, org_id, self._to_iso(at)),
                 ) as cur:
                     row = await cur.fetchone()
         if row is None:
@@ -5916,6 +5925,7 @@ class SqliteStore:
     async def are_superseded(
         self,
         memory_ids: "set[str]",
+        org_id: str,
         *,
         at: Optional[datetime] = None,
     ) -> "set[str]":
@@ -5935,10 +5945,11 @@ class SqliteStore:
                 "         ) AS rn"
                 "  FROM memory_supersessions"
                 f"  WHERE memory_id IN ({placeholders})"
+                "    AND memory_id IN (SELECT id FROM memories WHERE org_id = ?)"
                 ") latest "
                 "WHERE rn = 1 AND superseded_by IS NOT NULL"
             )
-            params: tuple = tuple(ids)
+            params: tuple = tuple(ids) + (org_id,)
         else:
             sql = (
                 "SELECT memory_id FROM ("
@@ -5948,11 +5959,12 @@ class SqliteStore:
                 "         ) AS rn"
                 "  FROM memory_supersessions"
                 f"  WHERE memory_id IN ({placeholders})"
+                "    AND memory_id IN (SELECT id FROM memories WHERE org_id = ?)"
                 "    AND ts <= ?"
                 ") latest "
                 "WHERE rn = 1 AND superseded_by IS NOT NULL"
             )
-            params = tuple(ids) + (self._to_iso(at),)
+            params = tuple(ids) + (org_id, self._to_iso(at))
         async with self._acquire() as conn:
             async with conn.execute(sql, params) as cur:
                 rows = await cur.fetchall()
@@ -5988,6 +6000,7 @@ class SqliteStore:
     async def list_supersession_sources(
         self,
         memory_id: str,
+        org_id: str,
     ) -> Sequence[StoredSupersession]:
         async with self._acquire() as conn:
             async with conn.execute(
@@ -5995,9 +6008,10 @@ class SqliteStore:
                 SELECT id, memory_id, superseded_by, reason, ts, agent
                 FROM memory_supersessions
                 WHERE superseded_by = ?
+                  AND superseded_by IN (SELECT id FROM memories WHERE org_id = ?)
                 ORDER BY ts ASC, id ASC
                 """,
-                (memory_id,),
+                (memory_id, org_id),
             ) as cur:
                 rows = await cur.fetchall()
         return [
@@ -6033,6 +6047,10 @@ class SqliteStore:
                 " JOIN entities e ON e.id = em.entity_id "
             )
             where.append("e.name = ?")
+            where.append("e.org_id = ?")
+            where.append("em.org_id = ?")
+            params.append(org_id)
+            params.append(org_id)
         if type_filter is not None:
             params.append(type_filter)
             where.append("json_extract(m.meta, '$.type') = ?")
@@ -6079,6 +6097,7 @@ class SqliteStore:
     async def supersede_relationship(
         self,
         relationship_id: str,
+        org_id: str,
         *,
         superseded_by: str,
         reason: Optional[str] = None,
@@ -6096,15 +6115,25 @@ class SqliteStore:
         """
         now_iso = datetime.now(timezone.utc).isoformat()
         async with self.transaction() as tx:
+            # Validate the target relationship belongs to this org before
+            # mutating it or writing the audit row (relationship_supersessions
+            # has no org_id column — its org scope is derived from the edge).
+            async with tx.execute(
+                "SELECT id FROM relationships WHERE id = ? AND org_id = ?",
+                (relationship_id, org_id),
+            ) as cur:
+                exists = await cur.fetchone()
+            if exists is None:
+                return
             await tx.execute(
                 """
                 UPDATE relationships
                 SET valid_until = COALESCE(valid_until, ?),
                     superseded_by = ?,
                     updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND org_id = ?
                 """,
-                (now_iso, superseded_by, now_iso, relationship_id),
+                (now_iso, superseded_by, now_iso, relationship_id, org_id),
             )
             await tx.execute(
                 """
@@ -6118,12 +6147,23 @@ class SqliteStore:
     async def record_relationship_supersession(
         self,
         relationship_id: str,
+        org_id: str,
         *,
         superseded_by: Optional[str],
         reason: Optional[str],
         agent: str = "auto",
     ) -> None:
         async with self._acquire() as conn:
+            # relationship_supersessions has no org_id column; gate the audit
+            # write on the parent edge's org so we never log a correction for
+            # another tenant's relationship.
+            async with conn.execute(
+                "SELECT id FROM relationships WHERE id = ? AND org_id = ?",
+                (relationship_id, org_id),
+            ) as cur:
+                exists = await cur.fetchone()
+            if exists is None:
+                return
             await conn.execute(
                 """
                 INSERT INTO relationship_supersessions
@@ -6137,6 +6177,7 @@ class SqliteStore:
     async def is_relationship_superseded(
         self,
         relationship_id: str,
+        org_id: str,
         *,
         at: Optional[datetime] = None,
     ) -> bool:
@@ -6147,10 +6188,13 @@ class SqliteStore:
                     SELECT superseded_by
                     FROM relationship_supersessions
                     WHERE relationship_id = ?
+                      AND relationship_id IN (
+                          SELECT id FROM relationships WHERE org_id = ?
+                      )
                     ORDER BY ts DESC, id DESC
                     LIMIT 1
                     """,
-                    (relationship_id,),
+                    (relationship_id, org_id),
                 ) as cur:
                     row = await cur.fetchone()
             else:
@@ -6159,11 +6203,14 @@ class SqliteStore:
                     SELECT superseded_by
                     FROM relationship_supersessions
                     WHERE relationship_id = ?
+                      AND relationship_id IN (
+                          SELECT id FROM relationships WHERE org_id = ?
+                      )
                       AND ts <= ?
                     ORDER BY ts DESC, id DESC
                     LIMIT 1
                     """,
-                    (relationship_id, self._to_iso(at)),
+                    (relationship_id, org_id, self._to_iso(at)),
                 ) as cur:
                     row = await cur.fetchone()
         if row is None:
@@ -6173,6 +6220,7 @@ class SqliteStore:
     async def get_relationship_supersession_chain(
         self,
         relationship_id: str,
+        org_id: str,
     ) -> Sequence[StoredRelationshipSupersession]:
         async with self._acquire() as conn:
             async with conn.execute(
@@ -6180,9 +6228,12 @@ class SqliteStore:
                 SELECT id, relationship_id, superseded_by, reason, ts, agent
                 FROM relationship_supersessions
                 WHERE relationship_id = ?
+                  AND relationship_id IN (
+                      SELECT id FROM relationships WHERE org_id = ?
+                  )
                 ORDER BY ts ASC, id ASC
                 """,
-                (relationship_id,),
+                (relationship_id, org_id),
             ) as cur:
                 rows = await cur.fetchall()
         return [
