@@ -58,6 +58,7 @@ def _make_stored_entity(entity_id="ent-001", name="topic", entity_type="topic", 
     now = _utc_now()
     defaults = dict(
         id=entity_id,
+        org_id="solo",
         name=name,
         entity_type=entity_type,
         aliases=(),
@@ -78,6 +79,7 @@ def _make_stored_relationship(rel_id="rel-001", source_id="ent-001", target_id="
     now = _utc_now()
     defaults = dict(
         id=rel_id,
+        org_id="solo",
         source_entity_id=source_id,
         target_entity_id=target_id,
         rel_type="uses",
@@ -100,6 +102,7 @@ def _make_stored_mention(mention_id="emen-001", entity_id="ent-001", memory_id="
     now = _utc_now()
     defaults = dict(
         id=mention_id,
+        org_id="solo",
         entity_id=entity_id,
         memory_id=memory_id,
         mention_type="explicit",
@@ -183,6 +186,7 @@ def fake_store():
 
 def _build_app_with_store(routers, fake_store):
     """Build a FastAPI app that includes the given routers with the fake store injected."""
+    from lore.server.auth import AuthContext, get_auth_context
     from lore.server.db import get_store
 
     app = FastAPI()
@@ -192,7 +196,17 @@ def _build_app_with_store(routers, fake_store):
     async def fake_get_store():
         return fake_store
 
+    async def fake_get_auth_context():
+        # #83 made every graph route auth-gated (Depends(get_auth_context)) so it
+        # can thread auth.org_id. Inject a solo-org context so the org-scoped
+        # handlers resolve to the seeded test org instead of 401-ing. (Harmless
+        # for the review routes, which are not auth-gated and ignore this.)
+        return AuthContext(
+            org_id="solo", project=None, is_root=True, key_id="test-key"
+        )
+
     app.dependency_overrides[get_store] = fake_get_store
+    app.dependency_overrides[get_auth_context] = fake_get_auth_context
     return app
 
 

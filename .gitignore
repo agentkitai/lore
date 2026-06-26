@@ -19,3 +19,4 @@ infra/cdk.out/
 
 # Git worktrees
 .worktrees/
+uv.lock

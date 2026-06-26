@@ -69,17 +69,18 @@ def test_compute_risk_score_clamps():
 
 @pytest.mark.asyncio
 async def test_list_pending_reviews_returns_typed_listing(store):
-    listing = await list_pending_reviews(store)
+    listing = await list_pending_reviews(store, org_id="solo")
     assert isinstance(listing, ReviewListing)
 
 
 @pytest.mark.asyncio
 async def test_list_pending_reviews_filters_by_min_risk(store):
-    a = await store.upsert_entity(NewEntity(name="lpr_a", entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name="lpr_b", entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id="solo", name="lpr_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id="solo", name="lpr_b", entity_type="topic"))
     # Add a high-risk relationship: weight=0 → 40 confidence_risk
     await store.save_relationship(
         NewRelationship(
+            org_id="solo",
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="uses",
@@ -87,20 +88,21 @@ async def test_list_pending_reviews_filters_by_min_risk(store):
             weight=0.0,
         )
     )
-    listing_no_filter = await list_pending_reviews(store)
+    listing_no_filter = await list_pending_reviews(store, org_id="solo")
     high_risk_count = sum(1 for p in listing_no_filter.pending if p.risk_score.total >= 30)
     assert high_risk_count >= 1
-    listing_filtered = await list_pending_reviews(store, min_risk=200)  # impossibly high
+    listing_filtered = await list_pending_reviews(store, org_id="solo", min_risk=200)  # impossibly high
     assert len(listing_filtered.pending) == 0
 
 
 @pytest.mark.asyncio
 async def test_list_pending_reviews_sorted_high_to_low_risk(store):
-    a = await store.upsert_entity(NewEntity(name="srt_a", entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name="srt_b", entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id="solo", name="srt_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id="solo", name="srt_b", entity_type="topic"))
     # High weight → low risk
     await store.save_relationship(
         NewRelationship(
+            org_id="solo",
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="uses",
@@ -111,6 +113,7 @@ async def test_list_pending_reviews_sorted_high_to_low_risk(store):
     # Low weight → high risk
     await store.save_relationship(
         NewRelationship(
+            org_id="solo",
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="depends_on",
@@ -118,7 +121,7 @@ async def test_list_pending_reviews_sorted_high_to_low_risk(store):
             weight=0.0,
         )
     )
-    listing = await list_pending_reviews(store)
+    listing = await list_pending_reviews(store, org_id="solo")
     if len(listing.pending) >= 2:
         scores = [p.risk_score.total for p in listing.pending]
         assert scores == sorted(scores, reverse=True)
@@ -126,13 +129,14 @@ async def test_list_pending_reviews_sorted_high_to_low_risk(store):
 
 @pytest.mark.asyncio
 async def test_list_pending_reviews_includes_memory_content(store):
-    a = await store.upsert_entity(NewEntity(name="mc_a", entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name="mc_b", entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id="solo", name="mc_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id="solo", name="mc_b", entity_type="topic"))
     m = await store.insert_memory(
         NewMemory(org_id="solo", content="memory backing the rel " * 20, embedding=[0.0] * 384)
     )
     await store.save_relationship(
         NewRelationship(
+            org_id="solo",
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="uses",
@@ -140,7 +144,7 @@ async def test_list_pending_reviews_includes_memory_content(store):
             source_memory_id=m.id,
         )
     )
-    listing = await list_pending_reviews(store)
+    listing = await list_pending_reviews(store, org_id="solo")
     matching = [p for p in listing.pending if p.source_memory_id == m.id]
     assert len(matching) == 1
     assert matching[0].source_memory_content is not None
@@ -150,28 +154,29 @@ async def test_list_pending_reviews_includes_memory_content(store):
 @pytest.mark.asyncio
 async def test_review_relationship_invalid_action(store):
     with pytest.raises(ValueError):
-        await review_relationship(store, "rel_x", action="archive")
+        await review_relationship(store, "rel_x", org_id="solo", action="archive")
 
 
 @pytest.mark.asyncio
 async def test_review_relationship_missing_raises(store):
     with pytest.raises(StoreNotFoundError):
-        await review_relationship(store, "rel_missing", action="approve")
+        await review_relationship(store, "rel_missing", org_id="solo", action="approve")
 
 
 @pytest.mark.asyncio
 async def test_review_relationship_approve(store):
-    a = await store.upsert_entity(NewEntity(name="ra_a", entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name="ra_b", entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id="solo", name="ra_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id="solo", name="ra_b", entity_type="topic"))
     rel = await store.save_relationship(
         NewRelationship(
+            org_id="solo",
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="uses",
             status="pending",
         )
     )
-    res = await review_relationship(store, rel.id, action="approve")
+    res = await review_relationship(store, rel.id, org_id="solo", action="approve")
     assert isinstance(res, ReviewActionResult)
     assert res.status == "approved"
     assert res.previous_status == "pending"
@@ -179,10 +184,11 @@ async def test_review_relationship_approve(store):
 
 @pytest.mark.asyncio
 async def test_review_relationship_reject_saves_pattern(store):
-    a = await store.upsert_entity(NewEntity(name="rr_a", entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name="rr_b", entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id="solo", name="rr_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id="solo", name="rr_b", entity_type="topic"))
     rel = await store.save_relationship(
         NewRelationship(
+            org_id="solo",
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="uses",
@@ -190,36 +196,37 @@ async def test_review_relationship_reject_saves_pattern(store):
         )
     )
     res = await review_relationship(
-        store, rel.id, action="reject", reason="not relevant"
+        store, rel.id, org_id="solo", action="reject", reason="not relevant"
     )
     assert res.status == "rejected"
     # Idempotent: rejecting again should not crash
     # (relationship already rejected; rejected_pattern already exists; ON CONFLICT DO NOTHING)
-    res2 = await review_relationship(store, rel.id, action="reject", reason="ditto")
+    res2 = await review_relationship(store, rel.id, org_id="solo", action="reject", reason="ditto")
     assert res2.status == "rejected"
 
 
 @pytest.mark.asyncio
 async def test_bulk_review_invalid_action(store):
     with pytest.raises(ValueError):
-        await bulk_review(store, ["rel_x"], action="archive")
+        await bulk_review(store, ["rel_x"], org_id="solo", action="archive")
 
 
 @pytest.mark.asyncio
 async def test_bulk_review_empty_list(store):
-    res = await bulk_review(store, [], action="approve")
+    res = await bulk_review(store, [], org_id="solo", action="approve")
     assert isinstance(res, BulkReviewResult)
     assert res.updated == 0
 
 
 @pytest.mark.asyncio
 async def test_bulk_review_approves_multiple(store):
-    a = await store.upsert_entity(NewEntity(name="bm_a", entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name="bm_b", entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id="solo", name="bm_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id="solo", name="bm_b", entity_type="topic"))
     rels = []
     for rel_type in ("uses", "depends_on", "part_of"):
         r = await store.save_relationship(
             NewRelationship(
+                org_id="solo",
                 source_entity_id=a.id,
                 target_entity_id=b.id,
                 rel_type=rel_type,
@@ -227,22 +234,23 @@ async def test_bulk_review_approves_multiple(store):
             )
         )
         rels.append(r.id)
-    res = await bulk_review(store, rels, action="approve")
+    res = await bulk_review(store, rels, org_id="solo", action="approve")
     assert res.updated == 3
 
 
 @pytest.mark.asyncio
 async def test_bulk_review_tolerates_missing_ids(store):
-    a = await store.upsert_entity(NewEntity(name="tol_a", entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name="tol_b", entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id="solo", name="tol_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id="solo", name="tol_b", entity_type="topic"))
     rel = await store.save_relationship(
         NewRelationship(
+            org_id="solo",
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="uses",
             status="pending",
         )
     )
-    res = await bulk_review(store, [rel.id, "rel_missing"], action="approve")
+    res = await bulk_review(store, [rel.id, "rel_missing"], org_id="solo", action="approve")
     # 1 success + 1 missing (tolerated)
     assert res.updated == 1

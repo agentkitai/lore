@@ -563,6 +563,7 @@ class AsyncLore:
         store = self._require_store()
         return await graph_entities_service.list_topics(
             store,
+            org_id=self.org_id,
             entity_type=entity_type,
             min_mentions=min_mentions,
             limit=limit,
@@ -583,7 +584,7 @@ class AsyncLore:
         """
         store = self._require_store()
         return await graph_entities_service.get_topic_detail(
-            store, name, max_memories=max_memories,
+            store, name, org_id=self.org_id, max_memories=max_memories,
         )
 
     # ── Phase 4B: recent activity ───────────────────────────────────────
@@ -640,7 +641,7 @@ class AsyncLore:
         """List pending relationships with risk-score, highest-risk first."""
         store = self._require_store()
         listing = await graph_review_service.list_pending_reviews(
-            store, limit=limit,
+            store, org_id=self.org_id, limit=limit,
         )
         return listing.pending
 
@@ -653,7 +654,7 @@ class AsyncLore:
         """Approve or reject a single pending relationship."""
         store = self._require_store()
         return await graph_review_service.review_relationship(
-            store, rel_id, action=action, reason=reason,
+            store, rel_id, org_id=self.org_id, action=action, reason=reason,
         )
 
     async def review_all(
@@ -667,11 +668,11 @@ class AsyncLore:
         """
         store = self._require_store()
         listing = await graph_review_service.list_pending_reviews(
-            store, limit=10000,
+            store, org_id=self.org_id, limit=10000,
         )
         ids = [p.id for p in listing.pending]
         result = await graph_review_service.bulk_review(
-            store, ids, action=action, reason=reason,
+            store, ids, org_id=self.org_id, action=action, reason=reason,
         )
         return result.updated
 
