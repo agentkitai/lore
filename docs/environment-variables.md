@@ -140,6 +140,26 @@ short-lived, which bounds revocation staleness.
 
 ---
 
+## Trust-aware recall (#79)
+
+Provenance signal on recall: memories with no owning principal (`user_id IS NULL`)
+are lower-provenance. **No-op by default.** This is a forensics/trust signal,
+**not** a poisoning defense — a poisoned write from a legitimately authenticated
+principal still ranks normally.
+
+> ⚠️ **Only enable in multi-principal deployments.** "Unowned" is the *dominant*
+> population in many setups: **solo / embedded mode writes every memory unowned**
+> (so `LORE_RECALL_QUARANTINE_ANON=true` empties recall, and `ANON_WEIGHT<1`
+> uniformly down-weights everything), and org-level background memories
+> (consolidation / dreams / auto-extraction) are unowned **by design**. Use this
+> only when agents/users write with a verified principal (OIDC / AgentGate token)
+> and you specifically want to distinguish attributed from unattributed writes.
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `LORE_RECALL_ANON_WEIGHT` | `1.0` | No | Score multiplier (0..1) for anonymous (unowned) memories on recall. `1.0` = no change; lower = down-weight. |
+| `LORE_RECALL_QUARANTINE_ANON` | `false` | No | When true, drop anonymous memories from recall results entirely. |
+
 ## AgentLens memory log (#78)
 
 Emit memory creates/supersessions (with a redaction flag) into AgentLens's
