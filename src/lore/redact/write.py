@@ -66,26 +66,73 @@ def _load_denylist(path: Optional[str]) -> List[Tuple[str, str]]:
     return out
 
 
+# Named compliance policy packs (#80): friendly names → (scan levels, default
+# secrets action). Levels: 1 = zero-dep regex (always available), 2 =
+# detect-secrets, 3 = NER/spaCy (2/3 need their optional deps; the pipeline
+# no-ops a level whose dep is absent). The DEFAULT (no policy set) is L1-only +
+# secrets masked — byte-for-byte the prior behavior.
+_POLICY_PACKS: Dict[str, Optional[Tuple[List[int], str]]] = {
+    "off": None,                       # disable entirely
+    "default": ([1], "mask"),          # zero-dep regex, secrets masked (prior default)
+    "l1": ([1], "mask"),
+    "pii": ([1, 3], "mask"),           # regex + NER, mask everything
+    "secrets": ([1, 2], "block"),      # regex + detect-secrets, block secrets
+    "strict": ([1, 2, 3], "block"),    # everything on, block secrets
+    "all": ([1, 2, 3], "block"),
+}
+
+
 @functools.lru_cache(maxsize=1)
 def get_write_redactor() -> Optional[RedactionPipeline]:
     """Process-wide redactor for the write path, built once from env config:
 
-      ``LORE_REDACT_DISABLED`` — set to disable redaction entirely (returns None).
+      ``LORE_REDACT_DISABLED`` — disable redaction entirely (returns None).
+      ``LORE_REDACT_POLICY``   — named compliance pack: off | default | l1 | pii |
+                                 secrets | strict | all (see ``_POLICY_PACKS``).
+      ``LORE_REDACT_LEVELS``   — explicit CSV of scan levels (e.g. "1,2,3"),
+                                 overrides the pack's levels.
       ``LORE_REDACT_DENYLIST`` — path to a denylist file (literal terms, or
                                  ``re:`` lines for regexes).
-      ``LORE_REDACT_BLOCK``    — set to BLOCK writes containing secrets
-                                 (default: mask + tag everything).
+      ``LORE_REDACT_BLOCK``    — force BLOCK on secrets (default per pack;
+                                 unset + no pack = mask).
 
     Cached; tests that mutate the env must call ``get_write_redactor.cache_clear()``.
     """
     if os.environ.get("LORE_REDACT_DISABLED"):
         return None
+
+    levels: List[int] = [1]
+    secrets_action = "mask"
+    policy = os.environ.get("LORE_REDACT_POLICY", "").strip().lower()
+    if policy:
+        if policy not in _POLICY_PACKS:
+            logger.warning("Unknown LORE_REDACT_POLICY %r; using L1 default. Known: %s",
+                           policy, sorted(_POLICY_PACKS))
+        else:
+            pack = _POLICY_PACKS[policy]
+            if pack is None:
+                return None  # "off"
+            levels, secrets_action = list(pack[0]), pack[1]
+
+    lvl_env = os.environ.get("LORE_REDACT_LEVELS")
+    if lvl_env:
+        try:
+            parsed = [int(x) for x in lvl_env.split(",") if x.strip()]
+            if parsed:
+                levels = parsed
+        except ValueError:
+            logger.warning("LORE_REDACT_LEVELS is not an int CSV (%r); using %s", lvl_env, levels)
+
+    # LORE_REDACT_BLOCK forces blocking (back-compat); otherwise the pack's action.
+    if os.environ.get("LORE_REDACT_BLOCK"):
+        secrets_action = "block"
+
     custom = _load_denylist(os.environ.get("LORE_REDACT_DENYLIST"))
-    overrides: Dict[str, str] = {}
-    if not os.environ.get("LORE_REDACT_BLOCK"):
-        overrides = {t: "mask" for t in _SECRET_TYPES}
+    # "block" is the pipeline's built-in secrets action → only override for "mask".
+    overrides: Dict[str, str] = {t: "mask" for t in _SECRET_TYPES} if secrets_action == "mask" else {}
     return RedactionPipeline(
         custom_patterns=custom,
+        security_scan_levels=levels,
         security_action_overrides=overrides,  # type: ignore[arg-type]
     )
 
