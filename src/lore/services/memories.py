@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 from typing import Any, Mapping, Optional, Sequence
 
+from lore.emit.agentlens import emit_memory_event
 from lore.persistence import (
     MemoryFilter,
     MemoryPatch,
@@ -22,7 +23,6 @@ from lore.persistence import (
 )
 from lore.persistence.exceptions import StoreNotFoundError
 from lore.redact.write import get_write_redactor, redact_for_write
-from lore.emit.agentlens import emit_memory_event
 from lore.services.reconciliation import reconcile_for_write
 
 logger = logging.getLogger(__name__)
