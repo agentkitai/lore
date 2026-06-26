@@ -140,6 +140,24 @@ short-lived, which bounds revocation staleness.
 
 ---
 
+## AgentLens memory log (#78)
+
+Emit memory creates/supersessions (with a redaction flag) into AgentLens's
+tamper-evident hash chain — one record spanning memory + the rest of the
+platform. **Optional + non-blocking**: OFF unless both vars are set; emission is
+fire-and-forget and never blocks or fails a memory write. Events land as
+AgentLens `custom` events under a stable per-org session (`lore-memory:<org>`).
+
+> Note: v1 is self-reported. Verified attribution (so events also appear in the
+> AgentLens cross-product *timeline*, which keys on the server-verified agent id)
+> is a tracked follow-up.
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `LORE_AGENTLENS_URL` | none | No | AgentLens base URL. Set with `LORE_AGENTLENS_API_KEY` to enable emission. |
+| `LORE_AGENTLENS_API_KEY` | none | No | AgentLens API key used to POST `/api/events`. |
+| `LORE_AGENTLENS_TIMEOUT` | `3` | No | Per-emit HTTP timeout (seconds). |
+
 ## Alerting
 
 | Variable | Default | Required | Description |
