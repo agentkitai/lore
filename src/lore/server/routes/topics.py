@@ -32,6 +32,7 @@ async def list_topics(
     """List auto-detected topics (entities with mention_count >= threshold)."""
     return await topics_service.list_topics(
         store,
+        org_id=auth.org_id,
         entity_type=entity_type,
         min_mentions=min_mentions,
         limit=limit,
@@ -49,6 +50,7 @@ async def get_topic_detail(
     """Get comprehensive detail for a single topic."""
     result = await topics_service.get_topic_detail(
         store,
+        org_id=auth.org_id,
         name=name,
         max_memories=max_memories,
         format=format,

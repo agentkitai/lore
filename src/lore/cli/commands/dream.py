@@ -187,7 +187,7 @@ async def _gather_phase1_stats(store, org_id: str) -> dict[str, Any]:
 
     # Total + top entities via get_graph_stats (already aggregated).
     try:
-        gs = await store.get_graph_stats()
+        gs = await store.get_graph_stats(org_id)
         out["total_memories"] = int(gs.total_memories)
         out["top_entities"] = [
             {"name": e.get("name"), "mentions": e.get("mentions") or e.get("mention_count")}

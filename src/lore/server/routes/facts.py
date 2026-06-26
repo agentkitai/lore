@@ -103,6 +103,7 @@ async def facts_at_time(
         store,
         entity=entity,
         at=at,
+        org_id=auth.org_id,
         predicate=predicate,
         direction=direction,
         limit=limit,
@@ -138,15 +139,16 @@ async def supersede_fact(
     ``by``, and record the correction in the audit log."""
     if body.by == relationship_id:
         raise HTTPException(status_code=400, detail="A fact cannot supersede itself")
-    target = await store.get_relationship(relationship_id)
+    target = await store.get_relationship(relationship_id, auth.org_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Fact not found")
-    replacement = await store.get_relationship(body.by)
+    replacement = await store.get_relationship(body.by, auth.org_id)
     if replacement is None:
         raise HTTPException(status_code=404, detail="Replacement fact not found")
     await temporal_svc.supersede_relationship(
         store,
         relationship_id,
+        auth.org_id,
         superseded_by=body.by,
         reason=body.reason,
         agent="api",
@@ -166,10 +168,10 @@ async def fact_supersession_chain(
     store=Depends(get_store),
 ) -> FactSupersessionChainResponse:
     """Full correction trail for a fact, oldest first."""
-    target = await store.get_relationship(relationship_id)
+    target = await store.get_relationship(relationship_id, auth.org_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Fact not found")
-    events = await temporal_svc.relationship_supersession_chain(store, relationship_id)
+    events = await temporal_svc.relationship_supersession_chain(store, relationship_id, auth.org_id)
     return FactSupersessionChainResponse(
         relationship_id=relationship_id,
         events=[

@@ -11,13 +11,14 @@ from lore.services.graph import entities as _graph_entities
 async def list_topics(
     store: Store,
     *,
+    org_id: str,
     entity_type: Optional[str] = None,
     min_mentions: int = 3,
     limit: int = 50,
 ) -> dict[str, Any]:
     """List topics (entities with mention_count >= threshold)."""
     entities = await _graph_entities.list_topics(
-        store, entity_type=entity_type, min_mentions=min_mentions, limit=limit,
+        store, org_id=org_id, entity_type=entity_type, min_mentions=min_mentions, limit=limit,
     )
     topics = [
         {
@@ -37,13 +38,14 @@ async def list_topics(
 async def get_topic_detail(
     store: Store,
     *,
+    org_id: str,
     name: str,
     max_memories: int = 20,
     format: str = "brief",
 ) -> Optional[dict[str, Any]]:
     """Get topic detail. Returns None if entity not found."""
     detail = await _graph_entities.get_topic_detail(
-        store, name=name, max_memories=max_memories,
+        store, name=name, org_id=org_id, max_memories=max_memories,
     )
     if detail is None:
         return None

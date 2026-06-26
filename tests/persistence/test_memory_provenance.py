@@ -65,7 +65,7 @@ async def test_provenance_via_store_chain_and_sources(store):
 
     m = await store.get_memory("solo", a.id)
     chain = await store.get_supersession_chain(a.id)
-    sources = await store.list_supersession_sources(b.id)  # b consolidated a
+    sources = await store.list_supersession_sources(b.id, "solo")  # b consolidated a
     prov = build_memory_provenance(m, chain, sources)
 
     assert prov["owner"] == "alice"

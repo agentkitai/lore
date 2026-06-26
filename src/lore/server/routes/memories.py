@@ -390,7 +390,7 @@ async def memory_provenance(
     if m is None:
         raise HTTPException(status_code=404, detail="Memory not found")
     chain = await store.get_supersession_chain(memory_id)
-    sources = await store.list_supersession_sources(memory_id)
+    sources = await store.list_supersession_sources(memory_id, auth.org_id)
     return MemoryProvenanceResponse(**build_memory_provenance(m, chain, sources))
 
 

@@ -146,6 +146,7 @@ class RecallParams:
 
 @dataclass(frozen=True, slots=True)
 class NewEntity:
+    org_id: str  # tenant boundary (#83) — stamped from the source memory's org
     name: str
     entity_type: str
     aliases: Sequence[str] = ()
@@ -159,6 +160,7 @@ class NewEntity:
 @dataclass(frozen=True, slots=True)
 class StoredEntity:
     id: str
+    org_id: str
     name: str
     entity_type: str
     aliases: Sequence[str]
@@ -173,6 +175,7 @@ class StoredEntity:
 
 @dataclass(frozen=True, slots=True)
 class NewMention:
+    org_id: str  # tenant boundary (#83)
     entity_id: str
     memory_id: str
     mention_type: str = "explicit"
@@ -182,6 +185,7 @@ class NewMention:
 @dataclass(frozen=True, slots=True)
 class StoredMention:
     id: str
+    org_id: str
     entity_id: str
     memory_id: str
     mention_type: str
@@ -191,6 +195,7 @@ class StoredMention:
 
 @dataclass(frozen=True, slots=True)
 class NewRelationship:
+    org_id: str  # tenant boundary (#83)
     source_entity_id: str
     target_entity_id: str
     rel_type: str
@@ -206,6 +211,7 @@ class NewRelationship:
 @dataclass(frozen=True, slots=True)
 class StoredRelationship:
     id: str
+    org_id: str
     source_entity_id: str
     target_entity_id: str
     rel_type: str

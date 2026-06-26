@@ -30,10 +30,10 @@ async def test_list_topics_returns_dict_shape(store):
     """list_topics returns a dict with topics/total/threshold keys."""
     # Insert an entity with enough mentions
     entity = await store.upsert_entity(
-        NewEntity(name="td-hot-topic", entity_type="concept", mention_count=10)
+        NewEntity(org_id="solo", name="td-hot-topic", entity_type="concept", mention_count=10)
     )
 
-    result = await topics_dashboard.list_topics(store, min_mentions=5, limit=50)
+    result = await topics_dashboard.list_topics(store, org_id="solo", min_mentions=5, limit=50)
 
     assert "topics" in result
     assert "total" in result
@@ -56,7 +56,7 @@ async def test_list_topics_returns_dict_shape(store):
 async def test_get_topic_detail_returns_none_for_missing(store):
     """get_topic_detail returns None when entity does not exist."""
     result = await topics_dashboard.get_topic_detail(
-        store, name="nonexistent-entity-xyz"
+        store, org_id="solo", name="nonexistent-entity-xyz"
     )
     assert result is None
 
@@ -68,7 +68,7 @@ async def test_get_topic_detail_brief_truncates_content(store):
     await _ensure_org(store, org)
 
     entity = await store.upsert_entity(
-        NewEntity(name="td-brief-entity", entity_type="topic", mention_count=5)
+        NewEntity(org_id=org, name="td-brief-entity", entity_type="topic", mention_count=5)
     )
 
     # Insert a memory with content longer than 100 chars
@@ -77,11 +77,12 @@ async def test_get_topic_detail_brief_truncates_content(store):
         NewMemory(org_id=org, content=long_content, embedding=_vec(1))
     )
 
-    # Link memory to entity via mention
-    await store.save_mention(NewMention(entity_id=entity.id, memory_id=mem.id))
+    # Link memory to entity via mention (same org as entity + memory so the
+    # org-scoped retrieval in get_topic_detail returns it — #83).
+    await store.save_mention(NewMention(org_id=org, entity_id=entity.id, memory_id=mem.id))
 
     result = await topics_dashboard.get_topic_detail(
-        store, name="td-brief-entity", format="brief"
+        store, org_id=org, name="td-brief-entity", format="brief"
     )
 
     assert result is not None

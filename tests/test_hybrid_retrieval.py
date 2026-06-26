@@ -214,13 +214,13 @@ def _fake_store_with(*, vec=None, fts=None, graph=None, fail=()):
             raise RuntimeError("graph branch boom")
         return list(graph or [])
 
-    async def _ent_by_name(_n):
+    async def _ent_by_name(_n, _org=None):
         # Return a simple entity for any name so the graph branch fires.
         if not graph:
             return None
         from lore.persistence.types import StoredEntity
         return StoredEntity(
-            id="ent-1", name=str(_n), entity_type="topic", aliases=(),
+            id="ent-1", org_id="solo", name=str(_n), entity_type="topic", aliases=(),
             description=None, metadata={}, mention_count=1,
             first_seen_at=NOW, last_seen_at=NOW, created_at=NOW, updated_at=NOW,
         )

@@ -432,7 +432,7 @@ async def _persist(
         confidence = max(0.0, min(1.0, float(confidence)))
         name_to_confidence[name] = confidence
 
-        existing = await store.find_entity_by_name_or_alias(name)
+        existing = await store.find_entity_by_name_or_alias(name, org_id)
         if existing is not None:
             name_to_id[name] = existing.id
             result.entities_reused += 1
@@ -440,6 +440,7 @@ async def _persist(
 
         new = await store.upsert_entity(
             NewEntity(
+                org_id=org_id,
                 name=name,
                 entity_type=entity_type,
                 aliases=aliases,
@@ -456,13 +457,16 @@ async def _persist(
     for name, entity_id in name_to_id.items():
         mentions.append(
             NewMention(
+                org_id=org_id,
                 entity_id=entity_id,
                 memory_id=memory_id,
                 mention_type="extracted",
                 confidence=name_to_confidence.get(name, 0.5),
             )
         )
-    result.mentions_inserted = await store.replace_memory_mentions(memory_id, mentions)
+    result.mentions_inserted = await store.replace_memory_mentions(
+        memory_id, mentions, org_id
+    )
 
     # Pass 3: resolve and persist relationships. Skip rows whose subject
     # or object names didn't make it into name_to_id (the LLM occasionally
@@ -487,6 +491,7 @@ async def _persist(
 
         relationships.append(
             NewRelationship(
+                org_id=org_id,
                 source_entity_id=s_id,
                 target_entity_id=o_id,
                 rel_type=predicate.strip(),
@@ -496,11 +501,5 @@ async def _persist(
             )
         )
     result.relationships_inserted = await store.replace_memory_relationships(
-        memory_id, relationships,
+        memory_id, relationships, org_id,
     )
-
-    # ``org_id`` is currently unused — the entities / mentions /
-    # relationships schema is global per migration 007. Threading it
-    # through the call signature anyway means callers don't have to
-    # change when we add an org-scoped graph migration later.
-    _ = org_id

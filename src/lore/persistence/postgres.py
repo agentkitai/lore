@@ -194,6 +194,7 @@ def _append_visibility(
 def _row_to_mention(row: "asyncpg.Record") -> StoredMention:
     return StoredMention(
         id=row["id"],
+        org_id=row["org_id"],
         entity_id=row["entity_id"],
         memory_id=row["memory_id"],
         mention_type=row["mention_type"],
@@ -208,6 +209,7 @@ def _row_to_relationship(row: "asyncpg.Record") -> StoredRelationship:
         properties = json.loads(properties)
     return StoredRelationship(
         id=row["id"],
+        org_id=row["org_id"],
         source_entity_id=row["source_entity_id"],
         target_entity_id=row["target_entity_id"],
         rel_type=row["rel_type"],
@@ -233,6 +235,7 @@ def _row_to_entity(row: "asyncpg.Record") -> StoredEntity:
         metadata = json.loads(metadata)
     return StoredEntity(
         id=row["id"],
+        org_id=row["org_id"],
         name=row["name"],
         entity_type=row["entity_type"],
         aliases=tuple(aliases or ()),
@@ -1219,11 +1222,11 @@ class PostgresStore:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
-                INSERT INTO entities (id, name, entity_type, aliases, description,
+                INSERT INTO entities (id, org_id, name, entity_type, aliases, description,
                                       metadata, mention_count, first_seen_at,
                                       last_seen_at)
-                VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9)
-                ON CONFLICT (name) DO UPDATE SET
+                VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7::jsonb, $8, $9, $10)
+                ON CONFLICT (org_id, name) DO UPDATE SET
                     mention_count = entities.mention_count + EXCLUDED.mention_count,
                     last_seen_at = GREATEST(entities.last_seen_at, EXCLUDED.last_seen_at),
                     aliases = COALESCE(
@@ -1237,11 +1240,12 @@ class PostgresStore:
                     metadata = COALESCE(entities.metadata, '{}'::jsonb) ||
                                COALESCE(EXCLUDED.metadata, '{}'::jsonb),
                     updated_at = now()
-                RETURNING id, name, entity_type, aliases, description, metadata,
+                RETURNING id, org_id, name, entity_type, aliases, description, metadata,
                           mention_count, first_seen_at, last_seen_at,
                           created_at, updated_at
                 """,
                 entity_id,
+                entity.org_id,
                 entity.name,
                 entity.entity_type,
                 json.dumps(list(entity.aliases)),
@@ -1253,39 +1257,41 @@ class PostgresStore:
             )
         return _row_to_entity(row)
 
-    async def get_entity(self, entity_id: str) -> Optional[StoredEntity]:
+    async def get_entity(self, entity_id: str, org_id: str) -> Optional[StoredEntity]:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
-                WHERE id = $1
+                WHERE id = $1 AND org_id = $2
                 """,
                 entity_id,
+                org_id,
             )
         return _row_to_entity(row) if row else None
 
     # ── GraphOps stubs (T4–T11) ─────────────────────────────────────
 
     # T4
-    async def get_entity_by_name(self, name: str) -> Optional[StoredEntity]:
+    async def get_entity_by_name(self, name: str, org_id: str) -> Optional[StoredEntity]:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
-                WHERE name = $1
+                WHERE name = $1 AND org_id = $2
                 """,
                 name,
+                org_id,
             )
         return _row_to_entity(row) if row else None
 
     async def find_entity_by_name_or_alias(
-        self, name: str,
+        self, name: str, org_id: str,
     ) -> Optional[StoredEntity]:
         """Case-insensitive lookup on canonical name OR any alias.
 
@@ -1297,45 +1303,48 @@ class PostgresStore:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, name, entity_type, aliases, description, metadata,
+                SELECT id, org_id, name, entity_type, aliases, description, metadata,
                        mention_count, first_seen_at, last_seen_at,
                        created_at, updated_at
                 FROM entities
-                WHERE LOWER(name) = $1
-                   OR EXISTS (
-                       SELECT 1 FROM jsonb_array_elements_text(
-                           CASE jsonb_typeof(aliases)
-                               WHEN 'array' THEN aliases
-                               ELSE '[]'::jsonb
-                           END
-                       ) AS a
-                       WHERE LOWER(a) = $1
-                   )
+                WHERE org_id = $2
+                  AND (LOWER(name) = $1
+                       OR EXISTS (
+                           SELECT 1 FROM jsonb_array_elements_text(
+                               CASE jsonb_typeof(aliases)
+                                   WHEN 'array' THEN aliases
+                                   ELSE '[]'::jsonb
+                               END
+                           ) AS a
+                           WHERE LOWER(a) = $1
+                       ))
                 LIMIT 1
                 """,
                 lname,
+                org_id,
             )
         return _row_to_entity(row) if row else None
 
     async def list_entities(
         self,
+        org_id: str,
         *,
         entity_type: Optional[str] = None,
         min_mentions: int = 0,
         limit: int = 100,
     ) -> Sequence[StoredEntity]:
-        where: list[str] = []
-        params: list[Any] = []
+        where: list[str] = ["org_id = $1"]
+        params: list[Any] = [org_id]
         if entity_type is not None:
             params.append(entity_type)
             where.append(f"entity_type = ${len(params)}")
         if min_mentions > 0:
             params.append(min_mentions)
             where.append(f"mention_count >= ${len(params)}")
-        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+        where_sql = "WHERE " + " AND ".join(where)
         params.append(limit)
         sql = f"""
-            SELECT id, name, entity_type, aliases, description, metadata,
+            SELECT id, org_id, name, entity_type, aliases, description, metadata,
                    mention_count, first_seen_at, last_seen_at,
                    created_at, updated_at
             FROM entities
@@ -1351,6 +1360,7 @@ class PostgresStore:
     async def update_entity_counts(
         self,
         entity_id: str,
+        org_id: str,
         *,
         mention_delta: int,
         last_seen_at: datetime,
@@ -1362,18 +1372,20 @@ class PostgresStore:
                 SET mention_count = mention_count + $2,
                     last_seen_at = GREATEST(last_seen_at, $3),
                     updated_at = now()
-                WHERE id = $1
+                WHERE id = $1 AND org_id = $4
                 """,
                 entity_id,
                 mention_delta,
                 last_seen_at,
+                org_id,
             )
 
-    async def delete_entity(self, entity_id: str) -> bool:
+    async def delete_entity(self, entity_id: str, org_id: str) -> bool:
         async with self._acquire() as conn:
             result = await conn.execute(
-                "DELETE FROM entities WHERE id = $1",
+                "DELETE FROM entities WHERE id = $1 AND org_id = $2",
                 entity_id,
+                org_id,
             )
         return result.endswith(" 1")
 
@@ -1383,55 +1395,63 @@ class PostgresStore:
         async with self._acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO entity_mentions (id, entity_id, memory_id, mention_type, confidence)
-                VALUES ($1, $2, $3, $4, $5)
-                ON CONFLICT (entity_id, memory_id) DO NOTHING
+                INSERT INTO entity_mentions (id, org_id, entity_id, memory_id, mention_type, confidence)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (org_id, entity_id, memory_id) DO NOTHING
                 """,
                 mention_id,
+                mention.org_id,
                 mention.entity_id,
                 mention.memory_id,
                 mention.mention_type,
                 mention.confidence,
             )
 
-    async def get_mentions_for_memory(self, memory_id: str) -> Sequence[StoredMention]:
+    async def get_mentions_for_memory(
+        self, memory_id: str, org_id: str
+    ) -> Sequence[StoredMention]:
         async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, entity_id, memory_id, mention_type, confidence, created_at
+                SELECT id, org_id, entity_id, memory_id, mention_type, confidence, created_at
                 FROM entity_mentions
-                WHERE memory_id = $1
+                WHERE memory_id = $1 AND org_id = $2
                 ORDER BY created_at DESC
                 """,
                 memory_id,
+                org_id,
             )
         return [_row_to_mention(r) for r in rows]
 
     async def get_mentions_for_entity(
         self,
         entity_id: str,
+        org_id: str,
         *,
         limit: int = 100,
     ) -> Sequence[StoredMention]:
         async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, entity_id, memory_id, mention_type, confidence, created_at
+                SELECT id, org_id, entity_id, memory_id, mention_type, confidence, created_at
                 FROM entity_mentions
-                WHERE entity_id = $1
+                WHERE entity_id = $1 AND org_id = $2
                 ORDER BY created_at DESC
-                LIMIT $2
+                LIMIT $3
                 """,
                 entity_id,
+                org_id,
                 limit,
             )
         return [_row_to_mention(r) for r in rows]
 
-    async def count_memories_for_entity(self, entity_id: str) -> int:
+    async def count_memories_for_entity(self, entity_id: str, org_id: str) -> int:
         async with self._acquire() as conn:
             result = await conn.fetchval(
-                "SELECT COUNT(DISTINCT memory_id) FROM entity_mentions WHERE entity_id = $1",
+                "SELECT COUNT(DISTINCT memory_id) FROM entity_mentions "
+                "WHERE entity_id = $1 AND org_id = $2",
                 entity_id,
+                org_id,
             )
         return int(result or 0)
 
@@ -1439,25 +1459,28 @@ class PostgresStore:
         self,
         memory_id: str,
         mentions: Sequence[NewMention],
+        org_id: str,
     ) -> int:
         """Atomically replace this memory's mention rows."""
         inserted = 0
         async with self._acquire() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "DELETE FROM entity_mentions WHERE memory_id = $1",
+                    "DELETE FROM entity_mentions WHERE memory_id = $1 AND org_id = $2",
                     memory_id,
+                    org_id,
                 )
                 for m in mentions:
                     mention_id = f"emen_{ULID()}"
                     await conn.execute(
                         """
                         INSERT INTO entity_mentions
-                            (id, entity_id, memory_id, mention_type, confidence)
-                        VALUES ($1, $2, $3, $4, $5)
-                        ON CONFLICT (entity_id, memory_id) DO NOTHING
+                            (id, org_id, entity_id, memory_id, mention_type, confidence)
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (org_id, entity_id, memory_id) DO NOTHING
                         """,
                         mention_id,
+                        org_id,
                         m.entity_id,
                         m.memory_id,
                         m.mention_type,
@@ -1498,17 +1521,20 @@ class PostgresStore:
         return [_row_to_stored(r) for r in rows]
 
     # T7
-    async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
+    async def get_relationship(
+        self, rel_id: str, org_id: str
+    ) -> Optional[StoredRelationship]:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                        properties, source_fact_id, source_memory_id,
                        valid_from, valid_until, superseded_by, status, created_at, updated_at
                 FROM relationships
-                WHERE id = $1
+                WHERE id = $1 AND org_id = $2
                 """,
                 rel_id,
+                org_id,
             )
         return _row_to_relationship(row) if row else None
 
@@ -1516,13 +1542,14 @@ class PostgresStore:
         self,
         source_id: str,
         target_id: str,
+        org_id: str,
         *,
         rel_type: str,
     ) -> Optional[StoredRelationship]:
         async with self._acquire() as conn:
             row = await conn.fetchrow(
                 """
-                SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+                SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                        properties, source_fact_id, source_memory_id,
                        valid_from, valid_until, superseded_by, status, created_at, updated_at
                 FROM relationships
@@ -1530,10 +1557,12 @@ class PostgresStore:
                   AND target_entity_id = $2
                   AND rel_type = $3
                   AND valid_until IS NULL
+                  AND org_id = $4
                 """,
                 source_id,
                 target_id,
                 rel_type,
+                org_id,
             )
         return _row_to_relationship(row) if row else None
 
@@ -1544,15 +1573,16 @@ class PostgresStore:
             row = await conn.fetchrow(
                 """
                 INSERT INTO relationships
-                    (id, source_entity_id, target_entity_id, rel_type, weight,
+                    (id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                      properties, source_fact_id, source_memory_id,
                      valid_from, valid_until, status)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
-                RETURNING id, source_entity_id, target_entity_id, rel_type, weight,
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+                RETURNING id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                           properties, source_fact_id, source_memory_id,
                           valid_from, valid_until, superseded_by, status, created_at, updated_at
                 """,
                 rel_id,
+                rel.org_id,
                 rel.source_entity_id,
                 rel.target_entity_id,
                 rel.rel_type,
@@ -1570,6 +1600,7 @@ class PostgresStore:
         self,
         memory_id: str,
         relationships: Sequence[NewRelationship],
+        org_id: str,
     ) -> int:
         """Reconcile this memory's relationships — supersede-NOT-delete (#67).
 
@@ -1602,8 +1633,10 @@ class PostgresStore:
                     SELECT id, source_entity_id, target_entity_id, rel_type
                     FROM relationships
                     WHERE source_memory_id = $1 AND valid_until IS NULL
+                      AND org_id = $2
                     """,
                     memory_id,
+                    org_id,
                 )
                 existing_by_key = {
                     (r["source_entity_id"], r["target_entity_id"], r["rel_type"]): r["id"]
@@ -1623,9 +1656,11 @@ class PostgresStore:
                         UPDATE relationships
                         SET valid_until = $2, updated_at = now()
                         WHERE id = ANY($1) AND valid_until IS NULL
+                          AND org_id = $3
                         """,
                         stale_ids,
                         now,
+                        org_id,
                     )
                 # Insert genuinely-new edges; leave still-asserted ones untouched.
                 for r in relationships:
@@ -1636,15 +1671,16 @@ class PostgresStore:
                     result = await conn.execute(
                         """
                         INSERT INTO relationships
-                            (id, source_entity_id, target_entity_id, rel_type, weight,
+                            (id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                              properties, source_fact_id, source_memory_id,
                              valid_from, valid_until, status)
-                        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
                         ON CONFLICT (source_entity_id, target_entity_id, rel_type)
                             WHERE valid_until IS NULL
                             DO NOTHING
                         """,
                         rel_id,
+                        org_id,
                         r.source_entity_id,
                         r.target_entity_id,
                         r.rel_type,
@@ -1664,18 +1700,22 @@ class PostgresStore:
     async def list_relationships_for_entity(
         self,
         entity_id: str,
+        org_id: str,
         *,
         status: Optional[str] = None,
         limit: int = 100,
     ) -> Sequence[StoredRelationship]:
-        where: list[str] = ["(source_entity_id = $1 OR target_entity_id = $1)"]
-        params: list[Any] = [entity_id]
+        where: list[str] = [
+            "(source_entity_id = $1 OR target_entity_id = $1)",
+            "org_id = $2",
+        ]
+        params: list[Any] = [entity_id, org_id]
         if status is not None:
             params.append(status)
             where.append(f"COALESCE(status, 'approved') = ${len(params)}")
         params.append(limit)
         sql = f"""
-            SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+            SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                    properties, source_fact_id, source_memory_id,
                    valid_from, valid_until, superseded_by, status, created_at, updated_at
             FROM relationships
@@ -1690,6 +1730,7 @@ class PostgresStore:
     async def update_relationship_status(
         self,
         rel_id: str,
+        org_id: str,
         *,
         status: str,
     ) -> StoredRelationship:
@@ -1698,13 +1739,14 @@ class PostgresStore:
                 """
                 UPDATE relationships
                 SET status = $2, updated_at = now()
-                WHERE id = $1
-                RETURNING id, source_entity_id, target_entity_id, rel_type, weight,
+                WHERE id = $1 AND org_id = $3
+                RETURNING id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                           properties, source_fact_id, source_memory_id,
                           valid_from, valid_until, superseded_by, status, created_at, updated_at
                 """,
                 rel_id,
                 status,
+                org_id,
             )
         if row is None:
             raise StoreNotFoundError("relationships", rel_id)
@@ -1713,32 +1755,38 @@ class PostgresStore:
     async def update_relationship_weight(
         self,
         rel_id: str,
+        org_id: str,
         *,
         weight: float,
     ) -> None:
         async with self._acquire() as conn:
             await conn.execute(
-                "UPDATE relationships SET weight = $2, updated_at = now() WHERE id = $1",
+                "UPDATE relationships SET weight = $2, updated_at = now() "
+                "WHERE id = $1 AND org_id = $3",
                 rel_id,
                 weight,
+                org_id,
             )
 
-    async def expire_relationship(self, rel_id: str) -> None:
+    async def expire_relationship(self, rel_id: str, org_id: str) -> None:
         async with self._acquire() as conn:
             await conn.execute(
-                "UPDATE relationships SET valid_until = now(), updated_at = now() WHERE id = $1",
+                "UPDATE relationships SET valid_until = now(), updated_at = now() "
+                "WHERE id = $1 AND org_id = $2",
                 rel_id,
+                org_id,
             )
 
     # T9
     async def list_pending_relationships(
         self,
+        org_id: str,
         *,
         rel_type: Optional[str] = None,
         limit: int = 100,
     ) -> Sequence[PendingRelationshipRow]:
-        where: list[str] = ["r.status = 'pending'"]
-        params: list[Any] = []
+        where: list[str] = ["r.org_id = $1", "r.status = 'pending'"]
+        params: list[Any] = [org_id]
         if rel_type is not None:
             params.append(rel_type)
             where.append(f"r.rel_type = ${len(params)}")
@@ -1810,6 +1858,7 @@ class PostgresStore:
     async def query_relationships(
         self,
         entity_ids: Sequence[str],
+        org_id: str,
         *,
         direction: str = "both",
         active_only: bool = True,
@@ -1825,6 +1874,8 @@ class PostgresStore:
 
         where: list[str] = []
         params: list[Any] = [list(entity_ids)]
+        params.append(org_id)
+        where.append(f"org_id = ${len(params)}")
         # Direction filter
         if direction == "inbound":
             where.append("target_entity_id = ANY($1)")
@@ -1849,7 +1900,7 @@ class PostgresStore:
             where.append(f"rel_type = ANY(${len(params)})")
 
         sql = f"""
-            SELECT id, source_entity_id, target_entity_id, rel_type, weight,
+            SELECT id, org_id, source_entity_id, target_entity_id, rel_type, weight,
                    properties, source_fact_id, source_memory_id,
                    valid_from, valid_until, superseded_by, status, created_at, updated_at
             FROM relationships
@@ -1863,74 +1914,90 @@ class PostgresStore:
     # T11
     async def get_graph_stats(
         self,
+        org_id: str,
         *,
         project: Optional[str] = None,
     ) -> GraphStats:
-        proj_clause = "WHERE project = $1" if project else ""
-        proj_args: list[Any] = [project] if project else []
-
         cutoff_24h = datetime.now(timezone.utc) - timedelta(hours=24)
         cutoff_7d = datetime.now(timezone.utc) - timedelta(days=7)
 
         async with self._acquire() as conn:
-            total_memories = await conn.fetchval(
-                f"SELECT COUNT(*) FROM memories {proj_clause}", *proj_args,
-            )
-
             if project:
+                total_memories = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE org_id = $1 AND project = $2",
+                    org_id, project,
+                )
                 recent_24h = await conn.fetchval(
-                    "SELECT COUNT(*) FROM memories WHERE project = $1 AND created_at >= $2",
-                    project, cutoff_24h,
+                    "SELECT COUNT(*) FROM memories WHERE org_id = $1 AND project = $2 AND created_at >= $3",
+                    org_id, project, cutoff_24h,
                 )
                 recent_7d = await conn.fetchval(
-                    "SELECT COUNT(*) FROM memories WHERE project = $1 AND created_at >= $2",
-                    project, cutoff_7d,
+                    "SELECT COUNT(*) FROM memories WHERE org_id = $1 AND project = $2 AND created_at >= $3",
+                    org_id, project, cutoff_7d,
                 )
                 oldest = await conn.fetchval(
-                    "SELECT MIN(created_at) FROM memories WHERE project = $1", project,
+                    "SELECT MIN(created_at) FROM memories WHERE org_id = $1 AND project = $2",
+                    org_id, project,
                 )
                 newest = await conn.fetchval(
-                    "SELECT MAX(created_at) FROM memories WHERE project = $1", project,
+                    "SELECT MAX(created_at) FROM memories WHERE org_id = $1 AND project = $2",
+                    org_id, project,
                 )
                 type_rows = await conn.fetch(
                     "SELECT COALESCE(meta->>'type', 'general') AS t, COUNT(*) AS c "
-                    "FROM memories WHERE project = $1 GROUP BY t",
-                    project,
+                    "FROM memories WHERE org_id = $1 AND project = $2 GROUP BY t",
+                    org_id, project,
                 )
                 proj_rows = await conn.fetch(
                     "SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c "
-                    "FROM memories WHERE project = $1 GROUP BY p",
-                    project,
+                    "FROM memories WHERE org_id = $1 AND project = $2 GROUP BY p",
+                    org_id, project,
                 )
             else:
+                total_memories = await conn.fetchval(
+                    "SELECT COUNT(*) FROM memories WHERE org_id = $1", org_id,
+                )
                 recent_24h = await conn.fetchval(
-                    "SELECT COUNT(*) FROM memories WHERE created_at >= $1", cutoff_24h,
+                    "SELECT COUNT(*) FROM memories WHERE org_id = $1 AND created_at >= $2",
+                    org_id, cutoff_24h,
                 )
                 recent_7d = await conn.fetchval(
-                    "SELECT COUNT(*) FROM memories WHERE created_at >= $1", cutoff_7d,
+                    "SELECT COUNT(*) FROM memories WHERE org_id = $1 AND created_at >= $2",
+                    org_id, cutoff_7d,
                 )
-                oldest = await conn.fetchval("SELECT MIN(created_at) FROM memories")
-                newest = await conn.fetchval("SELECT MAX(created_at) FROM memories")
+                oldest = await conn.fetchval(
+                    "SELECT MIN(created_at) FROM memories WHERE org_id = $1", org_id,
+                )
+                newest = await conn.fetchval(
+                    "SELECT MAX(created_at) FROM memories WHERE org_id = $1", org_id,
+                )
                 type_rows = await conn.fetch(
                     "SELECT COALESCE(meta->>'type', 'general') AS t, COUNT(*) AS c "
-                    "FROM memories GROUP BY t",
+                    "FROM memories WHERE org_id = $1 GROUP BY t",
+                    org_id,
                 )
                 proj_rows = await conn.fetch(
                     "SELECT COALESCE(project, '(no project)') AS p, COUNT(*) AS c "
-                    "FROM memories GROUP BY p",
+                    "FROM memories WHERE org_id = $1 GROUP BY p",
+                    org_id,
                 )
 
-            # Entities and relationships are global (no project scope)
-            total_entities = await conn.fetchval("SELECT COUNT(*) FROM entities") or 0
+            # Entities and relationships are org-scoped (#83).
+            total_entities = await conn.fetchval(
+                "SELECT COUNT(*) FROM entities WHERE org_id = $1", org_id,
+            ) or 0
             total_relationships = await conn.fetchval(
-                "SELECT COUNT(*) FROM relationships"
+                "SELECT COUNT(*) FROM relationships WHERE org_id = $1", org_id,
             ) or 0
             et_rows = await conn.fetch(
-                "SELECT entity_type, COUNT(*) AS c FROM entities GROUP BY entity_type"
+                "SELECT entity_type, COUNT(*) AS c FROM entities "
+                "WHERE org_id = $1 GROUP BY entity_type",
+                org_id,
             )
             top_rows = await conn.fetch(
                 "SELECT name, entity_type, mention_count FROM entities "
-                "ORDER BY mention_count DESC LIMIT 5"
+                "WHERE org_id = $1 ORDER BY mention_count DESC LIMIT 5",
+                org_id,
             )
 
         by_type = {r["t"]: r["c"] for r in type_rows}
@@ -1961,6 +2028,7 @@ class PostgresStore:
 
     async def get_timeline_buckets(
         self,
+        org_id: str,
         *,
         trunc: str,
         project: Optional[str] = None,
@@ -1969,14 +2037,18 @@ class PostgresStore:
             raise ValueError(
                 f"trunc must be one of {sorted(_VALID_TRUNCS)}; got {trunc!r}"
             )
-        proj_clause = "WHERE project = $1" if project else ""
-        proj_args: list[Any] = [project] if project else []
+        where: list[str] = ["org_id = $1"]
+        proj_args: list[Any] = [org_id]
+        if project:
+            proj_args.append(project)
+            where.append(f"project = ${len(proj_args)}")
+        where_clause = "WHERE " + " AND ".join(where)
         sql = f"""
             SELECT date_trunc('{trunc}', created_at) AS bucket_date,
                    COALESCE(meta->>'type', 'general') AS mem_type,
                    COUNT(*) AS cnt
             FROM memories
-            {proj_clause}
+            {where_clause}
             GROUP BY bucket_date, mem_type
             ORDER BY bucket_date
         """
@@ -1993,6 +2065,7 @@ class PostgresStore:
 
     async def get_memories_by_entities(
         self,
+        org_id: str,
         entity_ids: Sequence[str],
         *,
         exclude_memory_id: Optional[str] = None,
@@ -2000,8 +2073,12 @@ class PostgresStore:
     ) -> Sequence[StoredMemory]:
         if not entity_ids:
             return []
-        where: list[str] = ["em.entity_id = ANY($1)"]
-        params: list[Any] = [list(entity_ids)]
+        where: list[str] = [
+            "em.entity_id = ANY($1)",
+            "m.org_id = $2",
+            "em.org_id = $2",
+        ]
+        params: list[Any] = [list(entity_ids), org_id]
         if exclude_memory_id is not None:
             params.append(exclude_memory_id)
             where.append(f"m.id != ${len(params)}")
@@ -2024,6 +2101,7 @@ class PostgresStore:
 
     async def search_memories_text(
         self,
+        org_id: str,
         query: str,
         *,
         limit: int = 20,
@@ -2037,10 +2115,11 @@ class PostgresStore:
                        downvotes, meta, access_count,
                        last_accessed_at, scope
                 FROM memories
-                WHERE content ILIKE $1
+                WHERE org_id = $1 AND content ILIKE $2
                 ORDER BY created_at DESC
-                LIMIT $2
+                LIMIT $3
                 """,
+                org_id,
                 pattern,
                 limit,
             )
@@ -2134,7 +2213,7 @@ class PostgresStore:
         if not entity_ids:
             return []
         ids = list(entity_ids)
-        where: list[str] = ["em.entity_id = ANY($1)", "m.org_id = $2"]
+        where: list[str] = ["em.entity_id = ANY($1)", "m.org_id = $2", "em.org_id = $2"]
         sql_params: list[Any] = [ids, org_id]
         if scope_mode != "all":
             if project is not None:
@@ -3998,6 +4077,7 @@ class PostgresStore:
     async def is_superseded(
         self,
         memory_id: str,
+        org_id: str,
         *,
         at: Optional[datetime] = None,
     ) -> bool:
@@ -4005,25 +4085,35 @@ class PostgresStore:
             if at is None:
                 row = await conn.fetchrow(
                     """
-                    SELECT superseded_by
-                    FROM memory_supersessions
-                    WHERE memory_id = $1
-                    ORDER BY ts DESC, id DESC
+                    SELECT ms.superseded_by
+                    FROM memory_supersessions ms
+                    WHERE ms.memory_id = $1
+                      AND EXISTS (
+                          SELECT 1 FROM memories m
+                          WHERE m.id = ms.memory_id AND m.org_id = $2
+                      )
+                    ORDER BY ms.ts DESC, ms.id DESC
                     LIMIT 1
                     """,
                     memory_id,
+                    org_id,
                 )
             else:
                 row = await conn.fetchrow(
                     """
-                    SELECT superseded_by
-                    FROM memory_supersessions
-                    WHERE memory_id = $1
-                      AND ts <= $2
-                    ORDER BY ts DESC, id DESC
+                    SELECT ms.superseded_by
+                    FROM memory_supersessions ms
+                    WHERE ms.memory_id = $1
+                      AND ms.ts <= $3
+                      AND EXISTS (
+                          SELECT 1 FROM memories m
+                          WHERE m.id = ms.memory_id AND m.org_id = $2
+                      )
+                    ORDER BY ms.ts DESC, ms.id DESC
                     LIMIT 1
                     """,
                     memory_id,
+                    org_id,
                     at,
                 )
         if row is None:
@@ -4033,6 +4123,7 @@ class PostgresStore:
     async def are_superseded(
         self,
         memory_ids: "set[str]",
+        org_id: str,
         *,
         at: Optional[datetime] = None,
     ) -> "set[str]":
@@ -4046,13 +4137,18 @@ class PostgresStore:
                     SELECT memory_id FROM (
                         SELECT DISTINCT ON (memory_id)
                                memory_id, superseded_by
-                        FROM memory_supersessions
+                        FROM memory_supersessions ms
                         WHERE memory_id = ANY($1)
+                          AND EXISTS (
+                              SELECT 1 FROM memories m
+                              WHERE m.id = ms.memory_id AND m.org_id = $2
+                          )
                         ORDER BY memory_id, ts DESC, id DESC
                     ) latest
                     WHERE superseded_by IS NOT NULL
                     """,
                     ids,
+                    org_id,
                 )
             else:
                 rows = await conn.fetch(
@@ -4060,14 +4156,19 @@ class PostgresStore:
                     SELECT memory_id FROM (
                         SELECT DISTINCT ON (memory_id)
                                memory_id, superseded_by
-                        FROM memory_supersessions
+                        FROM memory_supersessions ms
                         WHERE memory_id = ANY($1)
-                          AND ts <= $2
+                          AND ts <= $3
+                          AND EXISTS (
+                              SELECT 1 FROM memories m
+                              WHERE m.id = ms.memory_id AND m.org_id = $2
+                          )
                         ORDER BY memory_id, ts DESC, id DESC
                     ) latest
                     WHERE superseded_by IS NOT NULL
                     """,
                     ids,
+                    org_id,
                     at,
                 )
         return {r["memory_id"] for r in rows}
@@ -4101,16 +4202,22 @@ class PostgresStore:
     async def list_supersession_sources(
         self,
         memory_id: str,
+        org_id: str,
     ) -> Sequence[StoredSupersession]:
         async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, memory_id, superseded_by, reason, ts, agent
-                FROM memory_supersessions
-                WHERE superseded_by = $1
-                ORDER BY ts ASC, id ASC
+                SELECT ms.id, ms.memory_id, ms.superseded_by, ms.reason, ms.ts, ms.agent
+                FROM memory_supersessions ms
+                WHERE ms.superseded_by = $1
+                  AND EXISTS (
+                      SELECT 1 FROM memories m
+                      WHERE m.id = ms.memory_id AND m.org_id = $2
+                  )
+                ORDER BY ms.ts ASC, ms.id ASC
                 """,
                 memory_id,
+                org_id,
             )
         return [
             StoredSupersession(
@@ -4146,6 +4253,10 @@ class PostgresStore:
                 JOIN entities e ON e.id = em.entity_id
             """
             where.append(f"e.name = ${len(params)}")
+            # #83: an attacker must not be able to pivot on another org's entity
+            # name. org_id is $1 here; the mentions/entities rows are same-org.
+            where.append("em.org_id = $1")
+            where.append("e.org_id = $1")
         if type_filter is not None:
             params.append(type_filter)
             where.append(f"m.meta->>'type' = ${len(params)}")
@@ -4185,6 +4296,7 @@ class PostgresStore:
     async def supersede_relationship(
         self,
         relationship_id: str,
+        org_id: str,
         *,
         superseded_by: str,
         reason: Optional[str] = None,
@@ -4207,26 +4319,36 @@ class PostgresStore:
                     SET valid_until = COALESCE(valid_until, now()),
                         superseded_by = $2,
                         updated_at = now()
-                    WHERE id = $1
+                    WHERE id = $1 AND org_id = $3
                     """,
                     relationship_id,
                     superseded_by,
+                    org_id,
                 )
+                # Only append the audit row if the edge belongs to this org —
+                # the SELECT … WHERE EXISTS gates the INSERT so a foreign-org
+                # relationship_id can't write supersession lineage (#83).
                 await conn.execute(
                     """
                     INSERT INTO relationship_supersessions
                         (relationship_id, superseded_by, reason, agent)
-                    VALUES ($1, $2, $3, $4)
+                    SELECT $1, $2, $3, $4
+                    WHERE EXISTS (
+                        SELECT 1 FROM relationships
+                        WHERE id = $1 AND org_id = $5
+                    )
                     """,
                     relationship_id,
                     superseded_by,
                     reason,
                     agent,
+                    org_id,
                 )
 
     async def is_relationship_superseded(
         self,
         relationship_id: str,
+        org_id: str,
         *,
         at: Optional[datetime] = None,
     ) -> bool:
@@ -4234,25 +4356,31 @@ class PostgresStore:
             if at is None:
                 row = await conn.fetchrow(
                     """
-                    SELECT superseded_by
-                    FROM relationship_supersessions
-                    WHERE relationship_id = $1
-                    ORDER BY ts DESC, id DESC
+                    SELECT rs.superseded_by
+                    FROM relationship_supersessions rs
+                    JOIN relationships r ON r.id = rs.relationship_id
+                    WHERE rs.relationship_id = $1
+                      AND r.org_id = $2
+                    ORDER BY rs.ts DESC, rs.id DESC
                     LIMIT 1
                     """,
                     relationship_id,
+                    org_id,
                 )
             else:
                 row = await conn.fetchrow(
                     """
-                    SELECT superseded_by
-                    FROM relationship_supersessions
-                    WHERE relationship_id = $1
-                      AND ts <= $2
-                    ORDER BY ts DESC, id DESC
+                    SELECT rs.superseded_by
+                    FROM relationship_supersessions rs
+                    JOIN relationships r ON r.id = rs.relationship_id
+                    WHERE rs.relationship_id = $1
+                      AND r.org_id = $2
+                      AND rs.ts <= $3
+                    ORDER BY rs.ts DESC, rs.id DESC
                     LIMIT 1
                     """,
                     relationship_id,
+                    org_id,
                     at,
                 )
         if row is None:
@@ -4262,16 +4390,20 @@ class PostgresStore:
     async def get_relationship_supersession_chain(
         self,
         relationship_id: str,
+        org_id: str,
     ) -> Sequence[StoredRelationshipSupersession]:
         async with self._acquire() as conn:
             rows = await conn.fetch(
                 """
-                SELECT id, relationship_id, superseded_by, reason, ts, agent
-                FROM relationship_supersessions
-                WHERE relationship_id = $1
-                ORDER BY ts ASC, id ASC
+                SELECT rs.id, rs.relationship_id, rs.superseded_by, rs.reason, rs.ts, rs.agent
+                FROM relationship_supersessions rs
+                JOIN relationships r ON r.id = rs.relationship_id
+                WHERE rs.relationship_id = $1
+                  AND r.org_id = $2
+                ORDER BY rs.ts ASC, rs.id ASC
                 """,
                 relationship_id,
+                org_id,
             )
         return [
             StoredRelationshipSupersession(

@@ -75,12 +75,13 @@ async def supersession_chain(
 async def supersession_sources(
     store: Store,
     memory_id: str,
+    org_id: str,
 ) -> Sequence[StoredSupersession]:
     """Inverse of ``supersession_chain``: events where ``memory_id``
     appears as ``superseded_by``. Used by the provenance endpoint to
     answer "what memories did this one consolidate from?".
     """
-    return await store.list_supersession_sources(memory_id)
+    return await store.list_supersession_sources(memory_id, org_id)
 
 
 async def consolidate_memories(
@@ -171,6 +172,7 @@ class FactAtTime:
 async def supersede_relationship(
     store: Store,
     relationship_id: str,
+    org_id: str,
     *,
     superseded_by: str,
     reason: Optional[str] = None,
@@ -182,6 +184,7 @@ async def supersede_relationship(
     """
     await store.supersede_relationship(
         relationship_id,
+        org_id,
         superseded_by=superseded_by,
         reason=reason,
         agent=agent,
@@ -191,9 +194,10 @@ async def supersede_relationship(
 async def relationship_supersession_chain(
     store: Store,
     relationship_id: str,
+    org_id: str,
 ) -> Sequence[StoredRelationshipSupersession]:
     """Full correction trail for a fact edge, oldest first."""
-    return await store.get_relationship_supersession_chain(relationship_id)
+    return await store.get_relationship_supersession_chain(relationship_id, org_id)
 
 
 async def facts_at_time(
@@ -201,6 +205,7 @@ async def facts_at_time(
     *,
     entity: str,
     at: datetime,
+    org_id: str,
     predicate: Optional[str] = None,
     direction: str = "both",
     limit: int = 50,
@@ -216,16 +221,17 @@ async def facts_at_time(
     if at.tzinfo is None:
         at = at.replace(tzinfo=timezone.utc)
 
-    ent = await store.get_entity_by_name(entity)
+    ent = await store.get_entity_by_name(entity, org_id)
     if ent is None:
         normalized = entity.strip().lower()
         if normalized != entity:
-            ent = await store.get_entity_by_name(normalized)
+            ent = await store.get_entity_by_name(normalized, org_id)
     if ent is None:
         return []
 
     rels = await store.query_relationships(
         [ent.id],
+        org_id,
         direction=direction,
         at_time=at,
         rel_types=[predicate] if predicate else None,
@@ -235,7 +241,7 @@ async def facts_at_time(
 
     async def _name(entity_id: str) -> str:
         if entity_id not in names:
-            other = await store.get_entity(entity_id)
+            other = await store.get_entity(entity_id, org_id)
             names[entity_id] = other.name if other is not None else entity_id
         return names[entity_id]
 

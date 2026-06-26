@@ -283,13 +283,16 @@ class Store(Protocol):
     async def list_supersession_sources(
         self,
         memory_id: str,
+        org_id: str,
     ) -> Sequence[StoredSupersession]:
         """Inverse of get_supersession_chain: rows where superseded_by=memory_id.
 
         Returns each event whose ``superseded_by`` equals ``memory_id`` —
         i.e. the source memories that this memory consolidates / replaces.
-        Used by the provenance endpoint so a caller can ask "where did
-        this memory come from?" and get a typed answer.
+        Validated against ``org_id`` via ``memories.org_id`` so the
+        provenance chain never crosses orgs (#83). Used by the provenance
+        endpoint so a caller can ask "where did this memory come from?"
+        and get a typed answer.
         """
         ...
 
@@ -336,14 +339,14 @@ class Store(Protocol):
     # ── GraphOps ─────────────────────────────────────────────────────
 
     # Entity ops
-    async def get_entity(self, entity_id: str) -> Optional[StoredEntity]:
-        """Return an entity by id, or None if absent."""
+    async def get_entity(self, entity_id: str, org_id: str) -> Optional[StoredEntity]:
+        """Return an entity by id within an org, or None if absent (#83 org scope)."""
         ...
 
     async def find_entity_by_name_or_alias(
-        self, name: str,
+        self, name: str, org_id: str,
     ) -> Optional[StoredEntity]:
-        """Case-insensitive lookup matching ``name`` or any alias.
+        """Case-insensitive lookup matching ``name`` or any alias, scoped to ``org_id`` (#83).
 
         Used by the graph-extraction service to dedupe when the LLM emits
         a name like ``"pinecone"`` and an entity already exists with
@@ -352,24 +355,25 @@ class Store(Protocol):
         * ``LOWER(name) = LOWER(?)`` matches first.
         * Falls back to ``? IN aliases`` (case-insensitive).
 
-        The exact-match ``get_entity_by_name`` and the upsert-by-name
-        ``upsert_entity`` paths are unchanged — services that already
-        normalize at the boundary keep their existing semantics.
+        Both passes are filtered by ``org_id`` so a name owned by another
+        org is never matched. The exact-match ``get_entity_by_name`` and
+        the upsert-by-name ``upsert_entity`` paths are also org-scoped.
         """
         ...
 
-    async def get_entity_by_name(self, name: str) -> Optional[StoredEntity]:
-        """Return an entity whose name matches exactly (case-sensitive); services normalize."""
+    async def get_entity_by_name(self, name: str, org_id: str) -> Optional[StoredEntity]:
+        """Return an org-scoped entity whose name matches exactly (case-sensitive); services normalize (#83)."""
         ...
 
     async def list_entities(
         self,
+        org_id: str,
         *,
         entity_type: Optional[str] = None,
         min_mentions: int = 0,
         limit: int = 100,
     ) -> Sequence[StoredEntity]:
-        """List entities filtered by type and minimum mention_count, ordered by mention_count DESC."""
+        """List an org's entities filtered by type and minimum mention_count, ordered by mention_count DESC (#83 org scope)."""
         ...
 
     async def upsert_entity(self, entity: NewEntity) -> StoredEntity:
@@ -379,29 +383,31 @@ class Store(Protocol):
     async def update_entity_counts(
         self,
         entity_id: str,
+        org_id: str,
         *,
         mention_delta: int,
         last_seen_at: datetime,
     ) -> None:
-        """Atomically adjust mention_count and bump last_seen_at."""
+        """Atomically adjust mention_count and bump last_seen_at, scoped to ``org_id`` (#83)."""
         ...
 
-    async def delete_entity(self, entity_id: str) -> bool:
-        """Delete an entity (cascades to mentions and relationships); True if removed."""
+    async def delete_entity(self, entity_id: str, org_id: str) -> bool:
+        """Delete an org's entity (cascades to mentions and relationships); True if removed (#83 org scope)."""
         ...
 
     # Mention ops
-    async def get_mentions_for_memory(self, memory_id: str) -> Sequence[StoredMention]:
-        """All mentions linking entities to a given memory."""
+    async def get_mentions_for_memory(self, memory_id: str, org_id: str) -> Sequence[StoredMention]:
+        """All mentions linking entities to a given memory, scoped to ``org_id`` (#83)."""
         ...
 
     async def get_mentions_for_entity(
         self,
         entity_id: str,
+        org_id: str,
         *,
         limit: int = 100,
     ) -> Sequence[StoredMention]:
-        """All mentions linking memories to a given entity, newest first."""
+        """All mentions linking memories to a given entity, newest first, scoped to ``org_id`` (#83)."""
         ...
 
     async def save_mention(self, mention: NewMention) -> None:
@@ -412,11 +418,15 @@ class Store(Protocol):
         self,
         memory_id: str,
         mentions: Sequence[NewMention],
+        org_id: str,
     ) -> int:
-        """Delete every existing mention for ``memory_id``, then insert
-        the supplied set. Used by the graph-extraction service so a
-        re-extraction of the same memory rewrites its edges atomically
-        without leaving stale rows. Returns the count of inserted rows.
+        """Delete every existing mention for ``memory_id`` within ``org_id``,
+        then insert the supplied set (each stamped with ``org_id``). The
+        delete is org-scoped so it can never wipe another org's mentions
+        for a colliding memory_id (#83). Used by the graph-extraction
+        service so a re-extraction of the same memory rewrites its edges
+        atomically without leaving stale rows. Returns the count of
+        inserted rows.
         """
         ...
 
@@ -434,33 +444,35 @@ class Store(Protocol):
         """
         ...
 
-    async def count_memories_for_entity(self, entity_id: str) -> int:
-        """Distinct memory count for an entity (COUNT DISTINCT memory_id)."""
+    async def count_memories_for_entity(self, entity_id: str, org_id: str) -> int:
+        """Distinct memory count for an org's entity (COUNT DISTINCT memory_id) (#83 org scope)."""
         ...
 
     # Relationship ops
-    async def get_relationship(self, rel_id: str) -> Optional[StoredRelationship]:
-        """Return a relationship by id."""
+    async def get_relationship(self, rel_id: str, org_id: str) -> Optional[StoredRelationship]:
+        """Return a relationship by id within an org (#83 org scope)."""
         ...
 
     async def get_active_relationship(
         self,
         source_id: str,
         target_id: str,
+        org_id: str,
         *,
         rel_type: str,
     ) -> Optional[StoredRelationship]:
-        """Return the active (valid_until IS NULL) relationship for the (source, target, type) triple."""
+        """Return the active (valid_until IS NULL) relationship for the (source, target, type) triple within ``org_id`` (#83)."""
         ...
 
     async def list_relationships_for_entity(
         self,
         entity_id: str,
+        org_id: str,
         *,
         status: Optional[str] = None,
         limit: int = 100,
     ) -> Sequence[StoredRelationship]:
-        """List relationships incident to an entity (in either direction), optionally filtered by status."""
+        """List relationships incident to an org's entity (in either direction), optionally filtered by status (#83 org scope)."""
         ...
 
     async def save_relationship(self, rel: NewRelationship) -> StoredRelationship:
@@ -471,45 +483,51 @@ class Store(Protocol):
         self,
         memory_id: str,
         relationships: Sequence[NewRelationship],
+        org_id: str,
     ) -> int:
         """Delete every relationship with ``source_memory_id = memory_id``
-        and insert the supplied set. Active-edge UNIQUE conflicts (same
-        ``source_entity_id`` / ``target_entity_id`` / ``rel_type`` already
-        present from another memory) are silently skipped — those edges
-        already exist; we don't double-count from a different source
-        memory. Returns the count of inserted rows.
+        within ``org_id`` and insert the supplied set (each stamped with
+        ``org_id``). The source_memory_id-scoped delete/expire is org-scoped
+        so it can never touch another org's edges (#83). Active-edge UNIQUE
+        conflicts (same ``source_entity_id`` / ``target_entity_id`` /
+        ``rel_type`` already present from another memory) are silently
+        skipped — those edges already exist; we don't double-count from a
+        different source memory. Returns the count of inserted rows.
         """
         ...
 
     async def update_relationship_status(
         self,
         rel_id: str,
+        org_id: str,
         *,
         status: str,
     ) -> StoredRelationship:
-        """Set the status column ('approved'/'rejected'/'pending'); returns the updated row."""
+        """Set the status column ('approved'/'rejected'/'pending') for an org's relationship; returns the updated row (#83 org scope)."""
         ...
 
     async def update_relationship_weight(
         self,
         rel_id: str,
+        org_id: str,
         *,
         weight: float,
     ) -> None:
-        """Set the weight column."""
+        """Set the weight column for an org's relationship (#83 org scope)."""
         ...
 
-    async def expire_relationship(self, rel_id: str) -> None:
-        """Mark a relationship expired by setting valid_until = now()."""
+    async def expire_relationship(self, rel_id: str, org_id: str) -> None:
+        """Mark an org's relationship expired by setting valid_until = now() (#83 org scope)."""
         ...
 
     async def list_pending_relationships(
         self,
+        org_id: str,
         *,
         rel_type: Optional[str] = None,
         limit: int = 100,
     ) -> Sequence[PendingRelationshipRow]:
-        """Pending relationships joined with source/target entities for review."""
+        """An org's pending relationships joined with source/target entities for review (#83 org scope)."""
         ...
 
     async def save_rejected_pattern(
@@ -528,13 +546,16 @@ class Store(Protocol):
     async def query_relationships(
         self,
         entity_ids: Sequence[str],
+        org_id: str,
         *,
         direction: str = "both",
         active_only: bool = True,
         at_time: Optional[datetime] = None,
         rel_types: Optional[Sequence[str]] = None,
     ) -> Sequence[StoredRelationship]:
-        """Hop query for graph traversal. direction in {'inbound','outbound','both'}."""
+        """Hop query for graph traversal, scoped to ``org_id`` so a query seeded
+        with another org's entity_ids returns nothing. direction in
+        {'inbound','outbound','both'} (#83 org scope)."""
         ...
 
     # ── Relationship supersession (bi-temporal facts, #67) ──────────────
@@ -545,6 +566,7 @@ class Store(Protocol):
     async def supersede_relationship(
         self,
         relationship_id: str,
+        org_id: str,
         *,
         superseded_by: str,
         reason: Optional[str] = None,
@@ -553,6 +575,8 @@ class Store(Protocol):
         """Supersede-not-delete: close ``relationship_id``'s validity window
         (``valid_until = now``), point its ``superseded_by`` at the newer edge,
         and append the correction to ``relationship_supersessions`` — atomically.
+        The target edge is validated against ``org_id`` before writing so a
+        caller cannot supersede another org's relationship (#83).
         ``query_relationships(at_time=...)`` then excludes it as of now while
         as-of-past-date queries still return it."""
         ...
@@ -560,6 +584,7 @@ class Store(Protocol):
     async def record_relationship_supersession(
         self,
         relationship_id: str,
+        org_id: str,
         *,
         superseded_by: Optional[str],
         reason: Optional[str],
@@ -567,60 +592,72 @@ class Store(Protocol):
     ) -> None:
         """Append a row to ``relationship_supersessions`` WITHOUT touching the
         edge's validity window (bare primitive; parity with
-        ``record_supersession``). Prefer ``supersede_relationship``."""
+        ``record_supersession``). The edge is validated against ``org_id``
+        before writing (#83). Prefer ``supersede_relationship``."""
         ...
 
     async def is_relationship_superseded(
         self,
         relationship_id: str,
+        org_id: str,
         *,
         at: Optional[datetime] = None,
     ) -> bool:
-        """True iff the edge's LATEST ``relationship_supersessions`` row before
-        ``at`` (default ``now``) has ``superseded_by IS NOT NULL``."""
+        """True iff the org's edge's LATEST ``relationship_supersessions`` row
+        before ``at`` (default ``now``) has ``superseded_by IS NOT NULL``.
+        Scoped via JOIN to ``relationships.org_id`` (#83)."""
         ...
 
     async def get_relationship_supersession_chain(
         self,
         relationship_id: str,
+        org_id: str,
     ) -> Sequence[StoredRelationshipSupersession]:
-        """Full correction trail for an edge, ordered oldest-first."""
+        """Full correction trail for an org's edge, ordered oldest-first.
+        Scoped via JOIN to ``relationships.org_id`` (#83)."""
         ...
 
     async def get_graph_stats(
         self,
+        org_id: str,
         *,
         project: Optional[str] = None,
     ) -> GraphStats:
-        """Aggregate graph statistics; optional project scope."""
+        """Aggregate graph statistics for one org (#83); optional project scope."""
         ...
 
     async def get_timeline_buckets(
         self,
+        org_id: str,
         *,
         trunc: str,
         project: Optional[str] = None,
     ) -> Sequence[TimelineBucketRow]:
-        """Memory creation buckets by date_trunc interval; trunc must be validated by caller."""
+        """Memory creation buckets by date_trunc interval, scoped to one org (#83); trunc must be validated by caller."""
         ...
 
     async def get_memories_by_entities(
         self,
+        org_id: str,
         entity_ids: Sequence[str],
         *,
         exclude_memory_id: Optional[str] = None,
         limit: int = 20,
     ) -> Sequence[StoredMemory]:
-        """Memories that mention any of the given entity ids, ordered by created_at DESC."""
+        """An org's memories that mention any of the given entity ids, ordered by
+        created_at DESC. Filters both ``memories.org_id`` and
+        ``entity_mentions.org_id`` — closes the known cross-tenant
+        memory-via-graph leak (#83)."""
         ...
 
     async def search_memories_text(
         self,
+        org_id: str,
         query: str,
         *,
         limit: int = 20,
     ) -> Sequence[StoredMemory]:
-        """Case-insensitive substring match against memories.content for the UI search box."""
+        """Case-insensitive substring match against one org's memories.content (#83) for the UI search box."""
         ...
 
     async def recall_by_text(

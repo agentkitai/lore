@@ -23,11 +23,15 @@ import pytest
 from lore.persistence import NewEntity, NewRelationship
 from lore.services import temporal as temporal_svc
 
+# #83 org-scoped graph: reuse a seeded org so entity/relationship FKs resolve.
+ORG = "solo"
+
 
 async def _entity(store, name: str, etype: str = "technology"):
     now = datetime.now(timezone.utc)
     return await store.upsert_entity(
         NewEntity(
+            org_id=ORG,
             name=name,
             entity_type=etype,
             aliases=(),
@@ -44,23 +48,23 @@ async def test_supersede_relationship_sets_window_and_logs(store):
     b = await _entity(store, "pgvector")
     c = await _entity(store, "MySQL")
     old = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="depends_on")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="depends_on")
     )
     new = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=c.id, rel_type="depends_on")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=c.id, rel_type="depends_on")
     )
     assert old.superseded_by is None
 
     await temporal_svc.supersede_relationship(
-        store, old.id, superseded_by=new.id, reason="switched to MySQL", agent="test"
+        store, old.id, ORG, superseded_by=new.id, reason="switched to MySQL", agent="test"
     )
 
-    refreshed = await store.get_relationship(old.id)
+    refreshed = await store.get_relationship(old.id, ORG)
     assert refreshed.superseded_by == new.id
     assert refreshed.valid_until is not None
-    assert await store.is_relationship_superseded(old.id) is True
+    assert await store.is_relationship_superseded(old.id, ORG) is True
 
-    chain = await store.get_relationship_supersession_chain(old.id)
+    chain = await store.get_relationship_supersession_chain(old.id, ORG)
     assert len(chain) == 1
     assert chain[0].relationship_id == old.id
     assert chain[0].superseded_by == new.id
@@ -76,25 +80,25 @@ async def test_facts_at_time_old_before_new_after(store):
     b = await _entity(store, "pgvector")
     c = await _entity(store, "MySQL")
     old = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id,
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
                         rel_type="depends_on", valid_from=t0)
     )
     new = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=c.id,
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=c.id,
                         rel_type="depends_on", valid_from=now)
     )
     await temporal_svc.supersede_relationship(
-        store, old.id, superseded_by=new.id, reason="corrected", agent="test"
+        store, old.id, ORG, superseded_by=new.id, reason="corrected", agent="test"
     )
 
     # As-of a day ago (before the correction): old fact is canonical.
-    past = await temporal_svc.facts_at_time(store, entity="Postgres", at=now - timedelta(days=1))
+    past = await temporal_svc.facts_at_time(store, entity="Postgres", at=now - timedelta(days=1), org_id=ORG)
     spo_past = {(f.subject, f.predicate, f.object) for f in past}
     assert ("Postgres", "depends_on", "pgvector") in spo_past
     assert ("Postgres", "depends_on", "MySQL") not in spo_past
 
     # As-of now (after the correction): new fact is canonical, old is gone.
-    cur = await temporal_svc.facts_at_time(store, entity="Postgres", at=now + timedelta(seconds=5))
+    cur = await temporal_svc.facts_at_time(store, entity="Postgres", at=now + timedelta(seconds=5), org_id=ORG)
     spo_cur = {(f.subject, f.predicate, f.object) for f in cur}
     assert ("Postgres", "depends_on", "MySQL") in spo_cur
     assert ("Postgres", "depends_on", "pgvector") not in spo_cur
@@ -106,15 +110,15 @@ async def test_facts_at_time_predicate_filter_and_unknown_entity(store):
     a = await _entity(store, "ServiceX", etype="project")
     b = await _entity(store, "Redis")
     await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses",
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses",
                         valid_from=now - timedelta(days=1))
     )
-    facts = await temporal_svc.facts_at_time(store, entity="ServiceX", at=now, predicate="uses")
+    facts = await temporal_svc.facts_at_time(store, entity="ServiceX", at=now, predicate="uses", org_id=ORG)
     assert {(f.subject, f.predicate, f.object) for f in facts} == {("ServiceX", "uses", "Redis")}
     # Predicate that doesn't match → no facts.
-    assert await temporal_svc.facts_at_time(store, entity="ServiceX", at=now, predicate="owns") == []
+    assert await temporal_svc.facts_at_time(store, entity="ServiceX", at=now, predicate="owns", org_id=ORG) == []
     # Unknown entity → empty, not an error.
-    assert await temporal_svc.facts_at_time(store, entity="NoSuchEntity", at=now) == []
+    assert await temporal_svc.facts_at_time(store, entity="NoSuchEntity", at=now, org_id=ORG) == []
 
 
 @pytest.mark.asyncio
@@ -127,28 +131,28 @@ async def test_write_path_supersede_not_delete_preserves_history(store):
     mem = "mem_writepath"
 
     n1 = await store.replace_memory_relationships(mem, [
-        NewRelationship(source_entity_id=x.id, target_entity_id=y.id, rel_type="uses", valid_from=t0),
-        NewRelationship(source_entity_id=x.id, target_entity_id=z.id, rel_type="uses", valid_from=t0),
-    ])
+        NewRelationship(org_id=ORG, source_entity_id=x.id, target_entity_id=y.id, rel_type="uses", valid_from=t0),
+        NewRelationship(org_id=ORG, source_entity_id=x.id, target_entity_id=z.id, rel_type="uses", valid_from=t0),
+    ], ORG)
     assert n1 == 2
 
-    active1 = [r for r in await store.query_relationships([x.id]) if r.source_memory_id == mem]
+    active1 = [r for r in await store.query_relationships([x.id], ORG) if r.source_memory_id == mem]
     xy_valid_from = next(r.valid_from for r in active1 if r.target_entity_id == y.id)
 
     # Re-extract: memory now asserts only X->Redis (drops X->Kafka).
     n2 = await store.replace_memory_relationships(mem, [
-        NewRelationship(source_entity_id=x.id, target_entity_id=y.id, rel_type="uses"),
-    ])
+        NewRelationship(org_id=ORG, source_entity_id=x.id, target_entity_id=y.id, rel_type="uses"),
+    ], ORG)
     assert n2 == 0  # X->Redis still asserted → nothing new inserted
 
-    active2 = [r for r in await store.query_relationships([x.id]) if r.source_memory_id == mem]
+    active2 = [r for r in await store.query_relationships([x.id], ORG) if r.source_memory_id == mem]
     assert len(active2) == 1
     assert active2[0].target_entity_id == y.id
     # Still-asserted edge kept its original valid_from (no churn).
     assert active2[0].valid_from == xy_valid_from
 
     # Dropped edge was EXPIRED, not deleted: still visible as-of before re-extraction.
-    hist = [r for r in await store.query_relationships([x.id], at_time=now - timedelta(days=1))
+    hist = [r for r in await store.query_relationships([x.id], ORG, at_time=now - timedelta(days=1))
             if r.source_memory_id == mem]
     assert any(r.target_entity_id == z.id for r in hist)
     # ...and absent from the current view.
@@ -162,13 +166,13 @@ async def test_supersede_at_time_history(store):
     b = await _entity(store, "EntB")
     c = await _entity(store, "EntC")
     old = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="rel")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="rel")
     )
     new = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=c.id, rel_type="rel")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=c.id, rel_type="rel")
     )
     before = datetime.now(timezone.utc) - timedelta(hours=1)
-    await temporal_svc.supersede_relationship(store, old.id, superseded_by=new.id, reason="x")
+    await temporal_svc.supersede_relationship(store, old.id, ORG, superseded_by=new.id, reason="x")
     # Superseded now, but NOT as of an hour ago (the event hadn't happened yet).
-    assert await store.is_relationship_superseded(old.id) is True
-    assert await store.is_relationship_superseded(old.id, at=before) is False
+    assert await store.is_relationship_superseded(old.id, ORG) is True
+    assert await store.is_relationship_superseded(old.id, ORG, at=before) is False

@@ -53,21 +53,22 @@ class EntityDetail:
     connected_entities: Sequence[ConnectedEntity]
 
 
-async def get_entity(store: Store, entity_id: str) -> Optional[StoredEntity]:
-    """Return a stored entity by id, or None if absent."""
-    return await store.get_entity(entity_id)
+async def get_entity(store: Store, entity_id: str, org_id: str) -> Optional[StoredEntity]:
+    """Return a stored entity by id within an org (#83), or None if absent."""
+    return await store.get_entity(entity_id, org_id)
 
 
 async def list_topics(
     store: Store,
     *,
+    org_id: str,
     entity_type: Optional[str] = None,
     min_mentions: int = 3,
     limit: int = 20,
 ) -> Sequence[StoredEntity]:
     """List entities with mention_count >= min_mentions, ordered by mention_count DESC."""
     return await store.list_entities(
-        entity_type=entity_type, min_mentions=min_mentions, limit=limit
+        org_id, entity_type=entity_type, min_mentions=min_mentions, limit=limit
     )
 
 
@@ -75,6 +76,7 @@ async def get_topic_detail(
     store: Store,
     name: str,
     *,
+    org_id: str,
     max_memories: int = 20,
 ) -> Optional[TopicDetail]:
     """Look up an entity by name (case-insensitive fallback) and return topic detail.
@@ -82,16 +84,16 @@ async def get_topic_detail(
     Returns None if the entity is not found; callers map that to 404.
     """
     # Try exact match first, then case-normalized fallback
-    entity = await store.get_entity_by_name(name)
+    entity = await store.get_entity_by_name(name, org_id)
     if entity is None:
         normalized = name.strip().lower()
         if normalized != name:
-            entity = await store.get_entity_by_name(normalized)
+            entity = await store.get_entity_by_name(normalized, org_id)
     if entity is None:
         return None
 
     rels = await store.query_relationships(
-        [entity.id], direction="both", active_only=True
+        [entity.id], org_id, direction="both", active_only=True
     )
     related: list[RelatedEntity] = []
     for rel in rels[:50]:
@@ -103,7 +105,7 @@ async def get_topic_detail(
         else:
             other_id = rel.source_entity_id
             direction = "incoming"
-        other = await store.get_entity(other_id)
+        other = await store.get_entity(other_id, org_id)
         if other is None:
             continue
         related.append(RelatedEntity(
@@ -114,9 +116,9 @@ async def get_topic_detail(
         ))
 
     memories = await store.get_memories_by_entities(
-        [entity.id], limit=max_memories
+        org_id, [entity.id], limit=max_memories
     )
-    memory_count = await store.count_memories_for_entity(entity.id)
+    memory_count = await store.count_memories_for_entity(entity.id, org_id)
 
     return TopicDetail(
         entity=entity,
@@ -130,6 +132,7 @@ async def get_entity_with_connections(
     store: Store,
     entity_id: str,
     *,
+    org_id: str,
     max_memories: int = 30,
     max_related: int = 20,
 ) -> Optional[EntityDetail]:
@@ -138,13 +141,13 @@ async def get_entity_with_connections(
     Used by the legacy GET /v1/ui/entity/{id} route. Returns None if the entity
     is not found; callers map that to 404.
     """
-    entity = await store.get_entity(entity_id)
+    entity = await store.get_entity(entity_id, org_id)
     if entity is None:
         return None
 
     # Connected memories (most recent first)
     memories = await store.get_memories_by_entities(
-        [entity_id], limit=max_memories
+        org_id, [entity_id], limit=max_memories
     )
     connected_memories: list[ConnectedMemory] = []
     for m in memories:
@@ -156,7 +159,7 @@ async def get_entity_with_connections(
 
     # Connected entities (active, approved)
     rels = await store.query_relationships(
-        [entity_id], direction="both", active_only=True
+        [entity_id], org_id, direction="both", active_only=True
     )
     seen_other: dict[str, ConnectedEntity] = {}
     for rel in rels:
@@ -170,7 +173,7 @@ async def get_entity_with_connections(
         if other_id == entity_id or other_id in seen_other:
             # Keep the first (highest weight via DESC ordering)
             continue
-        other = await store.get_entity(other_id)
+        other = await store.get_entity(other_id, org_id)
         if other is None:
             continue
         seen_other[other_id] = ConnectedEntity(

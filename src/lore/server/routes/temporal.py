@@ -252,7 +252,7 @@ async def get_provenance(
     )
     if target is None:
         raise HTTPException(status_code=404, detail="Memory not found")
-    sources = await temporal_svc.supersession_sources(store, memory_id)
+    sources = await temporal_svc.supersession_sources(store, memory_id, auth.org_id)
     chain = await temporal_svc.supersession_chain(store, memory_id)
     # Fallback for pre-Phase-6F consolidations.
     raw_meta_sources = (target.meta or {}).get("consolidated_from") or []

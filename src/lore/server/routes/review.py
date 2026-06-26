@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from lore.persistence import Store
 from lore.persistence.exceptions import StoreNotFoundError
+from lore.server.auth import AuthContext, get_auth_context
 from lore.server.db import get_store
 from lore.services.graph.review import (
     PendingReview,
@@ -117,9 +118,12 @@ async def get_pending_reviews(
     limit: int = Query(50, ge=1, le=500),
     rel_type: Optional[str] = Query(None),
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> ReviewListResponse:
     """List pending relationships for review."""
-    listing = await list_pending_reviews(store, rel_type=rel_type, limit=limit)
+    listing = await list_pending_reviews(
+        store, org_id=auth.org_id, rel_type=rel_type, limit=limit
+    )
     return ReviewListResponse(
         pending=[_to_review_item(p) for p in listing.pending],
         total_pending=listing.total_pending,
@@ -132,10 +136,11 @@ async def review_inbox(
     rel_type: Optional[str] = Query(None),
     min_risk: Optional[float] = Query(None, ge=0.0, description="Minimum risk score to include"),
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> ReviewListResponse:
     """Pending review items sorted by risk score (highest first); same shape as /v1/review."""
     listing = await list_pending_reviews(
-        store, rel_type=rel_type, limit=limit, min_risk=min_risk,
+        store, org_id=auth.org_id, rel_type=rel_type, limit=limit, min_risk=min_risk,
     )
     return ReviewListResponse(
         pending=[_to_review_item(p) for p in listing.pending],
@@ -147,11 +152,12 @@ async def review_inbox(
 async def bulk_review(
     body: BulkReviewRequest,
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> BulkReviewResponse:
     """Approve or reject multiple relationships at once."""
     try:
         result = await bulk_review_service(
-            store, body.ids, action=body.action, reason=body.reason,
+            store, body.ids, org_id=auth.org_id, action=body.action, reason=body.reason,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -163,11 +169,12 @@ async def review_relationship(
     relationship_id: str,
     body: ReviewActionRequest,
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> ReviewActionResponse:
     """Approve or reject a relationship."""
     try:
         result = await review_relationship_service(
-            store, relationship_id, action=body.action, reason=body.reason,
+            store, relationship_id, org_id=auth.org_id, action=body.action, reason=body.reason,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

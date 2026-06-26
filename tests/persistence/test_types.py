@@ -156,6 +156,7 @@ def test_recall_params_required_query_vec():
 
 def test_new_entity_required_fields():
     ne = NewEntity(
+        org_id="solo",
         name="Alice",
         entity_type="person",
     )
@@ -171,6 +172,7 @@ def test_new_entity_required_fields():
 
 def test_new_entity_with_aliases():
     ne = NewEntity(
+        org_id="solo",
         name="Bob",
         entity_type="person",
         aliases=("Robert", "Bobby"),
@@ -187,6 +189,7 @@ def test_new_entity_with_aliases():
 def test_stored_entity_round_trip():
     now = datetime.now(timezone.utc)
     se = StoredEntity(
+        org_id="solo",
         id="ent_01",
         name="Charlie",
         entity_type="person",
@@ -207,6 +210,7 @@ def test_stored_entity_round_trip():
 
 def test_new_mention_defaults():
     nm = NewMention(
+        org_id="solo",
         entity_id="ent_01",
         memory_id="mem_01",
     )
@@ -218,6 +222,7 @@ def test_new_mention_defaults():
 
 def test_new_mention_with_custom_values():
     nm = NewMention(
+        org_id="solo",
         entity_id="ent_02",
         memory_id="mem_02",
         mention_type="implicit",
@@ -230,6 +235,7 @@ def test_new_mention_with_custom_values():
 def test_stored_mention_round_trip():
     now = datetime.now(timezone.utc)
     sm = StoredMention(
+        org_id="solo",
         id="mnt_01",
         entity_id="ent_01",
         memory_id="mem_01",
@@ -244,6 +250,7 @@ def test_stored_mention_round_trip():
 
 def test_new_relationship_defaults():
     nr = NewRelationship(
+        org_id="solo",
         source_entity_id="ent_01",
         target_entity_id="ent_02",
         rel_type="knows",
@@ -263,6 +270,7 @@ def test_new_relationship_defaults():
 def test_new_relationship_with_properties():
     props = {"confidence": 0.9, "since": "2025-01-01"}
     nr = NewRelationship(
+        org_id="solo",
         source_entity_id="ent_01",
         target_entity_id="ent_02",
         rel_type="collaborates_with",
@@ -280,6 +288,7 @@ def test_new_relationship_with_properties():
 def test_stored_relationship_round_trip():
     now = datetime.now(timezone.utc)
     sr = StoredRelationship(
+        org_id="solo",
         id="rel_01",
         source_entity_id="ent_01",
         target_entity_id="ent_02",

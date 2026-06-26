@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from lore.persistence import Store
+from lore.server.auth import AuthContext, get_auth_context
 from lore.server.db import get_store
 from lore.services.graph.entities import get_entity_with_connections
 
@@ -17,8 +18,9 @@ router = APIRouter()
 async def get_entity_detail(
     entity_id: str,
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> EntityDetailResponse:
-    detail = await get_entity_with_connections(store, entity_id)
+    detail = await get_entity_with_connections(store, entity_id, org_id=auth.org_id)
     if detail is None:
         raise HTTPException(status_code=404, detail="Entity not found")
     e = detail.entity

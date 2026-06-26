@@ -282,10 +282,10 @@ class TestAsyncLoreTopics:
         async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
             store = lore.store
             await store.upsert_entity(
-                NewEntity(name="Alpha", entity_type="topic", mention_count=5)
+                NewEntity(org_id="solo", name="Alpha", entity_type="topic", mention_count=5)
             )
             await store.upsert_entity(
-                NewEntity(name="Beta", entity_type="topic", mention_count=1)
+                NewEntity(org_id="solo", name="Beta", entity_type="topic", mention_count=1)
             )
             topics = await lore.list_topics(min_mentions=3)
             names = {t.name for t in topics}
@@ -308,10 +308,10 @@ class TestAsyncLoreTopics:
             mem = await lore.remember("Talking about Alpha specifically", project="x")
             store = lore.store
             ent = await store.upsert_entity(
-                NewEntity(name="Alpha", entity_type="topic", mention_count=2)
+                NewEntity(org_id="solo", name="Alpha", entity_type="topic", mention_count=2)
             )
             await store.save_mention(
-                NewMention(entity_id=ent.id, memory_id=mem.id)
+                NewMention(org_id="solo", entity_id=ent.id, memory_id=mem.id)
             )
 
             detail = await lore.topic_detail("Alpha")
@@ -363,16 +363,18 @@ class TestAsyncLoreReviews:
 
         async with AsyncLore("sqlite:///:memory:", embed=_stub_embed) as lore:
             store = lore.store
-            a = await store.upsert_entity(NewEntity(name="ra", entity_type="topic"))
-            b = await store.upsert_entity(NewEntity(name="rb", entity_type="topic"))
+            a = await store.upsert_entity(NewEntity(org_id="solo", name="ra", entity_type="topic"))
+            b = await store.upsert_entity(NewEntity(org_id="solo", name="rb", entity_type="topic"))
             r1 = await store.save_relationship(
                 NewRelationship(
+                    org_id="solo",
                     source_entity_id=a.id, target_entity_id=b.id,
                     rel_type="uses", status="pending",
                 )
             )
             r2 = await store.save_relationship(
                 NewRelationship(
+                    org_id="solo",
                     source_entity_id=a.id, target_entity_id=b.id,
                     rel_type="depends_on", status="pending",
                 )

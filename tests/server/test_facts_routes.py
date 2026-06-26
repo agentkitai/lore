@@ -23,7 +23,7 @@ _NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
 def _rel(rid: str, src: str, tgt: str, rel_type: str) -> StoredRelationship:
     return StoredRelationship(
-        id=rid, source_entity_id=src, target_entity_id=tgt, rel_type=rel_type,
+        id=rid, org_id="solo", source_entity_id=src, target_entity_id=tgt, rel_type=rel_type,
         weight=0.9, properties={}, source_fact_id=None, source_memory_id="mem1",
         valid_from=_NOW, valid_until=None, superseded_by=None, status="approved",
         created_at=_NOW, updated_at=_NOW,
@@ -44,13 +44,13 @@ class _FakeStore:
         }
         self.supersede_calls: list = []
 
-    async def get_entity_by_name(self, name):
+    async def get_entity_by_name(self, name, org_id):
         return self._by_name.get(name)
 
-    async def get_entity(self, eid):
+    async def get_entity(self, eid, org_id):
         return self.entities.get(eid)
 
-    async def query_relationships(self, entity_ids, *, direction="both",
+    async def query_relationships(self, entity_ids, org_id, *, direction="both",
                                   active_only=True, at_time=None, rel_types=None):
         out = [r for r in self.rels.values()
                if r.source_entity_id in entity_ids or r.target_entity_id in entity_ids]
@@ -58,13 +58,13 @@ class _FakeStore:
             out = [r for r in out if r.rel_type in rel_types]
         return out
 
-    async def get_relationship(self, rid):
+    async def get_relationship(self, rid, org_id):
         return self.rels.get(rid)
 
-    async def supersede_relationship(self, rid, *, superseded_by, reason=None, agent="auto"):
+    async def supersede_relationship(self, rid, org_id, *, superseded_by, reason=None, agent="auto"):
         self.supersede_calls.append((rid, superseded_by, reason, agent))
 
-    async def get_relationship_supersession_chain(self, rid):
+    async def get_relationship_supersession_chain(self, rid, org_id):
         if rid not in self.rels:
             return []
         return [StoredRelationshipSupersession(

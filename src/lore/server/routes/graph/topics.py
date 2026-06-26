@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from lore.persistence import Store
+from lore.server.auth import AuthContext, get_auth_context
 from lore.server.db import get_store
 from lore.services.graph.entities import get_topic_detail, list_topics
 
@@ -18,9 +19,12 @@ async def get_topics(
     min_mentions: int = Query(3, ge=1),
     limit: int = Query(20, ge=1, le=100),
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> TopicListResponse:
     """List topics for sidebar display."""
-    entities = await list_topics(store, min_mentions=min_mentions, limit=limit)
+    entities = await list_topics(
+        store, min_mentions=min_mentions, limit=limit, org_id=auth.org_id
+    )
     return TopicListResponse(
         topics=[
             TopicListItem(
@@ -39,9 +43,12 @@ async def get_topic_detail_graph(
     name: str,
     max_memories: int = Query(20, ge=1, le=100),
     store: Store = Depends(get_store),
+    auth: AuthContext = Depends(get_auth_context),
 ) -> dict:
     """Get topic detail for sidebar panel."""
-    detail = await get_topic_detail(store, name, max_memories=max_memories)
+    detail = await get_topic_detail(
+        store, name, max_memories=max_memories, org_id=auth.org_id
+    )
     if detail is None:
         raise HTTPException(status_code=404, detail=f"Topic '{name}' not found")
 
