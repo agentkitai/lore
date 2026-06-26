@@ -40,6 +40,24 @@ Complete reference for all environment variables used by Lore. Variables are gro
 
 ---
 
+## Redaction (write-side)
+
+Write-side redaction masks/blocks secrets & PII at the create chokepoint. **Named
+compliance policy packs (#80)** select scan levels + the default secrets action;
+**L1 (zero-dep regex) is the default**, L2 (detect-secrets) and L3 (NER/spaCy)
+activate only when their optional deps are installed (a level no-ops if its dep
+is absent).
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `LORE_REDACT_POLICY` | _(L1)_ | No | Named pack: `off` \| `default`/`l1` (regex, mask secrets) \| `pii` (regex+NER, mask) \| `secrets` (regex+detect-secrets, block) \| `strict`/`all` (all levels, block). |
+| `LORE_REDACT_LEVELS` | `1` | No | Explicit CSV of scan levels (e.g. `1,2,3`); overrides the pack's levels. |
+| `LORE_REDACT_BLOCK` | _(unset)_ | No | Force BLOCK on detected secrets (default: mask + tag). |
+| `LORE_REDACT_DENYLIST` | _(none)_ | No | Path to a denylist file (literal terms, or `re:`-prefixed regexes). |
+| `LORE_REDACT_DISABLED` | _(unset)_ | No | Disable write-side redaction entirely. |
+
+---
+
 ## Write-time reconciliation
 
 On each write, a memory is reconciled against **the writer's own** existing memories in the same org/scope: a redundant near-duplicate is skipped, one that gains new tags is merged, a strong-but-changed prior version is superseded by the fresh one, otherwise it's a new row. Heuristic-only (cosine similarity, same-type, non-superseded candidates). It never touches another user's rows (a near-duplicate of a teammate's shared memory just becomes a new row), and `observation`-type memories always append. Set `LORE_RECONCILIATION_ENABLED=false` to restore pure append-only.
