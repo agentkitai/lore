@@ -22,6 +22,7 @@ from lore.persistence import (
 )
 from lore.persistence.exceptions import StoreNotFoundError
 from lore.redact.write import get_write_redactor, redact_for_write
+from lore.emit.agentlens import emit_memory_event
 from lore.services.reconciliation import reconcile_for_write
 
 logger = logging.getLogger(__name__)
@@ -141,6 +142,7 @@ async def create_memory(
         # The insert above already committed. Record the supersession separately;
         # if it fails, degrade to append-only (the new row stands, the old one is
         # just not suppressed) rather than failing a write that already succeeded.
+        superseded_ok = False
         try:
             await store.record_supersession(
                 decision.candidate.id,
@@ -148,12 +150,38 @@ async def create_memory(
                 reason="write-time reconciliation",
                 agent="reconcile",
             )
+            superseded_ok = True
         except Exception:
             logger.warning(
                 "reconcile Delete: supersession failed org=%s old=%s new=%s; "
                 "kept both rows (append-only fallback)",
                 org_id, decision.candidate.id, stored.id, exc_info=True,
             )
+        # Emit OUTSIDE the try (only on success) so a future emit change can't be
+        # misattributed as a supersession failure. emit is infallible today.
+        if superseded_ok:
+            emit_memory_event(
+                "memory_superseded",
+                org_id=org_id,
+                agent_id=user_id,
+                memory_id=decision.candidate.id,
+                data={"supersededBy": stored.id, "reason": "write-time reconciliation", "agent": "reconcile"},
+            )
+    # Best-effort cross-product tamper-evident log (#78): never blocks/fails the write.
+    emit_memory_event(
+        "memory_created",
+        org_id=org_id,
+        agent_id=user_id,
+        memory_id=stored.id,
+        data={
+            "type": meta_dict.get("type"),
+            "scope": effective_scope,
+            "tags": list(normalized_tags),
+            "project": project,
+            "redacted": bool((redaction_meta or {}).get("redacted")),
+            "redactedTypes": (redaction_meta or {}).get("redacted_types") or [],
+        },
+    )
     return stored
 
 
