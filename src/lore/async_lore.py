@@ -472,6 +472,25 @@ class AsyncLore:
             store, org_id=self.org_id, memory_id=memory_id
         )
 
+    async def forget_with_proof(
+        self,
+        *,
+        user_id: Optional[str] = None,
+        memory_ids: Optional[Sequence[str]] = None,
+    ) -> dict:
+        """GDPR erasure with a signed deletion certificate (#81).
+
+        Deletes every memory owned by ``user_id`` (subject erasure) or an explicit
+        ``memory_ids`` set, and returns a tamper-evident certificate of what was
+        removed (HMAC-signed when LORE_DELETION_SIGNING_KEY is set).
+        """
+        from lore.services.forget import forget_with_proof as _forget_with_proof
+
+        store = self._require_store()
+        return await _forget_with_proof(
+            store, org_id=self.org_id, user_id=user_id, memory_ids=memory_ids
+        )
+
     async def list_memories(
         self,
         *,
