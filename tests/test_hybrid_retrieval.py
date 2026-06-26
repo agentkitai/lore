@@ -12,6 +12,7 @@ This module focuses on:
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Sequence
@@ -234,6 +235,39 @@ def _fake_store_with(*, vec=None, fts=None, graph=None, fail=()):
 
 
 @pytest.mark.asyncio
+async def test_trust_recall_provenance_weighting_and_quarantine(monkeypatch):
+    """#79: anonymous (user_id IS NULL) candidates are down-weighted / quarantined,
+    and a ``provenance`` signal is surfaced. Default env = no-op (unchanged)."""
+    owned = dataclasses.replace(_make_stored("owned", "note"), user_id="alice")
+    anon = _make_stored("anon", "note")  # user_id defaults to None (unowned)
+    params = HybridParams(org_id="solo", query_text="note", query_vec=_vec(1), limit=20)
+    # Route through the FTS branch: it returns the StoredMemory verbatim, so
+    # user_id survives (the vec-branch mock rebuilds ScoredMemory and drops it).
+    def build():
+        return _fake_store_with(fts=[(owned, 5.0), (anon, 5.0)])
+
+    # Default env → no-op: both present.
+    monkeypatch.delenv("LORE_RECALL_ANON_WEIGHT", raising=False)
+    monkeypatch.delenv("LORE_RECALL_QUARANTINE_ANON", raising=False)
+    rep = await _hybrid_recall(build(), _profile(min_score=0.0), params)
+    assert {r.memory.id for r in rep.results} == {"owned", "anon"}
+
+    # Quarantine → anonymous dropped entirely.
+    monkeypatch.setenv("LORE_RECALL_QUARANTINE_ANON", "true")
+    rep_q = await _hybrid_recall(build(), _profile(min_score=0.0), params)
+    assert {r.memory.id for r in rep_q.results} == {"owned"}
+
+    # Down-weight → owned outranks anon; provenance signal surfaced on both.
+    monkeypatch.delenv("LORE_RECALL_QUARANTINE_ANON", raising=False)
+    monkeypatch.setenv("LORE_RECALL_ANON_WEIGHT", "0.1")
+    rep_w = await _hybrid_recall(build(), _profile(min_score=0.0), params)
+    by_id = {r.memory.id: r for r in rep_w.results}
+    assert by_id["owned"].score > by_id["anon"].score
+    assert by_id["owned"].signals["provenance"] == 1.0
+    assert by_id["anon"].signals["provenance"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_hybrid_recall_combines_signals():
     a = _make_stored("a", "alpha")
     b = _make_stored("b", "beta")
@@ -443,7 +477,7 @@ async def test_v1_retrieve_returns_signals_breakdown(client):
     assert data["count"] == 1
     sigs = data["memories"][0]["signals"]
     assert set(sigs.keys()) == {
-        "vector", "fts", "graph", "recency", "superseded",
+        "vector", "fts", "graph", "recency", "superseded", "provenance",
     }
     assert sigs["vector"] > 0
     assert sigs["fts"] == 0

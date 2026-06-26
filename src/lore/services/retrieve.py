@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -292,6 +293,29 @@ def _recency_signal(created_at: Optional[datetime], recency_bias: float) -> floa
     return math.exp(-age_days / recency_bias)
 
 
+def _trust_recall_config() -> tuple[float, bool]:
+    """Trust-aware recall config (#79), read from env. Returns
+    ``(anon_weight, quarantine_anon)``.
+
+    Defaults are a NO-OP: ``anon_weight=1.0`` (no down-weight) and
+    ``quarantine_anon=False`` — recall is byte-for-byte unchanged until an
+    operator opts in. ``LORE_RECALL_ANON_WEIGHT`` (0..1) score-multiplies
+    memories with no owning principal (``user_id IS NULL`` — e.g. API-key/service
+    ingest); ``LORE_RECALL_QUARANTINE_ANON`` drops them from results entirely.
+    This is a provenance/forensics signal, NOT a poisoning defense: a poisoned
+    write from a *legitimately authenticated* principal still ranks normally.
+    """
+    try:
+        anon_weight = float(os.environ.get("LORE_RECALL_ANON_WEIGHT", "1.0"))
+    except ValueError:
+        anon_weight = 1.0
+    if not math.isfinite(anon_weight):  # nan/inf bypass the [0,1] clamp below
+        anon_weight = 1.0
+    anon_weight = min(max(anon_weight, 0.0), 1.0)
+    quarantine = os.environ.get("LORE_RECALL_QUARANTINE_ANON", "").strip().lower() in ("1", "true", "yes")
+    return anon_weight, quarantine
+
+
 def _rrf_fuse(
     sources: Sequence[Tuple[Sequence[Tuple[StoredMemory, float]], float]],
     *,
@@ -542,8 +566,18 @@ async def _hybrid_recall(
             superseded_set = set()
 
     # Annotate with recency, multiplicative.
+    # Trust-aware recall (#79): provenance weighting / quarantine. No-op by default.
+    anon_weight, quarantine_anon = _trust_recall_config()
+
     annotated: list[HybridResult] = []
     for memory, base_score, raw_signals in fused[: max(params.limit * 2, params.limit)]:
+        # Provenance = does the memory have an owning principal (user_id)? Writes
+        # with none (API-key/service ingest) are lower-provenance: quarantine
+        # them, or score-multiply by the configured anon weight.
+        attributed = bool(memory.user_id)
+        if quarantine_anon and not attributed:
+            continue
+        provenance_multiplier = 1.0 if attributed else anon_weight
         recency = _recency_signal(memory.created_at, profile.recency_bias)
         is_superseded = memory.id in superseded_set
         supersession_multiplier = 0.1 if is_superseded else 1.0
@@ -552,16 +586,18 @@ async def _hybrid_recall(
             base_score
             * (1.0 + 0.5 * recency)
             * supersession_multiplier
+            * provenance_multiplier
         )
         signals: Dict[str, float] = {
             "vector": raw_signals.get("signal_0", 0.0),
             "fts": raw_signals.get("signal_1", 0.0),
             "graph": raw_signals.get("signal_2", 0.0),
             "recency": recency,
-            # ``superseded`` lands in signals so the route can surface it
-            # alongside the per-signal breakdown. Float (1.0/0.0) keeps
-            # the existing ``Mapping[str, float]`` shape from changing.
+            # ``superseded``/``provenance`` land in signals so the route can
+            # surface them alongside the per-signal breakdown. Float (1.0/0.0)
+            # keeps the existing ``Mapping[str, float]`` shape from changing.
             "superseded": 1.0 if is_superseded else 0.0,
+            "provenance": 1.0 if attributed else 0.0,
         }
         annotated.append(HybridResult(memory=memory, score=final, signals=signals))
 
