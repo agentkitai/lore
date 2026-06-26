@@ -62,6 +62,25 @@ is absent).
 
 On each write, a memory is reconciled against **the writer's own** existing memories in the same org/scope: a redundant near-duplicate is skipped, one that gains new tags is merged, a strong-but-changed prior version is superseded by the fresh one, otherwise it's a new row. Heuristic-only (cosine similarity, same-type, non-superseded candidates). It never touches another user's rows (a near-duplicate of a teammate's shared memory just becomes a new row), and `observation`-type memories always append. Set `LORE_RECONCILIATION_ENABLED=false` to restore pure append-only.
 
+---
+
+## Contradiction detection (write-time)
+
+Where reconciliation folds near-duplicates, **contradiction detection** flags the
+near-duplicates that *disagree* (#84). When enabled, a fire-and-forget task
+LLM-scores the new memory against its similar neighbours **that the writer may see**
+(migration-026 visibility — never another principal's private memory); a memory
+that contradicts one gets a `contradiction` tag + `meta.contradicts` (ids, owners,
+`cross_agent`, reason). Review via `list_memories(tags=["contradiction"])`. OFF by
+default; a failure never blocks a write.
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `LORE_CONTRADICTION_DETECTION` | `false` | No | Enable write-time contradiction flagging. |
+| `LORE_CONTRADICTION_MIN_CONFIDENCE` | `0.6` | No | Min LLM confidence (0–1) to flag a contradiction. |
+| `LORE_CONTRADICTION_MODEL` | _(LORE_ENRICHMENT_MODEL)_ | No | Model for contradiction scoring. |
+| `LORE_CONTRADICTION_CONCURRENCY` | `4` | No | Max concurrent detection tasks (LLM fan-out cap). |
+
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
 | `LORE_RECONCILIATION_ENABLED` | `true` | No | Reconcile writes (Add/Update/Delete/None) instead of always appending |
