@@ -23,7 +23,7 @@ _NOW = datetime(2026, 6, 1, tzinfo=timezone.utc)
 
 def _rel(rid: str, src: str, tgt: str, rel_type: str) -> StoredRelationship:
     return StoredRelationship(
-        id=rid, source_entity_id=src, target_entity_id=tgt, rel_type=rel_type,
+        id=rid, org_id="solo", source_entity_id=src, target_entity_id=tgt, rel_type=rel_type,
         weight=0.9, properties={}, source_fact_id=None, source_memory_id="mem1",
         valid_from=_NOW, valid_until=None, superseded_by=None, status="approved",
         created_at=_NOW, updated_at=_NOW,
