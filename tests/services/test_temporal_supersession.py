@@ -171,7 +171,7 @@ async def test_list_supersession_sources_returns_inverse(store: Store):
     await store.record_supersession(a, superseded_by=new, reason="merge a")
     await store.record_supersession(b, superseded_by=new, reason="merge b")
 
-    sources = await store.list_supersession_sources(new)
+    sources = await store.list_supersession_sources(new, "solo")
     src_ids = {e.memory_id for e in sources}
     assert src_ids == {a, b}
     reasons = {e.reason for e in sources}
@@ -184,13 +184,13 @@ async def test_list_supersession_sources_ignores_un_supersession(store: Store):
     a = await _insert_memory(store, content="a")
     b = await _insert_memory(store, content="b")
     await store.record_supersession(a, superseded_by=None, reason="undo")
-    sources = await store.list_supersession_sources(b)
+    sources = await store.list_supersession_sources(b, "solo")
     assert list(sources) == []
 
 
 @pytest.mark.asyncio
 async def test_list_supersession_sources_missing_returns_empty(store: Store):
-    sources = await store.list_supersession_sources("nonexistent")
+    sources = await store.list_supersession_sources("nonexistent", "solo")
     assert list(sources) == []
 
 
@@ -211,7 +211,7 @@ async def test_service_consolidate_memories_records_each_source(store: Store):
         agent="test",
     )
     assert n == 2
-    sources = await store.list_supersession_sources(new)
+    sources = await store.list_supersession_sources(new, "solo")
     assert {e.memory_id for e in sources} == {a, b}
     assert all(e.agent == "test" for e in sources)
 
@@ -466,7 +466,7 @@ def http_client(monkeypatch):
                 for i, evt in enumerate(self.events) if evt[0] == mid
             ]
 
-        async def list_supersession_sources(self, mid):
+        async def list_supersession_sources(self, mid, org_id=None):
             return [
                 StoredSupersession(
                     id=i,

@@ -440,7 +440,7 @@ async def _safe_graph_recall(
             # surface to ``asyncio.gather`` so ``attempted["graph"]``
             # reads "error" instead of "empty".
             try:
-                ent = await store.get_entity_by_name(cand)
+                ent = await store.get_entity_by_name(cand, org_id)
             except Exception:
                 continue
             if ent is not None:

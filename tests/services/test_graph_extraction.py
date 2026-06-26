@@ -230,11 +230,11 @@ async def test_extract_happy_path(store: Store, monkeypatch):
     assert result.mentions_inserted == 2
     assert result.relationships_inserted == 1
     # Verify the round trip via the store.
-    pin = await store.find_entity_by_name_or_alias("pinecone")
+    pin = await store.find_entity_by_name_or_alias("pinecone", "solo")
     assert pin is not None
-    nexus = await store.find_entity_by_name_or_alias("Nexus")
+    nexus = await store.find_entity_by_name_or_alias("Nexus", "solo")
     assert nexus is not None
-    mentions = await store.get_mentions_for_memory(mem_id)
+    mentions = await store.get_mentions_for_memory(mem_id, "solo")
     assert {m.entity_id for m in mentions} == {pin.id, nexus.id}
 
 
@@ -244,7 +244,7 @@ async def test_extract_dedupes_by_case_insensitive_name(store: Store):
     gx._reset_semaphore()
     mem_id = await _insert_memory(store, content="pinecone is great")
     seeded = await store.upsert_entity(
-        NewEntity(name="Pinecone", entity_type="organization", description="seed")
+        NewEntity(org_id="solo", name="Pinecone", entity_type="organization", description="seed")
     )
     payload = {
         "entities": [
@@ -260,7 +260,7 @@ async def test_extract_dedupes_by_case_insensitive_name(store: Store):
     )
     assert result.entities_inserted == 0
     assert result.entities_reused == 1
-    mentions = await store.get_mentions_for_memory(mem_id)
+    mentions = await store.get_mentions_for_memory(mem_id, "solo")
     assert len(mentions) == 1
     assert mentions[0].entity_id == seeded.id
 
@@ -272,6 +272,7 @@ async def test_extract_dedupes_by_alias(store: Store):
     mem_id = await _insert_memory(store, content="PC is the abbreviation")
     seeded = await store.upsert_entity(
         NewEntity(
+            org_id="solo",
             name="Pinecone",
             entity_type="organization",
             aliases=("PC", "Pine Cone"),
@@ -291,7 +292,7 @@ async def test_extract_dedupes_by_alias(store: Store):
     )
     assert result.entities_reused == 1
     assert result.entities_inserted == 0
-    mentions = await store.get_mentions_for_memory(mem_id)
+    mentions = await store.get_mentions_for_memory(mem_id, "solo")
     assert mentions[0].entity_id == seeded.id
 
 
@@ -327,7 +328,7 @@ async def test_extract_idempotent_replay(store: Store):
     assert r2.entities_reused == 2
     assert r2.entities_inserted == 0
     # Mentions: still exactly 2 after the replay (replace, not double).
-    mentions = await store.get_mentions_for_memory(mem_id)
+    mentions = await store.get_mentions_for_memory(mem_id, "solo")
     assert len(mentions) == 2
 
 

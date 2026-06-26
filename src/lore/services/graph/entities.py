@@ -53,6 +53,11 @@ class EntityDetail:
     connected_entities: Sequence[ConnectedEntity]
 
 
+async def get_entity(store: Store, entity_id: str, org_id: str) -> Optional[StoredEntity]:
+    """Return a stored entity by id within an org (#83), or None if absent."""
+    return await store.get_entity(entity_id, org_id)
+
+
 async def list_topics(
     store: Store,
     *,

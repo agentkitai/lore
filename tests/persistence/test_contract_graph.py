@@ -21,11 +21,14 @@ from lore.persistence import (
 )
 from lore.persistence.types import GraphStats, TimelineBucketRow
 
+# Single tenant for this contract suite — the org the inserted memories use (#83).
+ORG = "solo"
+
 
 @pytest.mark.asyncio
 async def test_upsert_entity_inserts_new(store: Store):
     e = await store.upsert_entity(
-        NewEntity(name="postgres", entity_type="technology")
+        NewEntity(org_id=ORG, name="postgres", entity_type="technology")
     )
     assert isinstance(e, StoredEntity)
     assert e.id.startswith("ent_")
@@ -39,6 +42,7 @@ async def test_upsert_entity_inserts_new(store: Store):
 async def test_upsert_entity_with_aliases_and_metadata(store: Store):
     e = await store.upsert_entity(
         NewEntity(
+            org_id=ORG,
             name="kubernetes",
             entity_type="technology",
             aliases=["k8s", "kube"],
@@ -52,10 +56,11 @@ async def test_upsert_entity_with_aliases_and_metadata(store: Store):
 @pytest.mark.asyncio
 async def test_upsert_entity_merges_on_conflict_by_name(store: Store):
     a = await store.upsert_entity(
-        NewEntity(name="redis", entity_type="db", mention_count=2)
+        NewEntity(org_id=ORG, name="redis", entity_type="db", mention_count=2)
     )
     b = await store.upsert_entity(
         NewEntity(
+            org_id=ORG,
             name="redis",
             entity_type="db",
             mention_count=3,
@@ -74,9 +79,9 @@ async def test_upsert_entity_merges_on_conflict_by_name(store: Store):
 @pytest.mark.asyncio
 async def test_get_entity_round_trip(store: Store):
     e = await store.upsert_entity(
-        NewEntity(name="ulid", entity_type="library")
+        NewEntity(org_id=ORG, name="ulid", entity_type="library")
     )
-    fetched = await store.get_entity(e.id)
+    fetched = await store.get_entity(e.id, ORG)
     assert fetched is not None
     assert fetched.id == e.id
     assert fetched.name == "ulid"
@@ -84,14 +89,14 @@ async def test_get_entity_round_trip(store: Store):
 
 @pytest.mark.asyncio
 async def test_get_entity_returns_none_when_missing(store: Store):
-    assert await store.get_entity("ent_missing") is None
+    assert await store.get_entity("ent_missing", ORG) is None
 
 
 @pytest.mark.asyncio
 async def test_upsert_first_seen_defaults_to_now(store: Store):
     before = datetime.now(timezone.utc)
     e = await store.upsert_entity(
-        NewEntity(name="asyncpg", entity_type="library")
+        NewEntity(org_id=ORG, name="asyncpg", entity_type="library")
     )
     after = datetime.now(timezone.utc)
     assert before <= e.first_seen_at <= after
@@ -101,9 +106,9 @@ async def test_upsert_first_seen_defaults_to_now(store: Store):
 @pytest.mark.asyncio
 async def test_get_entity_by_name_round_trip(store: Store):
     e = await store.upsert_entity(
-        NewEntity(name="fastapi", entity_type="framework")
+        NewEntity(org_id=ORG, name="fastapi", entity_type="framework")
     )
-    fetched = await store.get_entity_by_name("fastapi")
+    fetched = await store.get_entity_by_name("fastapi", ORG)
     assert fetched is not None
     assert fetched.id == e.id
 
@@ -111,40 +116,40 @@ async def test_get_entity_by_name_round_trip(store: Store):
 @pytest.mark.asyncio
 async def test_get_entity_by_name_is_case_sensitive(store: Store):
     await store.upsert_entity(
-        NewEntity(name="Postgres", entity_type="db")
+        NewEntity(org_id=ORG, name="Postgres", entity_type="db")
     )
     # Different case must not match (services normalize)
-    assert (await store.get_entity_by_name("postgres")) is None
+    assert (await store.get_entity_by_name("postgres", ORG)) is None
 
 
 @pytest.mark.asyncio
 async def test_get_entity_by_name_returns_none_when_missing(store: Store):
-    assert (await store.get_entity_by_name("nonexistent")) is None
+    assert (await store.get_entity_by_name("nonexistent", ORG)) is None
 
 
 @pytest.mark.asyncio
 async def test_list_entities_returns_all_when_unfiltered(store: Store):
-    await store.upsert_entity(NewEntity(name="a", entity_type="x"))
-    await store.upsert_entity(NewEntity(name="b", entity_type="y"))
-    rows = await store.list_entities()
+    await store.upsert_entity(NewEntity(org_id=ORG, name="a", entity_type="x"))
+    await store.upsert_entity(NewEntity(org_id=ORG, name="b", entity_type="y"))
+    rows = await store.list_entities(ORG)
     names = {r.name for r in rows}
     assert {"a", "b"}.issubset(names)
 
 
 @pytest.mark.asyncio
 async def test_list_entities_filters_by_type(store: Store):
-    await store.upsert_entity(NewEntity(name="alpha", entity_type="lang"))
-    await store.upsert_entity(NewEntity(name="beta", entity_type="db"))
-    only_lang = await store.list_entities(entity_type="lang")
+    await store.upsert_entity(NewEntity(org_id=ORG, name="alpha", entity_type="lang"))
+    await store.upsert_entity(NewEntity(org_id=ORG, name="beta", entity_type="db"))
+    only_lang = await store.list_entities(ORG, entity_type="lang")
     assert all(r.entity_type == "lang" for r in only_lang)
     assert any(r.name == "alpha" for r in only_lang)
 
 
 @pytest.mark.asyncio
 async def test_list_entities_filters_by_min_mentions(store: Store):
-    await store.upsert_entity(NewEntity(name="rare", entity_type="x", mention_count=1))
-    await store.upsert_entity(NewEntity(name="popular", entity_type="x", mention_count=10))
-    high = await store.list_entities(min_mentions=5)
+    await store.upsert_entity(NewEntity(org_id=ORG, name="rare", entity_type="x", mention_count=1))
+    await store.upsert_entity(NewEntity(org_id=ORG, name="popular", entity_type="x", mention_count=10))
+    high = await store.list_entities(ORG, min_mentions=5)
     names = {r.name for r in high}
     assert "popular" in names
     assert "rare" not in names
@@ -152,10 +157,10 @@ async def test_list_entities_filters_by_min_mentions(store: Store):
 
 @pytest.mark.asyncio
 async def test_list_entities_orders_by_mention_count_desc(store: Store):
-    await store.upsert_entity(NewEntity(name="low", entity_type="x", mention_count=1))
-    await store.upsert_entity(NewEntity(name="mid", entity_type="x", mention_count=5))
-    await store.upsert_entity(NewEntity(name="high", entity_type="x", mention_count=20))
-    rows = await store.list_entities(entity_type="x")
+    await store.upsert_entity(NewEntity(org_id=ORG, name="low", entity_type="x", mention_count=1))
+    await store.upsert_entity(NewEntity(org_id=ORG, name="mid", entity_type="x", mention_count=5))
+    await store.upsert_entity(NewEntity(org_id=ORG, name="high", entity_type="x", mention_count=20))
+    rows = await store.list_entities(ORG, entity_type="x")
     counts = [r.mention_count for r in rows]
     assert counts == sorted(counts, reverse=True)
 
@@ -163,21 +168,21 @@ async def test_list_entities_orders_by_mention_count_desc(store: Store):
 @pytest.mark.asyncio
 async def test_list_entities_respects_limit(store: Store):
     for i in range(5):
-        await store.upsert_entity(NewEntity(name=f"e{i}", entity_type="t"))
-    rows = await store.list_entities(entity_type="t", limit=2)
+        await store.upsert_entity(NewEntity(org_id=ORG, name=f"e{i}", entity_type="t"))
+    rows = await store.list_entities(ORG, entity_type="t", limit=2)
     assert len(rows) == 2
 
 
 @pytest.mark.asyncio
 async def test_update_entity_counts_increments(store: Store):
     e = await store.upsert_entity(
-        NewEntity(name="grafana", entity_type="tool", mention_count=2)
+        NewEntity(org_id=ORG, name="grafana", entity_type="tool", mention_count=2)
     )
     new_seen = datetime.now(timezone.utc)
     await store.update_entity_counts(
-        e.id, mention_delta=3, last_seen_at=new_seen
+        e.id, ORG, mention_delta=3, last_seen_at=new_seen
     )
-    after = await store.get_entity(e.id)
+    after = await store.get_entity(e.id, ORG)
     assert after is not None
     assert after.mention_count == 5
     assert after.last_seen_at >= e.last_seen_at
@@ -185,12 +190,12 @@ async def test_update_entity_counts_increments(store: Store):
 
 @pytest.mark.asyncio
 async def test_update_entity_counts_does_not_regress_last_seen(store: Store):
-    e = await store.upsert_entity(NewEntity(name="prom", entity_type="tool"))
+    e = await store.upsert_entity(NewEntity(org_id=ORG, name="prom", entity_type="tool"))
     earlier = e.last_seen_at - timedelta(days=1)
     await store.update_entity_counts(
-        e.id, mention_delta=1, last_seen_at=earlier
+        e.id, ORG, mention_delta=1, last_seen_at=earlier
     )
-    after = await store.get_entity(e.id)
+    after = await store.get_entity(e.id, ORG)
     assert after.last_seen_at == e.last_seen_at  # unchanged (GREATEST)
     assert after.mention_count == e.mention_count + 1
 
@@ -199,29 +204,29 @@ async def test_update_entity_counts_does_not_regress_last_seen(store: Store):
 async def test_update_entity_counts_silent_on_missing(store: Store):
     # Should not raise; just does nothing.
     await store.update_entity_counts(
-        "ent_missing", mention_delta=10, last_seen_at=datetime.now(timezone.utc)
+        "ent_missing", ORG, mention_delta=10, last_seen_at=datetime.now(timezone.utc)
     )
 
 
 @pytest.mark.asyncio
 async def test_delete_entity_returns_true_when_deleted(store: Store):
-    e = await store.upsert_entity(NewEntity(name="todelete", entity_type="x"))
-    assert (await store.delete_entity(e.id)) is True
-    assert (await store.get_entity(e.id)) is None
+    e = await store.upsert_entity(NewEntity(org_id=ORG, name="todelete", entity_type="x"))
+    assert (await store.delete_entity(e.id, ORG)) is True
+    assert (await store.get_entity(e.id, ORG)) is None
 
 
 @pytest.mark.asyncio
 async def test_delete_entity_returns_false_when_missing(store: Store):
-    assert (await store.delete_entity("ent_missing")) is False
+    assert (await store.delete_entity("ent_missing", ORG)) is False
 
 
 # ── T6: Mention ops ────────────────────────────────────────────────────────
 
 
 async def _setup_entity_and_memory(store: Store, *, ent_name="topic", mem_content="content"):
-    e = await store.upsert_entity(NewEntity(name=ent_name, entity_type="topic"))
+    e = await store.upsert_entity(NewEntity(org_id=ORG, name=ent_name, entity_type="topic"))
     m = await store.insert_memory(
-        NewMemory(org_id="solo", content=mem_content, embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content=mem_content, embedding=[0.0] * 384)
     )
     return e, m
 
@@ -229,8 +234,8 @@ async def _setup_entity_and_memory(store: Store, *, ent_name="topic", mem_conten
 @pytest.mark.asyncio
 async def test_save_mention_round_trip(store: Store):
     e, m = await _setup_entity_and_memory(store)
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
-    fetched = await store.get_mentions_for_memory(m.id)
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m.id))
+    fetched = await store.get_mentions_for_memory(m.id, ORG)
     assert len(fetched) == 1
     assert fetched[0].entity_id == e.id
     assert fetched[0].memory_id == m.id
@@ -241,59 +246,59 @@ async def test_save_mention_round_trip(store: Store):
 @pytest.mark.asyncio
 async def test_save_mention_is_idempotent(store: Store):
     e, m = await _setup_entity_and_memory(store)
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
-    fetched = await store.get_mentions_for_memory(m.id)
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m.id))
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m.id))
+    fetched = await store.get_mentions_for_memory(m.id, ORG)
     assert len(fetched) == 1
 
 
 @pytest.mark.asyncio
 async def test_get_mentions_for_entity_filters_correctly(store: Store):
     e1, m1 = await _setup_entity_and_memory(store, ent_name="alpha", mem_content="a")
-    e2 = await store.upsert_entity(NewEntity(name="beta", entity_type="topic"))
+    e2 = await store.upsert_entity(NewEntity(org_id=ORG, name="beta", entity_type="topic"))
     m2 = await store.insert_memory(
-        NewMemory(org_id="solo", content="b", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="b", embedding=[0.0] * 384)
     )
-    await store.save_mention(NewMention(entity_id=e1.id, memory_id=m1.id))
-    await store.save_mention(NewMention(entity_id=e2.id, memory_id=m2.id))
-    only_e1 = await store.get_mentions_for_entity(e1.id)
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e1.id, memory_id=m1.id))
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e2.id, memory_id=m2.id))
+    only_e1 = await store.get_mentions_for_entity(e1.id, ORG)
     assert {m.memory_id for m in only_e1} == {m1.id}
 
 
 @pytest.mark.asyncio
 async def test_get_mentions_for_entity_respects_limit(store: Store):
-    e = await store.upsert_entity(NewEntity(name="hot", entity_type="topic"))
+    e = await store.upsert_entity(NewEntity(org_id=ORG, name="hot", entity_type="topic"))
     for i in range(5):
         m = await store.insert_memory(
-            NewMemory(org_id="solo", content=f"c{i}", embedding=[0.0] * 384)
+            NewMemory(org_id=ORG, content=f"c{i}", embedding=[0.0] * 384)
         )
-        await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
-    rows = await store.get_mentions_for_entity(e.id, limit=2)
+        await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m.id))
+    rows = await store.get_mentions_for_entity(e.id, ORG, limit=2)
     assert len(rows) == 2
 
 
 @pytest.mark.asyncio
 async def test_count_memories_for_entity(store: Store):
-    e = await store.upsert_entity(NewEntity(name="counted", entity_type="topic"))
-    assert (await store.count_memories_for_entity(e.id)) == 0
+    e = await store.upsert_entity(NewEntity(org_id=ORG, name="counted", entity_type="topic"))
+    assert (await store.count_memories_for_entity(e.id, ORG)) == 0
     for i in range(3):
         m = await store.insert_memory(
-            NewMemory(org_id="solo", content=f"d{i}", embedding=[0.0] * 384)
+            NewMemory(org_id=ORG, content=f"d{i}", embedding=[0.0] * 384)
         )
-        await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
-    assert (await store.count_memories_for_entity(e.id)) == 3
+        await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m.id))
+    assert (await store.count_memories_for_entity(e.id, ORG)) == 3
 
 
 @pytest.mark.asyncio
 async def test_count_memories_distinct_per_memory(store: Store):
     """save_mention dedupes by (entity, memory) so duplicate calls don't inflate the count."""
-    e = await store.upsert_entity(NewEntity(name="dedup", entity_type="topic"))
+    e = await store.upsert_entity(NewEntity(org_id=ORG, name="dedup", entity_type="topic"))
     m = await store.insert_memory(
-        NewMemory(org_id="solo", content="x", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="x", embedding=[0.0] * 384)
     )
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m.id))
-    assert (await store.count_memories_for_entity(e.id)) == 1
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m.id))
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m.id))
+    assert (await store.count_memories_for_entity(e.id, ORG)) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -302,8 +307,8 @@ async def test_count_memories_distinct_per_memory(store: Store):
 
 
 async def _two_entities(store: Store, *, src="alpha", tgt="beta"):
-    a = await store.upsert_entity(NewEntity(name=src, entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name=tgt, entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id=ORG, name=src, entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id=ORG, name=tgt, entity_type="topic"))
     return a, b
 
 
@@ -312,6 +317,7 @@ async def test_save_relationship_round_trip(store: Store):
     a, b = await _two_entities(store)
     rel = await store.save_relationship(
         NewRelationship(
+            org_id=ORG,
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="depends_on",
@@ -331,7 +337,7 @@ async def test_save_relationship_default_valid_from_is_now(store: Store):
     a, b = await _two_entities(store, src="x1", tgt="x2")
     before = datetime.now(timezone.utc)
     rel = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
     after = datetime.now(timezone.utc)
     assert before <= rel.valid_from <= after
@@ -341,25 +347,25 @@ async def test_save_relationship_default_valid_from_is_now(store: Store):
 async def test_get_relationship_round_trip(store: Store):
     a, b = await _two_entities(store, src="g1", tgt="g2")
     rel = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="works_on")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="works_on")
     )
-    fetched = await store.get_relationship(rel.id)
+    fetched = await store.get_relationship(rel.id, ORG)
     assert fetched is not None
     assert fetched.id == rel.id
 
 
 @pytest.mark.asyncio
 async def test_get_relationship_returns_none_when_missing(store: Store):
-    assert (await store.get_relationship("rel_missing")) is None
+    assert (await store.get_relationship("rel_missing", ORG)) is None
 
 
 @pytest.mark.asyncio
 async def test_get_active_relationship_finds_active(store: Store):
     a, b = await _two_entities(store, src="a1", tgt="a2")
     rel = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
-    active = await store.get_active_relationship(a.id, b.id, rel_type="uses")
+    active = await store.get_active_relationship(a.id, b.id, ORG, rel_type="uses")
     assert active is not None
     assert active.id == rel.id
 
@@ -368,9 +374,9 @@ async def test_get_active_relationship_finds_active(store: Store):
 async def test_get_active_relationship_ignores_different_type(store: Store):
     a, b = await _two_entities(store, src="t1", tgt="t2")
     await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
-    none_match = await store.get_active_relationship(a.id, b.id, rel_type="depends_on")
+    none_match = await store.get_active_relationship(a.id, b.id, ORG, rel_type="depends_on")
     assert none_match is None
 
 
@@ -380,6 +386,7 @@ async def test_get_active_relationship_returns_none_for_expired(store: Store):
     past_until = datetime.now(timezone.utc)
     await store.save_relationship(
         NewRelationship(
+            org_id=ORG,
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="part_of",
@@ -387,7 +394,7 @@ async def test_get_active_relationship_returns_none_for_expired(store: Store):
         )
     )
     # Even though the row exists, it's expired (valid_until IS NOT NULL)
-    none_match = await store.get_active_relationship(a.id, b.id, rel_type="part_of")
+    none_match = await store.get_active_relationship(a.id, b.id, ORG, rel_type="part_of")
     assert none_match is None
 
 
@@ -396,6 +403,7 @@ async def test_save_relationship_with_properties_round_trip(store: Store):
     a, b = await _two_entities(store, src="p1", tgt="p2")
     rel = await store.save_relationship(
         NewRelationship(
+            org_id=ORG,
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="created_by",
@@ -413,14 +421,14 @@ async def test_save_relationship_with_properties_round_trip(store: Store):
 @pytest.mark.asyncio
 async def test_list_relationships_for_entity_either_side(store: Store):
     a, b = await _two_entities(store, src="x", tgt="y")
-    c = await store.upsert_entity(NewEntity(name="z", entity_type="topic"))
+    c = await store.upsert_entity(NewEntity(org_id=ORG, name="z", entity_type="topic"))
     r1 = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
     r2 = await store.save_relationship(
-        NewRelationship(source_entity_id=c.id, target_entity_id=a.id, rel_type="depends_on")
+        NewRelationship(org_id=ORG, source_entity_id=c.id, target_entity_id=a.id, rel_type="depends_on")
     )
-    rows = await store.list_relationships_for_entity(a.id)
+    rows = await store.list_relationships_for_entity(a.id, ORG)
     ids = {r.id for r in rows}
     assert {r1.id, r2.id}.issubset(ids)
 
@@ -430,17 +438,17 @@ async def test_list_relationships_for_entity_filters_by_status(store: Store):
     a, b = await _two_entities(store, src="s1", tgt="s2")
     r_pending = await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="uses", status="pending",
         )
     )
     await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="depends_on", status="approved",
         )
     )
-    only_pending = await store.list_relationships_for_entity(a.id, status="pending")
+    only_pending = await store.list_relationships_for_entity(a.id, ORG, status="pending")
     assert {r.id for r in only_pending} == {r_pending.id}
 
 
@@ -450,11 +458,11 @@ async def test_list_relationships_respects_limit(store: Store):
     for i in range(5):
         await store.save_relationship(
             NewRelationship(
-                source_entity_id=a.id, target_entity_id=b.id,
+                org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
                 rel_type=f"rel_{i}",
             )
         )
-    rows = await store.list_relationships_for_entity(a.id, limit=2)
+    rows = await store.list_relationships_for_entity(a.id, ORG, limit=2)
     assert len(rows) == 2
 
 
@@ -463,11 +471,11 @@ async def test_update_relationship_status_round_trip(store: Store):
     a, b = await _two_entities(store, src="u1", tgt="u2")
     rel = await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="uses", status="pending",
         )
     )
-    updated = await store.update_relationship_status(rel.id, status="approved")
+    updated = await store.update_relationship_status(rel.id, ORG, status="approved")
     assert updated.status == "approved"
     assert updated.id == rel.id
 
@@ -476,7 +484,7 @@ async def test_update_relationship_status_round_trip(store: Store):
 async def test_update_relationship_status_raises_when_missing(store: Store):
     from lore.persistence.exceptions import StoreNotFoundError
     with pytest.raises(StoreNotFoundError):
-        await store.update_relationship_status("rel_missing", status="approved")
+        await store.update_relationship_status("rel_missing", ORG, status="approved")
 
 
 @pytest.mark.asyncio
@@ -484,32 +492,32 @@ async def test_update_relationship_weight_changes_weight(store: Store):
     a, b = await _two_entities(store, src="w1", tgt="w2")
     rel = await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="uses", weight=0.3,
         )
     )
-    await store.update_relationship_weight(rel.id, weight=0.9)
-    after = await store.get_relationship(rel.id)
+    await store.update_relationship_weight(rel.id, ORG, weight=0.9)
+    after = await store.get_relationship(rel.id, ORG)
     assert after.weight == pytest.approx(0.9)
 
 
 @pytest.mark.asyncio
 async def test_update_relationship_weight_silent_on_missing(store: Store):
-    await store.update_relationship_weight("rel_missing", weight=0.5)
+    await store.update_relationship_weight("rel_missing", ORG, weight=0.5)
 
 
 @pytest.mark.asyncio
 async def test_expire_relationship_sets_valid_until(store: Store):
     a, b = await _two_entities(store, src="e1", tgt="e2")
     rel = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
     assert rel.valid_until is None
-    await store.expire_relationship(rel.id)
-    after = await store.get_relationship(rel.id)
+    await store.expire_relationship(rel.id, ORG)
+    after = await store.get_relationship(rel.id, ORG)
     assert after.valid_until is not None
     # And get_active_relationship now returns None
-    active = await store.get_active_relationship(a.id, b.id, rel_type="uses")
+    active = await store.get_active_relationship(a.id, b.id, ORG, rel_type="uses")
     assert active is None
 
 
@@ -518,17 +526,17 @@ async def test_list_pending_relationships_returns_only_pending(store: Store):
     a, b = await _two_entities(store, src="lp1", tgt="lp2")
     pending = await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="uses", status="pending",
         )
     )
     await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="depends_on", status="approved",
         )
     )
-    rows = await store.list_pending_relationships()
+    rows = await store.list_pending_relationships(ORG)
     ids = {r.id for r in rows}
     assert pending.id in ids
 
@@ -536,18 +544,18 @@ async def test_list_pending_relationships_returns_only_pending(store: Store):
 @pytest.mark.asyncio
 async def test_list_pending_relationships_includes_joined_entity_info(store: Store):
     a = await store.upsert_entity(
-        NewEntity(name="src_ent", entity_type="topic", mention_count=4)
+        NewEntity(org_id=ORG, name="src_ent", entity_type="topic", mention_count=4)
     )
     b = await store.upsert_entity(
-        NewEntity(name="tgt_ent", entity_type="library", mention_count=7)
+        NewEntity(org_id=ORG, name="tgt_ent", entity_type="library", mention_count=7)
     )
     rel = await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="uses", status="pending",
         )
     )
-    rows = await store.list_pending_relationships()
+    rows = await store.list_pending_relationships(ORG)
     matching = [r for r in rows if r.id == rel.id]
     assert len(matching) == 1
     row = matching[0]
@@ -564,17 +572,17 @@ async def test_list_pending_relationships_filter_by_type(store: Store):
     a, b = await _two_entities(store, src="ft1", tgt="ft2")
     r_uses = await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="uses", status="pending",
         )
     )
     await store.save_relationship(
         NewRelationship(
-            source_entity_id=a.id, target_entity_id=b.id,
+            org_id=ORG, source_entity_id=a.id, target_entity_id=b.id,
             rel_type="depends_on", status="pending",
         )
     )
-    only_uses = await store.list_pending_relationships(rel_type="uses")
+    only_uses = await store.list_pending_relationships(ORG, rel_type="uses")
     ids = {r.id for r in only_uses}
     assert ids == {r_uses.id}
 
@@ -605,16 +613,16 @@ async def test_save_rejected_pattern_separate_triples_independent(store: Store):
 
 @pytest.mark.asyncio
 async def test_query_relationships_outbound_only(store: Store):
-    a = await store.upsert_entity(NewEntity(name="qo_a", entity_type="topic"))
-    b = await store.upsert_entity(NewEntity(name="qo_b", entity_type="topic"))
-    c = await store.upsert_entity(NewEntity(name="qo_c", entity_type="topic"))
+    a = await store.upsert_entity(NewEntity(org_id=ORG, name="qo_a", entity_type="topic"))
+    b = await store.upsert_entity(NewEntity(org_id=ORG, name="qo_b", entity_type="topic"))
+    c = await store.upsert_entity(NewEntity(org_id=ORG, name="qo_c", entity_type="topic"))
     out_rel = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
     await store.save_relationship(
-        NewRelationship(source_entity_id=c.id, target_entity_id=a.id, rel_type="depends_on")
+        NewRelationship(org_id=ORG, source_entity_id=c.id, target_entity_id=a.id, rel_type="depends_on")
     )
-    rows = await store.query_relationships([a.id], direction="outbound")
+    rows = await store.query_relationships([a.id], ORG, direction="outbound")
     ids = {r.id for r in rows}
     assert ids == {out_rel.id}
 
@@ -623,12 +631,12 @@ async def test_query_relationships_outbound_only(store: Store):
 async def test_query_relationships_inbound_only(store: Store):
     a, b = await _two_entities(store, src="qi_a", tgt="qi_b")
     in_rel = await store.save_relationship(
-        NewRelationship(source_entity_id=b.id, target_entity_id=a.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=b.id, target_entity_id=a.id, rel_type="uses")
     )
     await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="depends_on")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="depends_on")
     )
-    rows = await store.query_relationships([a.id], direction="inbound")
+    rows = await store.query_relationships([a.id], ORG, direction="inbound")
     ids = {r.id for r in rows}
     assert ids == {in_rel.id}
 
@@ -637,12 +645,12 @@ async def test_query_relationships_inbound_only(store: Store):
 async def test_query_relationships_both(store: Store):
     a, b = await _two_entities(store, src="qb_a", tgt="qb_b")
     r_out = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
     r_in = await store.save_relationship(
-        NewRelationship(source_entity_id=b.id, target_entity_id=a.id, rel_type="depends_on")
+        NewRelationship(org_id=ORG, source_entity_id=b.id, target_entity_id=a.id, rel_type="depends_on")
     )
-    rows = await store.query_relationships([a.id], direction="both")
+    rows = await store.query_relationships([a.id], ORG, direction="both")
     ids = {r.id for r in rows}
     assert ids == {r_out.id, r_in.id}
 
@@ -651,10 +659,10 @@ async def test_query_relationships_both(store: Store):
 async def test_query_relationships_active_only_excludes_expired(store: Store):
     a, b = await _two_entities(store, src="qa_a", tgt="qa_b")
     rel = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
-    await store.expire_relationship(rel.id)
-    rows = await store.query_relationships([a.id], active_only=True)
+    await store.expire_relationship(rel.id, ORG)
+    rows = await store.query_relationships([a.id], ORG, active_only=True)
     assert all(r.id != rel.id for r in rows)
 
 
@@ -662,10 +670,10 @@ async def test_query_relationships_active_only_excludes_expired(store: Store):
 async def test_query_relationships_active_only_false_includes_expired(store: Store):
     a, b = await _two_entities(store, src="qaf_a", tgt="qaf_b")
     rel = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
-    await store.expire_relationship(rel.id)
-    rows = await store.query_relationships([a.id], active_only=False)
+    await store.expire_relationship(rel.id, ORG)
+    rows = await store.query_relationships([a.id], ORG, active_only=False)
     assert any(r.id == rel.id for r in rows)
 
 
@@ -677,6 +685,7 @@ async def test_query_relationships_at_time(store: Store):
     past_until = datetime.now(timezone.utc) - timedelta(days=1)
     rel = await store.save_relationship(
         NewRelationship(
+            org_id=ORG,
             source_entity_id=a.id,
             target_entity_id=b.id,
             rel_type="uses",
@@ -687,14 +696,14 @@ async def test_query_relationships_at_time(store: Store):
     # Querying at a time within the validity window should find it
     middle = past_from + timedelta(hours=12)
     rows = await store.query_relationships(
-        [a.id], direction="both", active_only=False, at_time=middle
+        [a.id], ORG, direction="both", active_only=False, at_time=middle
     )
     ids = {r.id for r in rows}
     assert rel.id in ids
     # Querying at a time after valid_until should not
     later = datetime.now(timezone.utc)
     rows_later = await store.query_relationships(
-        [a.id], direction="both", active_only=False, at_time=later
+        [a.id], ORG, direction="both", active_only=False, at_time=later
     )
     later_ids = {r.id for r in rows_later}
     assert rel.id not in later_ids
@@ -704,26 +713,26 @@ async def test_query_relationships_at_time(store: Store):
 async def test_query_relationships_filters_by_rel_types(store: Store):
     a, b = await _two_entities(store, src="qrt_a", tgt="qrt_b")
     r_uses = await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
     await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="depends_on")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="depends_on")
     )
-    rows = await store.query_relationships([a.id], rel_types=["uses"])
+    rows = await store.query_relationships([a.id], ORG, rel_types=["uses"])
     ids = {r.id for r in rows}
     assert ids == {r_uses.id}
 
 
 @pytest.mark.asyncio
 async def test_query_relationships_empty_input_returns_empty(store: Store):
-    rows = await store.query_relationships([])
+    rows = await store.query_relationships([], ORG)
     assert rows == []
 
 
 @pytest.mark.asyncio
 async def test_query_relationships_invalid_direction_raises(store: Store):
     with pytest.raises(ValueError):
-        await store.query_relationships(["ent_x"], direction="upstream")
+        await store.query_relationships(["ent_x"], ORG, direction="upstream")
 
 
 # ---------------------------------------------------------------------------
@@ -735,7 +744,7 @@ async def test_query_relationships_invalid_direction_raises(store: Store):
 @pytest.mark.asyncio
 async def test_get_graph_stats_returns_typed_result(store: Store):
     # Empty/initial state — stats should still return without error
-    stats = await store.get_graph_stats()
+    stats = await store.get_graph_stats(ORG)
     assert isinstance(stats, GraphStats)
     assert stats.total_memories >= 0
     assert stats.total_entities >= 0
@@ -745,9 +754,9 @@ async def test_get_graph_stats_returns_typed_result(store: Store):
 async def test_get_graph_stats_counts_entities_and_relationships(store: Store):
     a, b = await _two_entities(store, src="gs_a", tgt="gs_b")
     await store.save_relationship(
-        NewRelationship(source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
+        NewRelationship(org_id=ORG, source_entity_id=a.id, target_entity_id=b.id, rel_type="uses")
     )
-    stats = await store.get_graph_stats()
+    stats = await store.get_graph_stats(ORG)
     assert stats.total_entities >= 2
     assert stats.total_relationships >= 1
     by_et = stats.by_entity_type
@@ -756,9 +765,9 @@ async def test_get_graph_stats_counts_entities_and_relationships(store: Store):
 
 @pytest.mark.asyncio
 async def test_get_graph_stats_top_entities_ordered(store: Store):
-    await store.upsert_entity(NewEntity(name="te_low", entity_type="topic", mention_count=1))
-    await store.upsert_entity(NewEntity(name="te_high", entity_type="topic", mention_count=100))
-    stats = await store.get_graph_stats()
+    await store.upsert_entity(NewEntity(org_id=ORG, name="te_low", entity_type="topic", mention_count=1))
+    await store.upsert_entity(NewEntity(org_id=ORG, name="te_high", entity_type="topic", mention_count=100))
+    stats = await store.get_graph_stats(ORG)
     names = [e["name"] for e in stats.top_entities[:5]]
     # te_high should appear before te_low (DESC), if both are in the top 5
     if "te_high" in names and "te_low" in names:
@@ -768,24 +777,24 @@ async def test_get_graph_stats_top_entities_ordered(store: Store):
 @pytest.mark.asyncio
 async def test_get_graph_stats_with_project_filter(store: Store):
     await store.insert_memory(
-        NewMemory(org_id="solo", content="proj_a memo", embedding=[0.0] * 384, project="proj_a")
+        NewMemory(org_id=ORG, content="proj_a memo", embedding=[0.0] * 384, project="proj_a")
     )
     await store.insert_memory(
-        NewMemory(org_id="solo", content="proj_b memo", embedding=[0.0] * 384, project="proj_b")
+        NewMemory(org_id=ORG, content="proj_b memo", embedding=[0.0] * 384, project="proj_b")
     )
-    only_a = await store.get_graph_stats(project="proj_a")
+    only_a = await store.get_graph_stats(ORG, project="proj_a")
     assert only_a.total_memories == 1
 
 
 @pytest.mark.asyncio
 async def test_get_timeline_buckets_basic(store: Store):
     await store.insert_memory(
-        NewMemory(org_id="solo", content="t1", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="t1", embedding=[0.0] * 384)
     )
     await store.insert_memory(
-        NewMemory(org_id="solo", content="t2", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="t2", embedding=[0.0] * 384)
     )
-    rows = await store.get_timeline_buckets(trunc="day")
+    rows = await store.get_timeline_buckets(ORG, trunc="day")
     assert len(rows) >= 1
     assert all(isinstance(r, TimelineBucketRow) for r in rows)
     # All buckets should sum to >= 2 from our inserts
@@ -796,37 +805,37 @@ async def test_get_timeline_buckets_basic(store: Store):
 @pytest.mark.asyncio
 async def test_get_timeline_buckets_invalid_trunc(store: Store):
     with pytest.raises(ValueError):
-        await store.get_timeline_buckets(trunc="century")
+        await store.get_timeline_buckets(ORG, trunc="century")
 
 
 @pytest.mark.asyncio
 async def test_get_memories_by_entities(store: Store):
-    e = await store.upsert_entity(NewEntity(name="byent", entity_type="topic"))
+    e = await store.upsert_entity(NewEntity(org_id=ORG, name="byent", entity_type="topic"))
     m1 = await store.insert_memory(
-        NewMemory(org_id="solo", content="from-byent-1", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="from-byent-1", embedding=[0.0] * 384)
     )
     m2 = await store.insert_memory(
-        NewMemory(org_id="solo", content="from-byent-2", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="from-byent-2", embedding=[0.0] * 384)
     )
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m1.id))
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m2.id))
-    rows = await store.get_memories_by_entities([e.id])
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m1.id))
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m2.id))
+    rows = await store.get_memories_by_entities(ORG, [e.id])
     ids = {r.id for r in rows}
     assert {m1.id, m2.id}.issubset(ids)
 
 
 @pytest.mark.asyncio
 async def test_get_memories_by_entities_excludes_memory_id(store: Store):
-    e = await store.upsert_entity(NewEntity(name="byentx", entity_type="topic"))
+    e = await store.upsert_entity(NewEntity(org_id=ORG, name="byentx", entity_type="topic"))
     m1 = await store.insert_memory(
-        NewMemory(org_id="solo", content="ex1", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="ex1", embedding=[0.0] * 384)
     )
     m2 = await store.insert_memory(
-        NewMemory(org_id="solo", content="ex2", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="ex2", embedding=[0.0] * 384)
     )
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m1.id))
-    await store.save_mention(NewMention(entity_id=e.id, memory_id=m2.id))
-    rows = await store.get_memories_by_entities([e.id], exclude_memory_id=m1.id)
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m1.id))
+    await store.save_mention(NewMention(org_id=ORG, entity_id=e.id, memory_id=m2.id))
+    rows = await store.get_memories_by_entities(ORG, [e.id], exclude_memory_id=m1.id)
     ids = {r.id for r in rows}
     assert m1.id not in ids
     assert m2.id in ids
@@ -834,19 +843,19 @@ async def test_get_memories_by_entities_excludes_memory_id(store: Store):
 
 @pytest.mark.asyncio
 async def test_get_memories_by_entities_empty_input_returns_empty(store: Store):
-    rows = await store.get_memories_by_entities([])
+    rows = await store.get_memories_by_entities(ORG, [])
     assert rows == []
 
 
 @pytest.mark.asyncio
 async def test_search_memories_text_finds_substring(store: Store):
     await store.insert_memory(
-        NewMemory(org_id="solo", content="redis pub/sub patterns", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="redis pub/sub patterns", embedding=[0.0] * 384)
     )
     await store.insert_memory(
-        NewMemory(org_id="solo", content="postgres explain analyze", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="postgres explain analyze", embedding=[0.0] * 384)
     )
-    redis_rows = await store.search_memories_text("redis")
+    redis_rows = await store.search_memories_text(ORG, "redis")
     contents = {r.content for r in redis_rows}
     assert any("redis" in c for c in contents)
 
@@ -854,9 +863,9 @@ async def test_search_memories_text_finds_substring(store: Store):
 @pytest.mark.asyncio
 async def test_search_memories_text_case_insensitive(store: Store):
     await store.insert_memory(
-        NewMemory(org_id="solo", content="Kubernetes deployments", embedding=[0.0] * 384)
+        NewMemory(org_id=ORG, content="Kubernetes deployments", embedding=[0.0] * 384)
     )
-    rows = await store.search_memories_text("KUBERNETES")
+    rows = await store.search_memories_text(ORG, "KUBERNETES")
     assert any("Kubernetes" in r.content for r in rows)
 
 
@@ -864,7 +873,7 @@ async def test_search_memories_text_case_insensitive(store: Store):
 async def test_search_memories_text_respects_limit(store: Store):
     for i in range(5):
         await store.insert_memory(
-            NewMemory(org_id="solo", content=f"matchme item {i}", embedding=[0.0] * 384)
+            NewMemory(org_id=ORG, content=f"matchme item {i}", embedding=[0.0] * 384)
         )
-    rows = await store.search_memories_text("matchme", limit=2)
+    rows = await store.search_memories_text(ORG, "matchme", limit=2)
     assert len(rows) == 2
