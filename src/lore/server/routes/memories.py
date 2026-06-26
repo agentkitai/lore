@@ -8,12 +8,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from datetime import datetime
 from typing import List, Optional
 
 try:
     from fastapi import APIRouter, Depends, HTTPException, Query
 except ImportError:
     raise ImportError("FastAPI is required. Install with: pip install lore-sdk[server]")
+
+from pydantic import BaseModel
 
 from lore.exceptions import SecretBlockedError
 from lore.persistence.exceptions import StoreNotFoundError
@@ -53,6 +56,7 @@ from lore.services.memories import (
 from lore.services.memories import (
     vote_memory as _vote_memory,
 )
+from lore.services.provenance import build_memory_provenance
 
 logger = logging.getLogger(__name__)
 
@@ -332,6 +336,51 @@ async def get_memory(
         meta=dict(m.meta),
         scope=getattr(m, "scope", "project") or "project",
     )
+
+
+# ── Provenance / lineage (#82) ─────────────────────────────────────
+
+
+class SupersessionLink(BaseModel):
+    memory_id: str
+    superseded_by: Optional[str]
+    reason: Optional[str]
+    ts: datetime
+    agent: str
+
+
+class MemoryProvenanceResponse(BaseModel):
+    """Aggregated provenance/lineage for a memory (#82) — the data a UI panel
+    (or CLI) renders: owner, visibility, source, redaction tags, a trust signal,
+    and the supersession lineage (forward audit trail + source memories)."""
+
+    id: str
+    owner: Optional[str]
+    visibility: str
+    source: Optional[str]
+    tags: List[str]
+    redaction_tags: List[str]
+    trust_signal: str  # "owned" | "anonymous" — what #79 trust-aware recall keys on
+    supersession_chain: List[SupersessionLink]
+    supersession_sources: List[SupersessionLink]
+    created_at: datetime
+
+
+@router.get("/{memory_id}/provenance", response_model=MemoryProvenanceResponse)
+async def memory_provenance(
+    memory_id: str,
+    auth: AuthContext = Depends(get_auth_context),
+) -> MemoryProvenanceResponse:
+    """Aggregated provenance + supersession lineage for a single memory (#82)."""
+    store = await get_store()
+    m = await _get_memory(
+        store, auth.org_id, memory_id, requesting_user_id=auth.principal_id
+    )
+    if m is None:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    chain = await store.get_supersession_chain(memory_id)
+    sources = await store.list_supersession_sources(memory_id)
+    return MemoryProvenanceResponse(**build_memory_provenance(m, chain, sources))
 
 
 # ── Update ─────────────────────────────────────────────────────────
