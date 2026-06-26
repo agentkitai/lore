@@ -144,6 +144,17 @@ async def create_memory(
             content=stored.content, context=stored.context,
         ))
 
+    # Fire-and-forget write-time contradiction detection (#84); OFF unless
+    # LORE_CONTRADICTION_DETECTION. Flags the memory (tag + meta) if it disagrees
+    # with a similar existing one; never blocks or fails the write.
+    from lore.services import contradiction as contradiction_svc
+
+    if contradiction_svc.is_enabled():
+        asyncio.create_task(contradiction_svc.detect_and_flag(
+            store, org_id=auth.org_id, memory_id=stored.id,
+            content=stored.content, embedding=embedding, owner_user_id=auth.principal_id,
+        ))
+
     return MemoryCreateResponse(id=stored.id)
 
 
