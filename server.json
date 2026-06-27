@@ -8,13 +8,13 @@
     "url": "https://github.com/agentkitai/lore",
     "source": "github"
   },
-  "version": "1.3.0",
+  "version": "1.4.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "lore-sdk",
-      "version": "1.3.0",
+      "version": "1.4.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         { "type": "named", "name": "--from", "value": "lore-sdk[mcp]" }
