@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.4.1 — 2026-06-27
+
+### Fixed
+- **Web UI (`/ui`) now works against an authed (remote / docker-stack) server.** The bundled graph UI made all API calls with no `Authorization` header, so on a Postgres-backed server that enforces keys every fetch returned 401 ("Failed to load graph") and nothing rendered. The UI now sends a Bearer key, captured once at load from `?key=…` (then persisted to `localStorage` and stripped from the URL so it isn't left in history) or a prior stored value. Open `http://<host>/ui/?key=<LORE_API_KEY>` once; reloads stay authed. Solo/local mode is unaffected (no key → header omitted).
+
 ## 1.4.0 — 2026-06-27
 
 ### Fixed

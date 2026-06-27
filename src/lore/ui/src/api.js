@@ -30,8 +30,39 @@ class LRUCache {
 
 const cache = new LRUCache(200);
 
-async function fetchJSON(url, opts) {
-  const res = await fetch(url, opts);
+// API key for authed (remote / docker-stack) Lore servers. Captured ONCE at
+// module load from `?key=…` in the URL (then persisted to localStorage and
+// stripped from the URL so it isn't left in history) — this runs before the
+// first graph fetch, so there's no first-load auth race. Solo/local servers
+// don't enforce auth, so the header is simply omitted when no key is set.
+(function captureApiKeyFromUrl() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get('key') || params.get('api_key');
+    if (!fromUrl) return;
+    localStorage.setItem('lore_api_key', fromUrl);
+    params.delete('key');
+    params.delete('api_key');
+    const qs = params.toString();
+    window.history.replaceState(
+      {}, '', window.location.pathname + (qs ? '?' + qs : '') + window.location.hash,
+    );
+  } catch (_e) { /* localStorage/history unavailable — fall back to no key */ }
+})();
+
+function getApiKey() {
+  try {
+    return localStorage.getItem('lore_api_key') || '';
+  } catch (_e) {
+    return '';
+  }
+}
+
+async function fetchJSON(url, opts = {}) {
+  const key = getApiKey();
+  const headers = { ...(opts.headers || {}) };
+  if (key) headers['Authorization'] = 'Bearer ' + key;
+  const res = await fetch(url, { ...opts, headers });
   if (!res.ok) {
     const err = new Error(`API error: ${res.status}`);
     err.status = res.status;
