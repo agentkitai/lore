@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.4.0 — 2026-06-27
+
 ### Fixed
 - **SLO background checker crashed every iteration (`ImportError`).** `server/slo_checker.py` still imported `_check_threshold` / `_compute_metric` from `lore.server.routes.slo` after the Phase-1K SLO refactor moved them out — so `_check_all_slos()` raised `ImportError` on every 60s tick (logged as "SLO check iteration failed"), and no SLO was ever evaluated. Now imports `_check_threshold` from `lore.services.slo` and computes the metric via `store.compute_metric_value(...)`.
 
