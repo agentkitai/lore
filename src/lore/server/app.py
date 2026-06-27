@@ -70,6 +70,40 @@ logger = logging.getLogger(__name__)
 _pgvector_available: bool | None = None
 
 
+async def _seed_root_key_from_env() -> None:
+    """Seed an org + root API key from ``LORE_API_KEY`` when the DB is empty.
+
+    Lets a declarative deploy (docker-compose, k8s) provision a Postgres-backed
+    Lore with a known, shared key — otherwise the only way to mint the first key
+    is the one-time ``POST /v1/org/init``, which a static manifest can't capture
+    (its key is random and returned once). No-op if ``LORE_API_KEY`` is unset or
+    any org already exists, so it never overwrites a real deployment.
+    """
+    seed_key = os.environ.get("LORE_API_KEY")
+    if not seed_key:
+        return
+    from ulid import ULID
+
+    from lore.server.db import get_pool
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            if await conn.fetchval("SELECT id FROM orgs LIMIT 1") is not None:
+                return  # already provisioned — leave it alone
+            org_id = str(ULID())
+            await conn.execute(
+                "INSERT INTO orgs (id, name) VALUES ($1, $2)", org_id, "default",
+            )
+            await conn.execute(
+                """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, is_root)
+                   VALUES ($1, $2, $3, $4, $5, TRUE)""",
+                str(ULID()), org_id, "root (seeded from LORE_API_KEY)",
+                hashlib.sha256(seed_key.encode()).hexdigest(), seed_key[:12],
+            )
+            logger.info("Seeded root API key from LORE_API_KEY (org %s)", org_id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Manage DB pool lifecycle."""
@@ -102,6 +136,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         pool = await init_pool(db_url)
         await run_migrations(pool, settings.migrations_dir)
         await init_store(db_url)
+        # Declarative provisioning: seed a root key from LORE_API_KEY if the DB
+        # is empty, so a docker-compose / k8s deploy works without a manual
+        # POST /v1/org/init.
+        await _seed_root_key_from_env()
 
         try:
             async with pool.acquire() as conn:

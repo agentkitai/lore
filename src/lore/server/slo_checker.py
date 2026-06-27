@@ -29,10 +29,14 @@ async def slo_checker_loop(interval_seconds: int = 60) -> None:
 
 async def _check_all_slos() -> None:
     """Evaluate all enabled SLOs and fire alerts for breaches."""
-    from lore.server.db import get_pool
-    from lore.server.routes.slo import _check_threshold, _compute_metric
+    # _check_threshold + metric computation moved out of routes/slo.py in the
+    # Phase-1K SLO refactor; this import used to point at the old location and
+    # crashed the loop every iteration (ImportError).
+    from lore.server.db import get_pool, get_store
+    from lore.services.slo import _check_threshold
 
     pool = await get_pool()
+    store = await get_store()
     async with pool.acquire() as conn:
         slos = await conn.fetch(
             """SELECT id, org_id, name, metric, operator, threshold,
@@ -43,8 +47,10 @@ async def _check_all_slos() -> None:
 
         for slo in slos:
             try:
-                value = await _compute_metric(
-                    conn, slo["org_id"], slo["metric"], slo["window_minutes"],
+                value = await store.compute_metric_value(
+                    org_id=slo["org_id"],
+                    metric=slo["metric"],
+                    window_minutes=slo["window_minutes"],
                 )
                 passing = _check_threshold(
                     value, slo["operator"], float(slo["threshold"]),
