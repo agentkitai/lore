@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+## 1.4.2 — 2026-06-27
+
+### Fixed
+- **Migrations are now idempotent — recreating the container against an existing DB no longer crashes.** `run_migrations` re-ran *every* `.sql` file on every boot. On an already-migrated DB this crashed at startup with `asyncpg.exceptions.UndefinedColumnError: column "confidence" does not exist`: migration `009_rename_to_memories` recreates the `lessons` compatibility view selecting `confidence`/`importance_score` from `memories`, but `025_drop_quality_score_columns` (applied on a prior boot) had already dropped those columns. A `schema_migrations` ledger now records each applied file so each migration runs exactly once, each inside its own transaction. A pre-existing DB (created before the ledger) is baselined — its migrations are recorded as applied without re-running — so the upgrade is seamless. Fresh-DB bootstrap is unchanged.
+
 ## 1.4.1 — 2026-06-27
 
 ### Fixed

@@ -50,9 +50,13 @@ async def close_pool() -> None:
 
 
 async def run_migrations(pool: "asyncpg.Pool", migrations_dir: str = "migrations") -> None:
-    """Run SQL migration files in order.
+    """Run SQL migration files in order, each exactly once.
 
-    Migrations are idempotent — they use IF NOT EXISTS throughout.
+    A ``schema_migrations`` ledger records applied files so re-running against an
+    already-migrated DB is a no-op. (Re-running every file each boot crashed on
+    an existing DB: migration 009 recreates the ``lessons`` view referencing
+    ``memories.confidence``/``importance_score``, which migration 025 — applied
+    on a prior boot — already dropped.)
     """
     migrations_path = Path(migrations_dir)
     if not migrations_path.exists():
@@ -79,10 +83,46 @@ async def run_migrations(pool: "asyncpg.Pool", migrations_dir: str = "migrations
         return
 
     async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                filename   TEXT PRIMARY KEY,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
+        applied = {
+            r["filename"] for r in await conn.fetch("SELECT filename FROM schema_migrations")
+        }
+
+        # Baseline: a DB created before the ledger existed has the full schema but
+        # an empty ledger. Re-running its migrations would hit the 009/025 crash,
+        # so record them all as applied without re-running. A pre-existing DB is
+        # detected by the core `memories` table.
+        # ponytail: assumes a pre-ledger DB is fully migrated — true for any DB
+        # that booted before (boots ran every migration). A *partially* migrated
+        # pre-ledger DB would need manual reconciliation; none exist in practice.
+        if not applied and await conn.fetchval("SELECT to_regclass('public.memories')") is not None:
+            async with conn.transaction():
+                for sql_file in sql_files:
+                    await conn.execute(
+                        "INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING",
+                        sql_file.name,
+                    )
+            logger.info("Baselined %d pre-existing migrations as applied", len(sql_files))
+            return
+
         for sql_file in sql_files:
+            if sql_file.name in applied:
+                continue
             logger.info("Running migration: %s", sql_file.name)
             sql = sql_file.read_text()
-            await conn.execute(sql)
+            async with conn.transaction():
+                await conn.execute(sql)
+                await conn.execute(
+                    "INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING",
+                    sql_file.name,
+                )
             logger.info("Migration complete: %s", sql_file.name)
 
 
