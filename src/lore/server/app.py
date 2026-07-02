@@ -71,37 +71,78 @@ _pgvector_available: bool | None = None
 
 
 async def _seed_root_key_from_env() -> None:
-    """Seed an org + root API key from ``LORE_API_KEY`` when the DB is empty.
+    """Provision (and keep in sync) an org + root API key from ``LORE_API_KEY``.
 
     Lets a declarative deploy (docker-compose, k8s) provision a Postgres-backed
     Lore with a known, shared key — otherwise the only way to mint the first key
     is the one-time ``POST /v1/org/init``, which a static manifest can't capture
-    (its key is random and returned once). No-op if ``LORE_API_KEY`` is unset or
-    any org already exists, so it never overwrites a real deployment.
+    (its key is random and returned once).
+
+    ``LORE_API_KEY`` is authoritative for the seeded root key: on first boot it
+    creates the org + key, and on a later boot it *rotates that key in place* if
+    the env value changed — so editing ``.env`` and restarting actually takes
+    effect (previously it silently no-op'd once any org existed). No-op if
+    ``LORE_API_KEY`` is unset; only ever touches the key it named, so keys an
+    operator minted via the API are left untouched.
     """
     seed_key = os.environ.get("LORE_API_KEY")
     if not seed_key:
         return
+    # Fail fast on a prefix-less key. Lore's auth (api-key-only, the default) only
+    # routes a Bearer token to API-key validation when it starts with "lore_sk_"
+    # (see auth.py). A key without the prefix seeds fine but 401s every request,
+    # while /health stays green — a silent, dead-on-arrival memory integration.
+    # Refuse loudly at boot instead so the misconfiguration is impossible to miss.
+    if not seed_key.startswith("lore_sk_"):
+        raise RuntimeError(
+            "LORE_API_KEY must start with 'lore_sk_' — Lore's auth only accepts "
+            "keys with that prefix, so a prefix-less key would authenticate on "
+            "nothing. Generate one with: echo lore_sk_$(openssl rand -hex 32)"
+        )
     from ulid import ULID
 
     from lore.server.db import get_pool
 
+    key_name = "root (seeded from LORE_API_KEY)"
+    key_hash = hashlib.sha256(seed_key.encode()).hexdigest()
+    key_prefix = seed_key[:12]
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            if await conn.fetchval("SELECT id FROM orgs LIMIT 1") is not None:
-                return  # already provisioned — leave it alone
-            org_id = str(ULID())
-            await conn.execute(
-                "INSERT INTO orgs (id, name) VALUES ($1, $2)", org_id, "default",
+            org_id = await conn.fetchval("SELECT id FROM orgs LIMIT 1")
+            if org_id is None:
+                org_id = str(ULID())
+                await conn.execute(
+                    "INSERT INTO orgs (id, name) VALUES ($1, $2)", org_id, "default",
+                )
+                await conn.execute(
+                    """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, is_root)
+                       VALUES ($1, $2, $3, $4, $5, TRUE)""",
+                    str(ULID()), org_id, key_name, key_hash, key_prefix,
+                )
+                logger.info("Seeded root API key from LORE_API_KEY (org %s)", org_id)
+                return
+            # Org already exists — keep the seeded root key in sync with the env,
+            # so rotating LORE_API_KEY in a manifest actually takes effect. Match
+            # by the seed's own key name so operator-created keys are never touched.
+            existing = await conn.fetchrow(
+                "SELECT id, key_hash FROM api_keys WHERE org_id = $1 AND name = $2 LIMIT 1",
+                org_id, key_name,
             )
-            await conn.execute(
-                """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, is_root)
-                   VALUES ($1, $2, $3, $4, $5, TRUE)""",
-                str(ULID()), org_id, "root (seeded from LORE_API_KEY)",
-                hashlib.sha256(seed_key.encode()).hexdigest(), seed_key[:12],
-            )
-            logger.info("Seeded root API key from LORE_API_KEY (org %s)", org_id)
+            if existing is None:
+                await conn.execute(
+                    """INSERT INTO api_keys (id, org_id, name, key_hash, key_prefix, is_root)
+                       VALUES ($1, $2, $3, $4, $5, TRUE)""",
+                    str(ULID()), org_id, key_name, key_hash, key_prefix,
+                )
+                logger.info("Seeded root API key from LORE_API_KEY into existing org %s", org_id)
+            elif existing["key_hash"] != key_hash:
+                await conn.execute(
+                    "UPDATE api_keys SET key_hash = $1, key_prefix = $2 WHERE id = $3",
+                    key_hash, key_prefix, existing["id"],
+                )
+                logger.info("Rotated seeded root API key from LORE_API_KEY (org %s)", org_id)
 
 
 @asynccontextmanager
