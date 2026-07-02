@@ -38,6 +38,11 @@ Store and retrieve memories across any AI agent via MCP tools, REST API, or Pyth
 
 Entities and relationships auto-extracted from memories. Hop-by-hop graph traversal surfaces connected knowledge that pure vector search misses. Atomic fact extraction with automatic conflict detection.
 
+### Bi-Temporal Facts & Supersession
+`supersede` · `list_at_time` · `facts_at_time` · `timeline` · `provenance` · `supersession_chain` · `consolidate_memories`
+
+History without deletion. Memories and facts are corrected by *superseding* them, never deleting — every change appends to an auditable trail. Lore tracks two independent time axes (bi-temporal): **valid-time** (when a fact was true in the world) and **system-time** (when Lore learned it), so you can ask "what was canonical — or true about X — *as of* date Y?". `list_at_time` / `facts_at_time` answer as-of queries, `timeline` walks chronologically adjacent events, and `provenance` / `supersession_chain` expose the full correction lineage for a memory or fact.
+
 ### Graph Visualization
 **Web UI at `/ui/`**
 
@@ -283,6 +288,20 @@ curl -s "http://localhost:8765/v1/retrieve?query=your+prompt&limit=5&min_score=0
 | `review_connection` | Approve/reject a pending connection |
 | `on_this_day` | Memories from same date across years |
 | `suggest` | Proactive memory recommendations based on session context |
+| `remember_observation` | Record a structured observation from a session |
+| `search` | Progressive-disclosure compact index (id, title, score) |
+| `get_memories` | Fetch full payloads for one or more memory IDs |
+| `timeline` | Chronologically adjacent events around an anchor memory |
+| `promote_memory` | Share a private memory with the team (private→shared) |
+| `demote_memory` | Unshare a memory, making it private again |
+| `supersede` | Mark a memory as superseded by a newer one |
+| `list_at_time` | List memories that were canonical at a given time |
+| `consolidate_memories` | Create a merged memory and supersede all sources |
+| `provenance` | Full lineage for a memory (sources + supersession chain) |
+| `supersession_chain` | Supersession audit chain for a memory |
+| `facts_at_time` | Facts about an entity that were valid at a given time |
+| `supersede_fact` | Supersede a fact with a newer one (never deletes) |
+| `fact_supersession_chain` | Correction trail for a fact |
 
 ## CLI Reference
 
@@ -374,6 +393,17 @@ GET    /v1/graph                       # Knowledge graph
 GET    /v1/graph/topics                # Topic list
 GET    /v1/graph/topics/{name}         # Topic detail
 GET    /v1/graph/entity/{id}           # Entity detail
+
+# Bi-temporal & supersession (history without deletion)
+POST   /v1/memories/{id}/supersede            # Mark superseded (by=null un-supersedes)
+GET    /v1/memories/at_time                   # Memories canonical as of ?at=<ts>
+GET    /v1/memories/{id}/supersession-chain   # Memory correction audit trail
+GET    /v1/memories/{id}/provenance           # Full lineage (sources + chain)
+POST   /v1/memories/consolidate               # Merge N memories + supersede sources
+GET    /v1/facts/at_time                      # Facts about an entity valid at ?at=<ts>
+POST   /v1/facts/{id}/supersede               # Supersede-not-delete a fact edge
+GET    /v1/facts/{id}/supersession-chain      # Fact correction trail
+GET    /v1/timeline                           # Chronologically adjacent events
 
 # Ingestion
 POST   /v1/conversations              # Extract memories from conversation
