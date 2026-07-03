@@ -487,9 +487,10 @@ DELETE /v1/keys/{id}                  # Revoke API key
 | `LORE_LLM_BASE_URL` | — | LLM base URL |
 | `LORE_GRAPH_DEPTH` | `2` | Default graph traversal depth |
 | `LORE_GRAPH_CONFIDENCE_THRESHOLD` | `0.5` | Entity confidence threshold |
-| `LORE_GRAPH_EXTRACTION_ENABLED` | auto | Entity/fact extraction from new memories. Auto-on when the local `claude` CLI (Claude Code) is on `PATH`; set `false` to disable. Note: graph extraction uses the `claude` CLI, *not* `OPENAI_API_KEY`/`LORE_ENRICHMENT_MODEL` (those drive the separate enrichment pipeline). |
-| `LORE_GRAPH_EXTRACTION_CONCURRENCY` | `2` | Max concurrent `claude` extraction subprocesses |
-| `LORE_GRAPH_EXTRACTION_TIMEOUT` | `30` | Per-extraction subprocess timeout (seconds) |
+| `LORE_GRAPH_EXTRACTION_ENABLED` | `true` | Entity extraction from new memories. On by default — entities come from local **spaCy** NER (no LLM, no `claude` CLI), with a proper-noun heuristic fallback when spaCy/`en_core_web_sm` isn't installed. Set `false` to disable. Install `lore-sdk[ner]` + `python -m spacy download en_core_web_sm` for best entities. |
+| `LORE_GRAPH_LLM` | `false` | Use the `claude` CLI to extract entities **and relationships** (subject→predicate→object) instead of local entity-only extraction. Needs Claude Code on `PATH`. |
+| `LORE_GRAPH_EXTRACTION_CONCURRENCY` | `2` | Max concurrent `claude` extraction subprocesses (LLM path only) |
+| `LORE_GRAPH_EXTRACTION_TIMEOUT` | `30` | Per-extraction subprocess timeout, seconds (LLM path only) |
 | `LORE_AUTO_SAVE` | `true` | Auto-capture (Claude Code hooks) master switch; `false` disables all capture. |
 | `LORE_CAPTURE_N` | `0` | Auto-capture mid-session batch size. `0` = buffer-only (extract per-turn at `Stop`); `>0` spawns `capture-extract` every N tool calls (the old default was `10`). |
 | `LORE_EXTRACT_ON_STOP` | `true` | Auto-capture: extract once per completed agent turn (`Stop` hook). `false` = strict end-of-session-only extraction. |

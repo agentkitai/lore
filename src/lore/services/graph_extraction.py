@@ -1,9 +1,21 @@
 """Graph extraction service — populates entities / mentions / relationships
-from a memory's content + context via a `claude -p` subagent.
+from a memory's content + context.
 
 Design: docs/superpowers/specs/2026-05-08-lore-graph-population-design.md.
 
-The service spawns a one-shot `claude -p` subprocess with a deterministic
+Two extraction paths:
+  * **Default (local, non-LLM):** entities via spaCy NER (heuristic fallback
+    when spaCy/its model isn't installed). No subprocess, no `claude` spawn,
+    no per-memory LLM call. Relationships are not extracted (empty).
+  * **LLM (opt-in via LORE_GRAPH_LLM=true):** a one-shot `claude -p`
+    subprocess with a deterministic prompt extracts entities **and**
+    relationships; the JSON from the final assistant message is parsed and
+    persisted.
+
+Both paths produce the same ``{entities, relationships}`` payload consumed by
+``_persist``. The rest of this docstring describes the LLM path.
+
+The LLM path spawns a one-shot `claude -p` subprocess with a deterministic
 extraction prompt, parses the JSON from the final assistant message, and
 persists the result via the Store's GraphOps slice.
 
@@ -118,16 +130,130 @@ def _reset_semaphore() -> None:
 
 
 def is_enabled() -> bool:
-    """Feature flag.
+    """Feature flag for entity/graph extraction on new memories.
 
-    Auto-on iff ``claude`` is on PATH (matching the dream / capture probe).
-    Explicitly settable via ``LORE_GRAPH_EXTRACTION_ENABLED`` (``true`` /
-    ``false`` / ``1`` / ``0``).
+    On by default. Entities are extracted **locally** (spaCy NER — no LLM and
+    no ``claude`` CLI), so extraction no longer depends on the CLI being
+    present. LLM-based relationship/fact extraction is opt-in via
+    ``LORE_GRAPH_LLM=true`` (that path needs ``claude``). Disable extraction
+    entirely with ``LORE_GRAPH_EXTRACTION_ENABLED=false``.
     """
     raw = os.environ.get("LORE_GRAPH_EXTRACTION_ENABLED")
     if raw is not None:
-        return raw.lower() in ("1", "true", "yes")
-    return shutil.which("claude") is not None
+        return raw.strip().lower() not in ("0", "false", "no", "off")
+    return True
+
+
+def _llm_mode() -> bool:
+    """True → use the ``claude -p`` extractor (entities + relationships).
+
+    Default False → local spaCy/heuristic entity extraction only, no LLM.
+    """
+    return os.environ.get("LORE_GRAPH_LLM", "false").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+# ── Local (non-LLM) entity extraction ──────────────────────────────
+#
+# Default path: entities come from spaCy NER (mirrors redact/pipeline.py's
+# optional-spaCy pattern), falling back to a proper-noun heuristic when spaCy
+# or its model isn't installed. No subprocess, no LLM, no per-memory `claude`
+# spawn. Relationships are LLM-only (empty here) — enable them with
+# LORE_GRAPH_LLM=true.
+
+# spaCy NER label → Lore entity type.
+_SPACY_TYPE_MAP = {
+    "PERSON": "person",
+    "ORG": "organization",
+    "NORP": "organization",
+    "GPE": "location",
+    "LOC": "location",
+    "FAC": "location",
+    "PRODUCT": "technology",
+    "LANGUAGE": "technology",
+    "WORK_OF_ART": "concept",
+    "EVENT": "concept",
+    "LAW": "concept",
+}
+
+_nlp = None
+_nlp_loaded = False
+
+
+def _get_nlp():
+    """Lazy-load spaCy ``en_core_web_sm``; return None if unavailable."""
+    global _nlp, _nlp_loaded
+    if _nlp_loaded:
+        return _nlp
+    _nlp_loaded = True
+    try:
+        import spacy
+
+        _nlp = spacy.load(
+            "en_core_web_sm", disable=["lemmatizer", "textcat", "parser"]
+        )
+    except Exception:
+        _nlp = None
+        logger.warning(
+            "spaCy/en_core_web_sm not available — graph entity extraction is "
+            "using a proper-noun heuristic. For better entities install "
+            "`lore-sdk[ner]` and run `python -m spacy download en_core_web_sm`."
+        )
+    return _nlp
+
+
+# Words a naive proper-noun heuristic would wrongly grab.
+_HEURISTIC_STOP = {
+    "the", "a", "an", "i", "we", "you", "it", "this", "that", "these", "those",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    "january", "february", "march", "april", "may", "june", "july", "august",
+    "september", "october", "november", "december",
+}
+_TITLECASE_RE = re.compile(
+    r"\b([A-Z][A-Za-z0-9.+#_-]*(?:\s+[A-Z][A-Za-z0-9.+#_-]*){0,3})\b"
+)
+
+
+def _entity(name: str, etype: str, confidence: float) -> dict:
+    return {
+        "name": name,
+        "type": etype if etype in _VALID_ENTITY_TYPES else "other",
+        "description": None,
+        "aliases": [],
+        "confidence": confidence,
+    }
+
+
+def _heuristic_entities(text: str) -> list[dict]:
+    """Zero-dependency fallback: TitleCase proper-noun spans."""
+    seen: dict[str, dict] = {}
+    for m in _TITLECASE_RE.finditer(text):
+        name = m.group(1).strip()
+        key = name.lower()
+        if len(name) < 2 or key in _HEURISTIC_STOP or key in seen:
+            continue
+        seen[key] = _entity(name, "other", 0.4)
+    return list(seen.values())
+
+
+def _extract_local(content: str, context: Optional[str]) -> dict:
+    """Non-LLM extraction → the same {entities, relationships} shape as the
+    LLM path, so ``_persist`` is unchanged. Relationships are always empty
+    (relation extraction is LLM-only)."""
+    text = content if not context else f"{content}\n{context}"
+    text = text[:20000]
+    nlp = _get_nlp()
+    if nlp is None:
+        return {"entities": _heuristic_entities(text), "relationships": []}
+    seen: dict[str, dict] = {}
+    for ent in nlp(text).ents:
+        name = ent.text.strip()
+        key = name.lower()
+        if len(name) < 2 or key in seen:
+            continue
+        seen[key] = _entity(name, _SPACY_TYPE_MAP.get(ent.label_, "other"), 0.6)
+    return {"entities": list(seen.values()), "relationships": []}
 
 
 # ── Prompt + response parsing ──────────────────────────────────────
@@ -307,6 +433,22 @@ async def extract_and_persist(
     the env-driven default.
     """
     result = ExtractionResult(memory_id=memory_id)
+
+    # Default (non-LLM) path: local spaCy/heuristic entity extraction — no
+    # subprocess, no `claude` spawn, no per-memory LLM call. The LLM path
+    # (entities + relationships via `claude -p`) is opt-in via
+    # LORE_GRAPH_LLM=true; an injected spawn_fn (tests) also forces it.
+    if spawn_fn is None and not _llm_mode():
+        # spaCy NER is synchronous CPU work; run it off the event loop since
+        # the common caller launches this as a fire-and-forget create_task.
+        payload = await asyncio.to_thread(_extract_local, content, context)
+        result.extracted = payload
+        await _persist(
+            store, org_id=org_id, memory_id=memory_id, payload=payload, result=result
+        )
+        return result
+
+    # ── LLM path (opt-in: LORE_GRAPH_LLM=true) ──────────────────────
     spawn = spawn_fn or _spawn_claude
     deadline = timeout if timeout is not None else _timeout_s()
 
