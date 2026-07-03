@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the internal architecture of Lore v0.6.0.
+This document describes the internal architecture of Lore v1.4.2.
 
 ## Overview
 

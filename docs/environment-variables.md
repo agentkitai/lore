@@ -71,13 +71,18 @@ near-duplicates that *disagree* (#84). When enabled, a fire-and-forget task
 LLM-scores the new memory against its similar neighbours **that the writer may see**
 (migration-026 visibility — never another principal's private memory); a memory
 that contradicts one gets a `contradiction` tag + `meta.contradicts` (ids, owners,
-`cross_agent`, reason). Review via `list_memories(tags=["contradiction"])`. OFF by
-default; a failure never blocks a write.
+`cross_agent`, reason) **and the older, contradicted memory is soft-superseded**
+(reversible, audited in `memory_supersessions`, recall score-suppressed ×0.1 — not
+deleted). Review via `list_memories(tags=["contradiction"])`. **Default-ON when an
+enrichment LLM is configured (`OPENAI_API_KEY`)** and OFF otherwise; a failure never
+blocks a write.
 
 | Variable | Default | Required | Description |
 |----------|---------|----------|-------------|
-| `LORE_CONTRADICTION_DETECTION` | `false` | No | Enable write-time contradiction flagging. |
+| `LORE_CONTRADICTION_DETECTION` | _(on when `OPENAI_API_KEY` set)_ | No | Explicit override to enable/disable write-time contradiction flagging + supersession. |
 | `LORE_CONTRADICTION_MIN_CONFIDENCE` | `0.6` | No | Min LLM confidence (0–1) to flag a contradiction. |
+| `LORE_CONTRADICTION_SUPERSEDE` | `true` | No | Soft-supersede the older contradicted memory (reversible, audited); `false` = flag only, keep old behavior. |
+| `LORE_CONTRADICTION_SUPERSEDE_MIN_CONFIDENCE` | `0.75` | No | Higher confidence bar required to supersede (vs. merely flag). |
 | `LORE_CONTRADICTION_MODEL` | _(LORE_ENRICHMENT_MODEL)_ | No | Model for contradiction scoring. |
 | `LORE_CONTRADICTION_CONCURRENCY` | `4` | No | Max concurrent detection tasks (LLM fan-out cap). |
 
@@ -99,6 +104,28 @@ default; a failure never blocks a write.
 | `LORE_GRAPH_CONFIDENCE_THRESHOLD` | `0.5` | No | Minimum confidence score for graph entities |
 | `LORE_GRAPH_CO_OCCURRENCE` | `true` | No | Extract co-occurrence relationships between entities |
 | `LORE_GRAPH_CO_OCCURRENCE_WEIGHT` | `0.3` | No | Default weight for co-occurrence edges |
+
+---
+
+## Graph extraction
+
+Populate entities/relationships from a memory's content. The default path uses
+local spaCy NER (no LLM, no `claude` CLI); the LLM path (`claude -p`) is opt-in.
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `LORE_GRAPH_EXTRACTION_ENABLED` | `true` | No | Extract entities/relationships on write; `false` disables extraction entirely. |
+| `LORE_GRAPH_LLM` | `false` | No | Use the `claude -p` LLM extractor (entities **and** relationships); default `false` = local spaCy/heuristic entities only. |
+| `LORE_GRAPH_SPACY_MODEL` | `en_core_web_sm` | No | spaCy model for NER (the Docker image sets `en_core_web_trf`). |
+
+---
+
+## Auto-capture (Claude Code hooks)
+
+| Variable | Default | Required | Description |
+|----------|---------|----------|-------------|
+| `LORE_CAPTURE_N` | `0` | No | PostToolUse batch size. `0` = buffer-only (no mid-session spawn); set `>0` to spawn extraction after N unprocessed events. |
+| `LORE_EXTRACT_ON_STOP` | `true` | No | Run per-turn extraction at the Stop hook (with a final pass at SessionEnd); `false` = end-of-session-only extraction. |
 
 ---
 

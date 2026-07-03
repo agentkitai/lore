@@ -24,7 +24,7 @@ Warp supports MCP servers. Add to your Warp MCP config:
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_PROJECT": "my-project"
       }
@@ -40,7 +40,7 @@ Warp supports MCP servers. Add to your Warp MCP config:
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_STORE": "remote",
         "LORE_API_URL": "http://localhost:8765",

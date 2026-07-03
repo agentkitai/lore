@@ -154,7 +154,7 @@ Common issues and solutions when running Lore.
 **Symptom:** Lore does not automatically save or recall during Claude Code sessions.
 
 **Solutions:**
-- Verify `.claude/hooks.json` is configured correctly (see `docs/setup-claude-code.md`)
+- Verify `~/.claude/settings.json` is configured correctly (hooks live under a `hooks` block; see `docs/setup-claude-code.md`)
 - Hooks require the `lore` CLI to be on `$PATH`
 - Test manually: `lore recall "test query"` from the same shell
 - Check that `LORE_STORE` and `LORE_API_URL` / `LORE_API_KEY` are set in the hook environment

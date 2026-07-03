@@ -4,9 +4,11 @@ This is the worker side of the auto-capture pipeline designed in
 ``docs/superpowers/specs/2026-05-07-lore-auto-capture-design.md``. It is
 called by two hooks:
 
-  * **PostToolUse** (``~/.claude/hooks/lore-capture-tool.sh``) — fires after
-    ``LORE_CAPTURE_N`` (default 10) unprocessed events accumulate in the
-    per-session buffer.
+  * **PostToolUse** (``~/.claude/hooks/lore-capture-tool.sh``) — by default
+    only buffers events (``LORE_CAPTURE_N=0``); set ``LORE_CAPTURE_N>0`` to
+    spawn extraction after N unprocessed events accumulate in the per-session
+    buffer. Per-turn extraction is driven by the Stop hook, with a final pass
+    at SessionEnd.
   * **Stop**         (``~/.claude/hooks/lore-capture-stop.sh``) —
     unconditionally fires on Claude Code's main-agent Stop event.
 

@@ -1,12 +1,12 @@
 # API Reference
 
-Complete reference for Lore v0.6.0: MCP tools, CLI commands, environment variables, and SDK.
+Complete reference for Lore v1.4.2: MCP tools, CLI commands, environment variables, and SDK.
 
 ---
 
 ## MCP Tools
 
-Lore exposes 20 tools over the Model Context Protocol. Tools are grouped by category.
+Lore exposes 46 tools over the Model Context Protocol. Tools are grouped by category.
 
 ### Memory Management
 

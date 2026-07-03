@@ -92,7 +92,7 @@ OpenClaw supports MCP servers via mcporter. Add to your OpenClaw config:
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_PROJECT": "my-project"
       }
@@ -108,7 +108,7 @@ OpenClaw supports MCP servers via mcporter. Add to your OpenClaw config:
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_STORE": "remote",
         "LORE_API_URL": "http://localhost:8765",
