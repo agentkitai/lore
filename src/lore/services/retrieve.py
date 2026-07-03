@@ -557,7 +557,7 @@ async def _hybrid_recall(
     if fused and hasattr(store, "are_superseded"):
         candidate_ids = {memory.id for memory, *_ in fused}
         try:
-            superseded_set = await store.are_superseded(candidate_ids)
+            superseded_set = await store.are_superseded(candidate_ids, params.org_id)
         except Exception:
             logger.warning(
                 "are_superseded failed; skipping supersession suppression",

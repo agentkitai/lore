@@ -337,7 +337,7 @@ class _FakeStore:
     async def get_entity_by_name(self, *args, **kwargs):
         return None
 
-    async def are_superseded(self, ids, *, at=None):
+    async def are_superseded(self, ids, org_id=None, *, at=None):
         return self._superseded & set(ids)
 
 
