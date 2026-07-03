@@ -3,6 +3,10 @@ FROM python:3.11-slim AS builder
 
 WORKDIR /build
 
+# Make each --prefix=/install step visible to the next (so the torch install
+# below is seen as satisfied and spacy-transformers doesn't refetch CUDA torch).
+ENV PYTHONPATH=/install/lib/python3.11/site-packages
+
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
@@ -13,11 +17,19 @@ COPY migrations/ migrations/
 COPY migrations_sqlite/ migrations_sqlite/
 
 # [ner] adds spaCy so graph entity extraction uses real NER (not the heuristic
-# fallback); the en_core_web_sm wheel is installed alongside so pip pins spaCy
-# to a version compatible with the model. Installed into /install and copied to
-# the runtime stage below.
+# fallback). en_core_web_sm is kept as a small fallback model.
 RUN pip install --no-cache-dir --prefix=/install ".[server,enrichment,ner]" \
     "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+
+# Transformer NER (en_core_web_trf) — the highest-accuracy spaCy model, used by
+# default (LORE_GRAPH_SPACY_MODEL=en_core_web_trf below). Install CPU-only torch
+# first so spacy-transformers doesn't drag in the multi-GB CUDA build.
+RUN pip install --no-cache-dir --prefix=/install \
+        --index-url https://download.pytorch.org/whl/cpu \
+        torch \
+    && pip install --no-cache-dir --prefix=/install \
+        spacy-transformers \
+        "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl"
 
 # ── Stage 2: Runtime ───────────────────────────────────────────────
 FROM python:3.11-slim
@@ -35,6 +47,10 @@ COPY src/lore/ui/dist/ /app/ui/dist/
 
 # Create writable dirs for model cache and data
 RUN mkdir -p /app/.lore/models /app/data && chown -R lore:lore /app/.lore /app/data
+
+# Use the transformer NER model by default (installed above). Override to
+# en_core_web_sm/lg to trade accuracy for image size / CPU speed.
+ENV LORE_GRAPH_SPACY_MODEL=en_core_web_trf
 
 # Don't run as root
 USER lore
