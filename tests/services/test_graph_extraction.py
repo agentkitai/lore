@@ -424,9 +424,12 @@ async def test_extract_subprocess_nonzero_exit(store: Store):
 
 @pytest.mark.asyncio
 async def test_extract_no_claude_on_path(store: Store, monkeypatch):
-    """When `claude` isn't on PATH (and no spawn_fn given), no-op clean."""
+    """In the opt-in LLM mode, when `claude` isn't on PATH (and no spawn_fn),
+    no-op clean. (The default path is local and needs no claude — see
+    test_default_path_is_local_no_llm.)"""
     gx._reset_semaphore()
     mem_id = await _insert_memory(store)
+    monkeypatch.setenv("LORE_GRAPH_LLM", "true")  # force the claude path
     monkeypatch.setattr("shutil.which", lambda name: None)
     result = await gx.extract_and_persist(
         store, org_id="solo", memory_id=mem_id,
@@ -451,6 +454,44 @@ async def test_extract_empty_extraction_persists_nothing(store: Store):
     assert result.relationships_inserted == 0
 
 
+# ── Local (non-LLM) extraction — the default path ─────────────────
+
+
+class TestLocalExtraction:
+    def test_heuristic_extracts_proper_nouns(self, monkeypatch):
+        # Force the heuristic (no spaCy) so this is deterministic in any env.
+        monkeypatch.setattr(gx, "_get_nlp", lambda: None)
+        out = gx._extract_local("Pinecone ships Nexus.", None)
+        names = {e["name"] for e in out["entities"]}
+        assert "Pinecone" in names and "Nexus" in names
+        assert out["relationships"] == []
+        for e in out["entities"]:  # shape must match what _persist consumes
+            assert e["type"] in gx._VALID_ENTITY_TYPES
+            assert 0.0 <= e["confidence"] <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_default_path_is_local_no_llm(store: Store, monkeypatch):
+    """Default extract_and_persist extracts locally — never spawns claude."""
+    gx._reset_semaphore()
+    mem_id = await _insert_memory(store)
+    monkeypatch.setattr(gx, "_get_nlp", lambda: None)       # deterministic heuristic
+    monkeypatch.delenv("LORE_GRAPH_LLM", raising=False)      # default = local
+    monkeypatch.setattr("shutil.which", lambda name: None)  # claude absent must not matter
+
+    def _no_spawn(_p):
+        raise AssertionError("default path must not spawn the LLM subprocess")
+    monkeypatch.setattr(gx, "_spawn_claude", _no_spawn)
+
+    result = await gx.extract_and_persist(
+        store, org_id="solo", memory_id=mem_id,
+        content="Acme Corp ships Widget.", context=None,
+    )
+    assert result.error is None
+    assert result.entities_inserted >= 1
+    assert result.relationships_inserted == 0
+
+
 # ── Feature flag ──────────────────────────────────────────────────
 
 
@@ -463,14 +504,18 @@ class TestIsEnabled:
         monkeypatch.setenv("LORE_GRAPH_EXTRACTION_ENABLED", "false")
         assert gx.is_enabled() is False
 
-    def test_default_follows_claude_on_path(self, monkeypatch):
+    def test_default_on_without_claude(self, monkeypatch):
+        # Extraction is on by default now — local (spaCy/heuristic) entity
+        # extraction needs no `claude` CLI, so absence of claude no longer
+        # disables it.
         monkeypatch.delenv("LORE_GRAPH_EXTRACTION_ENABLED", raising=False)
-        with patch("lore.services.graph_extraction.shutil.which",
-                   return_value="/fake/claude"):
+        with patch("lore.services.graph_extraction.shutil.which", return_value=None):
             assert gx.is_enabled() is True
-        with patch("lore.services.graph_extraction.shutil.which",
-                   return_value=None):
-            assert gx.is_enabled() is False
+
+    def test_explicit_off_variants(self, monkeypatch):
+        for val in ("false", "0", "no", "off"):
+            monkeypatch.setenv("LORE_GRAPH_EXTRACTION_ENABLED", val)
+            assert gx.is_enabled() is False, val
 
 
 # ── Concurrency cap ───────────────────────────────────────────────

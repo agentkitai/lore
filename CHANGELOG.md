@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 - **Auto-capture cadence is now per-turn, not per-tool-call.** The `PostToolUse` hook no longer spawns a background `capture-extract` subagent every N tool calls — `LORE_CAPTURE_N` now defaults to `0` (buffer-only). Memory extraction is driven once per completed agent turn by the `Stop` hook (plus a final flush at `SessionEnd`), matching the message-turn / natural-breakpoint cadence used by other agentic-memory frameworks instead of a background LLM spawn per ~10 tool calls (the previous default could reach ~700 spawns/hr, ~$34/hr). Restore the old behavior with `LORE_CAPTURE_N=10`; opt into strict end-of-session-only extraction with `LORE_EXTRACT_ON_STOP=false`.
+- **Graph entity extraction is now local (non-LLM) by default.** Extraction on new memories no longer spawns a `claude -p` subprocess per memory. Entities come from local **spaCy** NER (with a proper-noun heuristic fallback when spaCy/`en_core_web_sm` isn't installed) — no LLM call, no `claude` CLI dependency, so `LORE_GRAPH_EXTRACTION_ENABLED` is now on by default. LLM extraction of **relationships** (subject→predicate→object) is opt-in via `LORE_GRAPH_LLM=true` (needs Claude Code on `PATH`); the previous behavior is fully restored by setting it.
 
 ## 1.4.2 — 2026-06-27
 
