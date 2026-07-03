@@ -94,6 +94,8 @@ mcpServers:
   lore:
     command: uvx
     args:
+      - --from
+      - lore-sdk[mcp]
       - lore-memory
     env:
       LORE_PROJECT: my-project
@@ -106,6 +108,8 @@ mcpServers:
   lore:
     command: uvx
     args:
+      - --from
+      - lore-sdk[mcp]
       - lore-memory
     env:
       LORE_STORE: remote

@@ -20,7 +20,7 @@ Create `.cline/mcp_settings.json` in your project root:
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_PROJECT": "my-project"
       }
@@ -36,7 +36,7 @@ Create `.cline/mcp_settings.json` in your project root:
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_STORE": "remote",
         "LORE_API_URL": "http://localhost:8765",
@@ -65,7 +65,7 @@ Add these to the `env` block for LLM-powered enrichment, classification, and fac
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_PROJECT": "my-project",
         "LORE_ENRICHMENT_ENABLED": "true",

@@ -11,7 +11,7 @@ pip install lore-sdk
 Or run the MCP server directly without installing:
 
 ```bash
-uvx lore-memory
+uvx --from lore-sdk[mcp] lore-memory
 ```
 
 ## Configure Your AI Tool

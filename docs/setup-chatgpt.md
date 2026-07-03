@@ -28,7 +28,7 @@ pip install mcp-proxy  # or your chosen bridge
 ### Step 2: Start the MCP bridge
 
 ```bash
-mcp-proxy --command "uvx lore-memory" --port 3000
+mcp-proxy --command "uvx --from lore-sdk[mcp] lore-memory" --port 3000
 ```
 
 This starts Lore's MCP server behind an HTTP proxy on port 3000.
@@ -43,7 +43,7 @@ export LORE_PROJECT="my-project"
 # export LORE_LLM_PROVIDER=openai
 # export LORE_LLM_API_KEY=sk-...
 
-mcp-proxy --command "uvx lore-memory" --port 3000
+mcp-proxy --command "uvx --from lore-sdk[mcp] lore-memory" --port 3000
 ```
 
 ### Step 3: Expose the bridge

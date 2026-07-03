@@ -133,7 +133,7 @@ Starts Postgres with pgvector and the Lore server on `http://localhost:8765`.
 ### pip
 
 ```bash
-pip install lore-sdk[server]
+pip install "lore-sdk[server,solo]"
 lore serve  # starts on port 8765
 ```
 

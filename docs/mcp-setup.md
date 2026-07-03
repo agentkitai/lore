@@ -30,7 +30,7 @@ Every client uses the same JSON structure. The minimal config for local mode:
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_PROJECT": "my-project"
       }
@@ -48,7 +48,7 @@ Alternative command (if uvx is not installed):
 }
 ```
 
-## Tools Provided (20)
+## Tools Provided (46)
 
 | Tool | Description |
 |------|-------------|
@@ -123,7 +123,7 @@ To connect to a self-hosted Lore server instead of using local SQLite:
   "mcpServers": {
     "lore": {
       "command": "uvx",
-      "args": ["lore-memory"],
+      "args": ["--from", "lore-sdk[mcp]", "lore-memory"],
       "env": {
         "LORE_STORE": "remote",
         "LORE_API_URL": "http://localhost:8765",
