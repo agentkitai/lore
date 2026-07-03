@@ -81,6 +81,35 @@ async def test_supersede_can_be_disabled(store, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_superseded_memory_is_suppressed_in_recall(store):
+    # Regression: hybrid recall must actually down-rank superseded memories.
+    # (retrieve.py called are_superseded() without org_id, so the call raised,
+    # was swallowed, and suppression was silently skipped — soft-invalidate did
+    # nothing.) With near-identical embeddings, the superseded row must score
+    # below the survivor and carry signals["superseded"] == 1.0.
+    from lore.services.retrieve import hybrid_retrieve
+
+    a = await store.insert_memory(
+        NewMemory(org_id="solo", content="Auth lives in auth.py", embedding=_vec(0.0), user_id="y")
+    )
+    b = await store.insert_memory(
+        NewMemory(org_id="solo", content="Auth moved to security/auth_service.py",
+                  embedding=_vec(0.001), user_id="y")
+    )
+    await store.record_supersession(a.id, superseded_by=b.id, reason="moved", agent="test")
+
+    res = await hybrid_retrieve(
+        store, org_id="solo", query_text="where is auth logic", query_vec=_vec(0.0005),
+        limit=5, min_score_override=0.0, scope_mode="all", requesting_user_id="y",
+    )
+    by_id = {r.memory.id: r for r in res}
+    assert a.id in by_id and b.id in by_id
+    assert by_id[a.id].signals["superseded"] == 1.0   # 0.0 if the org_id bug regressed
+    assert by_id[b.id].signals["superseded"] == 0.0
+    assert by_id[a.id].score < by_id[b.id].score       # ×0.1 pushes it below the survivor
+
+
+@pytest.mark.asyncio
 async def test_below_supersede_confidence_flags_but_does_not_supersede(store, monkeypatch):
     # conf 0.7: above the flag bar (0.6) but below the supersede bar (0.75)
     a = await store.insert_memory(
