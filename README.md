@@ -491,6 +491,9 @@ DELETE /v1/keys/{id}                  # Revoke API key
 | `LORE_GRAPH_LLM` | `false` | Use the `claude` CLI to extract entities **and relationships** (subject→predicate→object) instead of local entity-only extraction. Needs Claude Code on `PATH`. |
 | `LORE_GRAPH_EXTRACTION_CONCURRENCY` | `2` | Max concurrent `claude` extraction subprocesses (LLM path only) |
 | `LORE_GRAPH_EXTRACTION_TIMEOUT` | `30` | Per-extraction subprocess timeout, seconds (LLM path only) |
+| `LORE_CONTRADICTION_DETECTION` | auto | Write-time contradiction detection + soft-supersession. Auto-on when `OPENAI_API_KEY` is set (it's LLM-scored); set `true`/`false` to override. Flags the new memory and soft-supersedes the older contradicted one (recall suppresses superseded memories ×0.1 — not deleted). |
+| `LORE_CONTRADICTION_SUPERSEDE` | `true` | Soft-supersede the older contradicted memory (last-write-wins). `false` = flag-only (old behavior). Only your own / unowned memories are superseded; cross-agent conflicts are flag-only. |
+| `LORE_CONTRADICTION_SUPERSEDE_MIN_CONFIDENCE` | `0.75` | Confidence bar to supersede (higher than the flag bar, `LORE_CONTRADICTION_MIN_CONFIDENCE`=`0.6`). |
 | `LORE_AUTO_SAVE` | `true` | Auto-capture (Claude Code hooks) master switch; `false` disables all capture. |
 | `LORE_CAPTURE_N` | `0` | Auto-capture mid-session batch size. `0` = buffer-only (extract per-turn at `Stop`); `>0` spawns `capture-extract` every N tool calls (the old default was `10`). |
 | `LORE_EXTRACT_ON_STOP` | `true` | Auto-capture: extract once per completed agent turn (`Stop` hook). `false` = strict end-of-session-only extraction. |

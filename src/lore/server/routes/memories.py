@@ -144,9 +144,10 @@ async def create_memory(
             content=stored.content, context=stored.context,
         ))
 
-    # Fire-and-forget write-time contradiction detection (#84); OFF unless
-    # LORE_CONTRADICTION_DETECTION. Flags the memory (tag + meta) if it disagrees
-    # with a similar existing one; never blocks or fails the write.
+    # Fire-and-forget write-time contradiction detection + soft-supersession
+    # (#84); default-on when OPENAI_API_KEY is set (override via
+    # LORE_CONTRADICTION_DETECTION). Flags the new memory and soft-supersedes the
+    # older contradicted one; never blocks or fails the write.
     from lore.services import contradiction as contradiction_svc
 
     if contradiction_svc.is_enabled():
