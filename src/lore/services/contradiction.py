@@ -1,13 +1,25 @@
-"""Write-time cross-agent contradiction detection (#84).
+"""Write-time cross-agent contradiction detection + soft-supersession (#84).
 
-After a memory is written, optionally check whether it CONTRADICTS a similar
-existing memory (assert opposite facts about the same subject) and flag it for
-review — LLM-scored, fire-and-forget, **OFF by default**
-(``LORE_CONTRADICTION_DETECTION``). Flagged memories get a ``contradiction`` tag
-plus ``meta.contradicts`` (conflicting ids, owners, cross-agent flag, reason), so
-the review surface is simply ``list_memories(tags=["contradiction"])`` — no new
-endpoint. Extends the AUDN reconciler (#66): reconcile folds near-duplicates;
-this flags the near-duplicates that *disagree*.
+After a memory is written, check whether it CONTRADICTS a similar existing
+memory (assert opposite facts about the same subject). LLM-scored,
+fire-and-forget. **Default-ON when an enrichment LLM is configured**
+(``OPENAI_API_KEY``); explicit override via ``LORE_CONTRADICTION_DETECTION``.
+
+Two things happen on a confident contradiction:
+  * The new memory is FLAGGED — a ``contradiction`` tag plus ``meta.contradicts``
+    (conflicting ids, owners, cross-agent flag, reason). Review surface is just
+    ``list_memories(tags=["contradiction"])`` — no new endpoint.
+  * The older, contradicted memory is SOFT-SUPERSEDED (last-write-wins: the
+    just-written memory is the newest), above a higher confidence bar
+    (``LORE_CONTRADICTION_SUPERSEDE_MIN_CONFIDENCE``, default 0.75). This is
+    reversible + audited (``memory_supersessions``), and recall score-suppresses
+    superseded memories (×0.1) — it does NOT delete. Disable with
+    ``LORE_CONTRADICTION_SUPERSEDE=false`` to keep the old flag-only behavior.
+
+This matches how the field handles staleness (Zep/Graphiti edge invalidation,
+Mem0 write-time reconciliation): retain-and-supersede, not hard-delete. Extends
+the AUDN reconciler (#66): reconcile folds near-duplicates; this supersedes the
+near-duplicates that *disagree*.
 """
 
 from __future__ import annotations
@@ -27,7 +39,14 @@ ContradictionScorer = Callable[[str, str], Tuple[bool, float, str]]
 
 
 def is_enabled() -> bool:
-    return os.environ.get("LORE_CONTRADICTION_DETECTION", "").lower() in ("1", "true", "yes")
+    """Explicit override via ``LORE_CONTRADICTION_DETECTION``; otherwise
+    default-ON when an enrichment LLM is configured (``OPENAI_API_KEY``) — the
+    detector needs one — and OFF when it isn't, so a keyless install pays
+    nothing."""
+    raw = os.environ.get("LORE_CONTRADICTION_DETECTION")
+    if raw is not None and raw.strip() != "":
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    return bool(os.environ.get("OPENAI_API_KEY"))
 
 
 def _min_confidence() -> float:
@@ -35,6 +54,22 @@ def _min_confidence() -> float:
         return min(1.0, max(0.0, float(os.environ.get("LORE_CONTRADICTION_MIN_CONFIDENCE", "0.6"))))
     except ValueError:
         return 0.6
+
+
+def _supersede_enabled() -> bool:
+    return os.environ.get("LORE_CONTRADICTION_SUPERSEDE", "true").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _supersede_min_confidence() -> float:
+    """Higher bar than flagging — superseding removes a memory from recall."""
+    try:
+        return min(1.0, max(0.0, float(
+            os.environ.get("LORE_CONTRADICTION_SUPERSEDE_MIN_CONFIDENCE", "0.75")
+        )))
+    except ValueError:
+        return 0.75
 
 
 def _concurrency() -> int:
@@ -119,6 +154,7 @@ async def detect_and_flag(
             )
             min_conf = _min_confidence()
             conflicts: List[str] = []
+            conflict_conf: dict[str, float] = {}
             owners: dict[str, Optional[str]] = {}
             reasons: List[str] = []
             for n in neighbors:
@@ -127,6 +163,7 @@ async def detect_and_flag(
                 contradicts, conf, reason = await asyncio.to_thread(scorer, content, n.content)
                 if contradicts and conf >= min_conf:
                     conflicts.append(n.id)
+                    conflict_conf[n.id] = conf
                     owners[n.id] = n.user_id
                     if reason:
                         reasons.append(reason)
@@ -148,8 +185,37 @@ async def detect_and_flag(
             "contradiction_reason": "; ".join(reasons)[:500],
         }
         await store.update_memory(org_id, memory_id, MemoryPatch(tags=tags, meta=meta))
+
+        # Soft-supersede the older, contradicted memories (last-write-wins: the
+        # just-written memory is the newest). Higher confidence bar than
+        # flagging. Reversible + audited (memory_supersessions); recall
+        # score-suppresses superseded memories (×0.1) — no hard delete.
+        superseded: List[str] = []
+        if _supersede_enabled():
+            sup_min = _supersede_min_confidence()
+            reason_text = "; ".join(reasons)[:300] or "contradicted by a newer memory"
+            for cid in conflicts:
+                if conflict_conf.get(cid, 0.0) < sup_min:
+                    continue
+                # Only supersede your own / unowned memories — never silently
+                # invalidate ANOTHER agent's memory on one LLM judgment. Those
+                # cross-agent conflicts stay flagged for human review.
+                nbr_owner = owners.get(cid)
+                if nbr_owner is not None and nbr_owner != owner_user_id:
+                    continue
+                try:
+                    await store.record_supersession(
+                        cid, superseded_by=memory_id, reason=reason_text, agent="contradiction",
+                    )
+                    superseded.append(cid)
+                except Exception:  # a supersede failure must not break the write
+                    logger.warning(
+                        "supersede failed org=%s %s -> %s", org_id, cid, memory_id, exc_info=True
+                    )
+
         logger.info(
-            "contradiction flagged org=%s memory=%s conflicts=%d", org_id, memory_id, len(conflicts)
+            "contradiction flagged org=%s memory=%s conflicts=%d superseded=%d",
+            org_id, memory_id, len(conflicts), len(superseded),
         )
         return conflicts
     except Exception:  # fire-and-forget: a flagging failure must never break a write

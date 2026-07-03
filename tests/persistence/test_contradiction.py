@@ -33,11 +33,68 @@ def _fresh_semaphore():
     _reset_semaphore()
 
 
-def test_is_enabled_default_off(monkeypatch):
+def test_is_enabled_defaults_to_llm_availability(monkeypatch):
     monkeypatch.delenv("LORE_CONTRADICTION_DETECTION", raising=False)
-    assert is_enabled() is False
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert is_enabled() is False                    # no key, no override → off
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    assert is_enabled() is True                     # key present → default on
+    monkeypatch.setenv("LORE_CONTRADICTION_DETECTION", "false")
+    assert is_enabled() is False                    # explicit override wins over key
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setenv("LORE_CONTRADICTION_DETECTION", "true")
-    assert is_enabled() is True
+    assert is_enabled() is True                     # explicit on without a key
+
+
+@pytest.mark.asyncio
+async def test_supersedes_older_contradicted_memory(store):
+    a = await store.insert_memory(
+        NewMemory(org_id="solo", content="The sky is blue", embedding=_vec(0.0), user_id="y")
+    )
+    b = await store.insert_memory(
+        NewMemory(org_id="solo", content="The sky is green", embedding=_vec(0.001), user_id="y")
+    )
+    await detect_and_flag(
+        store, org_id="solo", memory_id=b.id, content=b.content,
+        embedding=_vec(0.001), owner_user_id="y", scorer=_yes, min_similarity=0.05,
+    )
+    # last-write-wins: the older, contradicted memory is soft-superseded by the newer
+    assert await store.is_superseded(a.id, "solo") is True
+    assert await store.is_superseded(b.id, "solo") is False
+
+
+@pytest.mark.asyncio
+async def test_supersede_can_be_disabled(store, monkeypatch):
+    monkeypatch.setenv("LORE_CONTRADICTION_SUPERSEDE", "false")
+    a = await store.insert_memory(
+        NewMemory(org_id="solo", content="The sky is blue", embedding=_vec(0.0), user_id="y")
+    )
+    b = await store.insert_memory(
+        NewMemory(org_id="solo", content="The sky is green", embedding=_vec(0.001), user_id="y")
+    )
+    res = await detect_and_flag(
+        store, org_id="solo", memory_id=b.id, content=b.content,
+        embedding=_vec(0.001), owner_user_id="y", scorer=_yes, min_similarity=0.05,
+    )
+    assert res == [a.id]                                  # still flagged
+    assert await store.is_superseded(a.id, "solo") is False  # but NOT superseded
+
+
+@pytest.mark.asyncio
+async def test_below_supersede_confidence_flags_but_does_not_supersede(store, monkeypatch):
+    # conf 0.7: above the flag bar (0.6) but below the supersede bar (0.75)
+    a = await store.insert_memory(
+        NewMemory(org_id="solo", content="The sky is blue", embedding=_vec(0.0), user_id="y")
+    )
+    b = await store.insert_memory(
+        NewMemory(org_id="solo", content="The sky is green", embedding=_vec(0.001), user_id="y")
+    )
+    res = await detect_and_flag(
+        store, org_id="solo", memory_id=b.id, content=b.content, embedding=_vec(0.001),
+        owner_user_id="y", scorer=lambda _a, _b: (True, 0.7, "leans opposite"), min_similarity=0.05,
+    )
+    assert res == [a.id]                                  # flagged (0.7 >= 0.6)
+    assert await store.is_superseded(a.id, "solo") is False  # not superseded (0.7 < 0.75)
 
 
 @pytest.mark.asyncio
