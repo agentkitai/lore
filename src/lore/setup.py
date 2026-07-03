@@ -513,15 +513,18 @@ LORE_CAPTURE_TOOL_HOOK_SCRIPT = """\
 #     remember() / remember_observation().
 #   - Append a single JSON line to ~/.lore/sessions/<session_id>/buffer.jsonl
 #     with seq, ts, tool, input_summary, output_summary (truncated).
-#   - Compute unprocessed_count vs the cursor; if >= LORE_CAPTURE_N (default
-#     10), spawn `lore capture-extract` as a fully detached subprocess.
+#   - By default this hook does NOT extract — it only buffers. Extraction runs
+#     per-turn (Stop hook) and once at SessionEnd. Set LORE_CAPTURE_N>0 to opt
+#     back into mid-session spawns (if >= LORE_CAPTURE_N unprocessed events,
+#     spawn `lore capture-extract` as a fully detached subprocess).
 #
 # All errors are absorbed: this hook always exits 0 so Claude Code
 # never breaks because of capture failures.
 #
 # Tunables:
 #   LORE_AUTO_SAVE        master switch (default: true)
-#   LORE_CAPTURE_N        events per batch (default: 10)
+#   LORE_CAPTURE_N        mid-session batch size (default: 0 = buffer-only;
+#                         >0 re-enables per-N-tool-call spawns)
 #   LORE_CAPTURE_SKIP     CSV of tool names to skip (overrides default)
 #   LORE_CAPTURE_DEBUG    if true, log each step to errors.log
 
@@ -547,7 +550,10 @@ _lore_ensure_server || true
 # Edit/Bash/Write events.
 DEFAULT_SKIP="Read,Glob,Grep,LS,BashOutput,ToolSearch,ListMcpResources,TodoWrite"
 SKIP_LIST="${{LORE_CAPTURE_SKIP-$DEFAULT_SKIP}}"
-BATCH_N="${{LORE_CAPTURE_N:-10}}"
+# Default 0 = buffer-only, never spawn mid-session. Extraction fires per-turn
+# at the Stop hook and once at SessionEnd. Set LORE_CAPTURE_N>0 to opt back
+# into mid-session batch spawns (the old per-N-tool-call cadence).
+BATCH_N="${{LORE_CAPTURE_N:-0}}"
 
 # Pass the JSON payload to Python via stdin and the configuration via
 # argv. Bash here-string handling for the JSON keeps multiline tool
@@ -658,7 +664,11 @@ if cursor_path.exists():
         cursor = 0
 
 unprocessed = seq - cursor
-if unprocessed < batch_n:
+# batch_n <= 0 (the default) means buffer-only: never spawn capture-extract
+# from PostToolUse. Extraction is driven per-turn by the Stop hook and once
+# by SessionEnd, which is the standard message-turn / natural-breakpoint
+# cadence — not one background LLM spawn per N tool calls.
+if batch_n <= 0 or unprocessed < batch_n:
     sys.exit(0)
 
 lore_bin = shutil.which("lore")
@@ -693,15 +703,23 @@ LORE_CAPTURE_STOP_HOOK_SCRIPT = """\
 # Installed by: lore setup claude-code
 # Event: Stop  (fires when the main agent stops; NOT SubagentStop)
 #
-# Unconditionally invokes `lore capture-extract` on whatever is in the
-# session's buffer. The PostToolUse hook only fires capture-extract once
-# every LORE_CAPTURE_N events, so the trailing N-1 events at end of
-# session would otherwise be lost. This hook ensures every session
-# flushes once at Stop.
+# Invokes `lore capture-extract` on whatever is in the session's buffer.
+# Because PostToolUse is buffer-only by default (LORE_CAPTURE_N=0), this
+# per-turn Stop flush is the PRIMARY extraction trigger — a message-turn /
+# natural-breakpoint cadence (one extraction per completed agent turn),
+# not one background spawn per N tool calls. SessionEnd does a final flush.
+#
+# Set LORE_EXTRACT_ON_STOP=false for strict end-of-session-only extraction
+# (SessionEnd only) — cheaper, but a session killed mid-run loses its
+# unextracted turns.
 
 set +e
 
 if [ "${{LORE_AUTO_SAVE:-true}}" = "false" ]; then
+    exit 0
+fi
+
+if [ "${{LORE_EXTRACT_ON_STOP:-true}}" = "false" ]; then
     exit 0
 fi
 

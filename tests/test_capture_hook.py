@@ -452,6 +452,19 @@ class TestHookTemplates:
         )
         assert result.returncode == 0, result.stderr
 
+    def test_tool_hook_defaults_to_buffer_only(self):
+        # New cadence default: PostToolUse buffers but never spawns mid-session.
+        # Extraction is driven per-turn by the Stop hook, not per N tool calls.
+        rendered = _render(LORE_CAPTURE_TOOL_HOOK_SCRIPT)
+        assert "LORE_CAPTURE_N:-0" in rendered, "batch default must be 0 (buffer-only)"
+        assert "batch_n <= 0" in rendered, "spawn must be gated so batch_n=0 never spawns"
+
+    def test_stop_hook_gated_by_extract_on_stop(self):
+        # Per-turn extraction is on by default but can be disabled for strict
+        # end-of-session-only capture.
+        rendered = _render(LORE_CAPTURE_STOP_HOOK_SCRIPT)
+        assert "LORE_EXTRACT_ON_STOP:-true" in rendered
+
     def test_tool_hook_appends_buffer_line(self, tmp_path):
         rendered = _render(LORE_CAPTURE_TOOL_HOOK_SCRIPT)
         hook_path = tmp_path / "lore-capture-tool.sh"

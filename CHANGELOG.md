@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
 
+### Changed
+- **Auto-capture cadence is now per-turn, not per-tool-call.** The `PostToolUse` hook no longer spawns a background `capture-extract` subagent every N tool calls — `LORE_CAPTURE_N` now defaults to `0` (buffer-only). Memory extraction is driven once per completed agent turn by the `Stop` hook (plus a final flush at `SessionEnd`), matching the message-turn / natural-breakpoint cadence used by other agentic-memory frameworks instead of a background LLM spawn per ~10 tool calls (the previous default could reach ~700 spawns/hr, ~$34/hr). Restore the old behavior with `LORE_CAPTURE_N=10`; opt into strict end-of-session-only extraction with `LORE_EXTRACT_ON_STOP=false`.
+
 ## 1.4.2 — 2026-06-27
 
 ### Fixed

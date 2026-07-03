@@ -490,6 +490,9 @@ DELETE /v1/keys/{id}                  # Revoke API key
 | `LORE_GRAPH_EXTRACTION_ENABLED` | auto | Entity/fact extraction from new memories. Auto-on when the local `claude` CLI (Claude Code) is on `PATH`; set `false` to disable. Note: graph extraction uses the `claude` CLI, *not* `OPENAI_API_KEY`/`LORE_ENRICHMENT_MODEL` (those drive the separate enrichment pipeline). |
 | `LORE_GRAPH_EXTRACTION_CONCURRENCY` | `2` | Max concurrent `claude` extraction subprocesses |
 | `LORE_GRAPH_EXTRACTION_TIMEOUT` | `30` | Per-extraction subprocess timeout (seconds) |
+| `LORE_AUTO_SAVE` | `true` | Auto-capture (Claude Code hooks) master switch; `false` disables all capture. |
+| `LORE_CAPTURE_N` | `0` | Auto-capture mid-session batch size. `0` = buffer-only (extract per-turn at `Stop`); `>0` spawns `capture-extract` every N tool calls (the old default was `10`). |
+| `LORE_EXTRACT_ON_STOP` | `true` | Auto-capture: extract once per completed agent turn (`Stop` hook). `false` = strict end-of-session-only extraction. |
 | `LORE_HTTP_TIMEOUT` | `30` | HTTP timeout (seconds) |
 | `OPENAI_API_KEY` | — | Auto-enables enrichment when set |
 | `SLO_CHECK_INTERVAL` | `60` | SLO evaluation interval (seconds) |
