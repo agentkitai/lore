@@ -190,8 +190,12 @@ def _get_nlp():
     try:
         import spacy
 
+        # Keep only tok2vec + ner (all NER needs); disabling the rest speeds
+        # it up. Every name here is a real en_core_web_sm component —
+        # "textcat" is not in this model and would make spacy.load raise.
         _nlp = spacy.load(
-            "en_core_web_sm", disable=["lemmatizer", "textcat", "parser"]
+            "en_core_web_sm",
+            disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
         )
     except Exception:
         _nlp = None

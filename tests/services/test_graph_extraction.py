@@ -469,6 +469,20 @@ class TestLocalExtraction:
             assert e["type"] in gx._VALID_ENTITY_TYPES
             assert 0.0 <= e["confidence"] <= 1.0
 
+    def test_spacy_path_loads_when_available(self):
+        # Runs only where spaCy + the model are installed (e.g. the [ner] extra /
+        # the docker image). Guards the spacy.load disable list — a name not in
+        # en_core_web_sm (e.g. "textcat") would make spacy.load raise and
+        # silently fall back to the heuristic.
+        pytest.importorskip("spacy")
+        pytest.importorskip("en_core_web_sm")
+        gx._nlp = None
+        gx._nlp_loaded = False
+        assert gx._get_nlp() is not None, "spacy.load must not raise (disable list valid)"
+        out = gx._extract_local("Anthropic ships Claude on Kubernetes.", None)
+        assert out["entities"], "spaCy should extract at least one entity"
+        assert out["relationships"] == []
+
 
 @pytest.mark.asyncio
 async def test_default_path_is_local_no_llm(store: Store, monkeypatch):
