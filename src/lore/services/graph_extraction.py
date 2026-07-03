@@ -182,7 +182,9 @@ _nlp_loaded = False
 
 
 def _get_nlp():
-    """Lazy-load spaCy ``en_core_web_sm``; return None if unavailable."""
+    """Lazy-load the spaCy model named by ``LORE_GRAPH_SPACY_MODEL`` (default
+    ``en_core_web_sm``); return None if unavailable. The docker image ships
+    ``en_core_web_trf`` (transformer NER) and sets the env var to it."""
     global _nlp, _nlp_loaded
     if _nlp_loaded:
         return _nlp
@@ -190,11 +192,13 @@ def _get_nlp():
     try:
         import spacy
 
-        # Keep only tok2vec + ner (all NER needs); disabling the rest speeds
-        # it up. Every name here is a real en_core_web_sm component —
-        # "textcat" is not in this model and would make spacy.load raise.
+        model = os.environ.get("LORE_GRAPH_SPACY_MODEL", "en_core_web_sm")
+        # Keep only the token-vector/transformer + ner (all NER needs);
+        # disabling the rest speeds it up. Every name here is a real component
+        # of the sm/lg/trf pipelines — "textcat" is not, and would make
+        # spacy.load raise.
         _nlp = spacy.load(
-            "en_core_web_sm",
+            model,
             disable=["tagger", "parser", "attribute_ruler", "lemmatizer"],
         )
     except Exception:
