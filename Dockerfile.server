@@ -1,5 +1,5 @@
 # ── Stage 1: Build ─────────────────────────────────────────────────
-FROM python:3.11-slim AS builder
+FROM python:3.14-slim AS builder
 
 WORKDIR /build
 
@@ -32,7 +32,7 @@ RUN pip install --no-cache-dir --prefix=/install \
         "https://github.com/explosion/spacy-models/releases/download/en_core_web_trf-3.8.0/en_core_web_trf-3.8.0-py3-none-any.whl"
 
 # ── Stage 2: Runtime ───────────────────────────────────────────────
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 WORKDIR /app
 
