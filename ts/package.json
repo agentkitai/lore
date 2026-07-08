@@ -37,7 +37,7 @@
     "eslint": "^8.57.0",
     "tsup": "^8.0.0",
     "typescript": "^5.4.0",
-    "vitest": "^2.0.0"
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
