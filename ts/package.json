@@ -41,6 +41,6 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.11.1",
-    "ulid": "^2.3.0"
+    "ulid": "^3.0.2"
   }
 }
