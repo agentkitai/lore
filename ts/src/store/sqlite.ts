@@ -116,7 +116,7 @@ export class SqliteStore implements Store {
     const tables = this.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table'")
       .all()
-      .map((row: any) => row.name as string);
+      .map((row) => (row as { name: string }).name);
     if (tables.includes('lessons') && !tables.includes('memories')) {
       this.db.exec(MIGRATION_SQL);
     }
@@ -125,7 +125,7 @@ export class SqliteStore implements Store {
       const columns = this.db
         .prepare('PRAGMA table_info(memories)')
         .all()
-        .map((row: any) => row.name as string);
+        .map((row) => (row as { name: string }).name);
       const migrations: [string, string][] = [
         ['context', 'ALTER TABLE memories ADD COLUMN context TEXT'],
         ['metadata', 'ALTER TABLE memories ADD COLUMN metadata TEXT'],

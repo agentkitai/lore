@@ -30,7 +30,7 @@ const PRIVATE_KEY_BLOCK =
 const AWS_SECRET_KEY = /(?<![A-Za-z0-9/+=])[A-Za-z0-9/+=]{40}(?![A-Za-z0-9/+=])/g;
 
 /** Email addresses */
-const EMAIL = /\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g;
+const EMAIL = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
 /** Phone numbers (international formats) */
 const PHONE = new RegExp(
@@ -67,7 +67,7 @@ const IPV6 = new RegExp(
 );
 
 /** Credit card (broad match, validated with Luhn) */
-const CREDIT_CARD = /\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{1,7}\b/g;
+const CREDIT_CARD = /\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{1,7}\b/g;
 
 /** High-entropy string detection threshold */
 const ENTROPY_THRESHOLD = 4.5;
@@ -171,7 +171,7 @@ export class RedactionPipeline {
     const ccRe = new RegExp(this.ccPattern.source, this.ccPattern.flags);
     let m: RegExpExecArray | null;
     while ((m = ccRe.exec(text)) !== null) {
-      const digitsOnly = m[0].replace(/[\s\-]/g, '');
+      const digitsOnly = m[0].replace(/[\s-]/g, '');
       if (digitsOnly.length >= 13 && digitsOnly.length <= 19 && luhnCheck(digitsOnly)) {
         findings.push({ type: 'credit_card', value: m[0], start: m.index, end: m.index + m[0].length, action: DEFAULT_ACTIONS['credit_card'] ?? 'mask' });
       }

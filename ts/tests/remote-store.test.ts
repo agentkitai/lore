@@ -221,6 +221,6 @@ describe('Lore with remote store', () => {
 
   it('throws if apiUrl/apiKey missing with store "remote"', async () => {
     const { Lore } = await import('../src/lore.js');
-    expect(() => new Lore({ store: 'remote' as 'remote' })).toThrow('apiUrl and apiKey are required');
+    expect(() => new Lore({ store: 'remote' as const })).toThrow('apiUrl and apiKey are required');
   });
 });

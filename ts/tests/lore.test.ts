@@ -1,7 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Lore } from '../src/lore.js';
 import { MemoryStore } from '../src/store/memory.js';
-import { SqliteStore } from '../src/store/sqlite.js';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
