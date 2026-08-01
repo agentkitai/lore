@@ -38,7 +38,7 @@ remote = [
     "httpx>=0.24.0",
 ]
 mcp = [
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
     # LORE_STORE=local (the default) runs the server in-process over SQLite,
     # so the mcp entrypoint needs the server + solo (SQLite) deps to be a true
     # zero-config durable install via `uvx --from lore-sdk[mcp] lore-memory`.
