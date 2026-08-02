@@ -15,7 +15,7 @@
     "@types/node": "^26.1.2"
   },
   "dependencies": {
-    "aws-cdk-lib": "2.262.1",
+    "aws-cdk-lib": "2.262.2",
     "constructs": "^10.7.1"
   }
 }
