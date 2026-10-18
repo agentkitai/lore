@@ -46,7 +46,7 @@
     "globals": "^17.8.0",
     "tsup": "^8.0.0",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.4"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.2",
